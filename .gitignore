@@ -1,0 +1,45 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+ai-agent-cyber-town.venv/
+.pytemp/
+
+# ---- 本地配置（含密钥，绝不入库）----
+backend/.env
+.env
+
+# ---- 运行时数据：作品原文 / 角色库 / 对话记忆 ----
+# 注意用 `data/*` 而不是 `data/`：整个目录被忽略时，git 不会进去找例外规则，
+# 下面的 `!stickers` 就失效了。
+backend/data/*
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+
+# ---- RAG 嵌入模型 / HuggingFace 缓存（约 92MB，不入库）----
+# 新机器上跑一次：pwsh scripts/fetch_model.ps1
+.hfhome/
+
+# ---- Twemoji 贴纸素材**要入库**（CC-BY 4.0，仅 17KB，离线可用）----
+!backend/data/stickers/
+
+# ---- Node / 前端 ----
+node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+
+# ---- 运行时缓存 / 调试残留 ----
+jieba.cache
+out.json
