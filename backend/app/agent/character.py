@@ -38,8 +38,9 @@ from typing import Optional, Tuple
 from agno.agent import Agent
 
 from core.config import get_settings
-from services import affect, rag
-from services.agent_manager import get_agent
+from services import affect
+from services import rag
+from agent.manager import get_agent
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ import re
 from typing import Any, Awaitable, Callable, Iterable, Optional, Sequence
 
 from core.config import get_settings
-from services.prompts import (
+from agent.prompts import (
     build_enrichment_messages,
     build_extraction_messages,
     pick_avatar,

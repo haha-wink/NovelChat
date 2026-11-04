@@ -15,9 +15,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
-# backend/ 目录（本文件位于 backend/core/config.py）
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = BACKEND_DIR.parent
+# backend/ 与仓库根（统一由 core/paths.py 定义）
+from core.paths import BACKEND_DIR, PROJECT_ROOT  # noqa: E402
 
 #: 进程内随机会话密钥。仅在未配置 SESSION_SECRET 时使用，
 #: 重启后旧 token 全部失效（开发期可接受）。

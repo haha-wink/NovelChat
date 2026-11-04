@@ -16,8 +16,9 @@ from core import db
 from core.config import get_settings
 from services import agent_log
 from services import character_miner as miner
-from services import cleaner, extractor
-from services.prompts import pick_avatar
+from services import cleaner
+from services import extractor
+from agent.prompts import pick_avatar
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ async def _extract_characters(
             )
 
         if characters and mode == "agent" and api_key:
-            from services.extraction_agent import ExtractionAgent
+            from agent.extraction import ExtractionAgent
 
             book = db.get_book(book_id) or {}
             db.update_book(book_id, progress=68, stage="角色档案管理员审核中")

@@ -33,7 +33,8 @@ import re
 from typing import Optional
 
 from core import db
-from services import agent_log, agent_memory
+from services import agent_log
+from services import agent_memory
 
 logger = logging.getLogger(__name__)
 

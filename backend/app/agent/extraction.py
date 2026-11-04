@@ -26,8 +26,9 @@ from typing import Any, Awaitable, Callable, Optional
 
 from core.config import get_settings
 from services import character_miner as miner
-from services import name_engine, name_library
-from services import web_tools
+from services import name_engine
+from services import name_library
+from agent.tools import web as web_tools
 
 logger = logging.getLogger(__name__)
 
@@ -533,7 +534,7 @@ class ExtractionAgent:
         if not name:
             return {"error": "name 不能为空"}
 
-        from services.avatar_crawler import AvatarCrawler
+        from agent.tools.avatar import AvatarCrawler
 
         crawler = self._crawler or AvatarCrawler()
         try:
@@ -838,7 +839,7 @@ class ExtractionAgent:
         if not targets:
             return
         try:
-            from services.avatar_crawler import AvatarCrawler
+            from agent.tools.avatar import AvatarCrawler
 
             crawler = self._crawler or AvatarCrawler()
 

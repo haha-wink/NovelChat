@@ -41,12 +41,12 @@ if (-not (Test-Path $envFile)) {
 if (-not $FrontendOnly) {
   $reloadArgs = ''
   if (-not $NoReload) {
-    $reloadArgs = ' --reload --reload-dir backend\api --reload-dir backend\services --reload-dir backend\core'
+    $reloadArgs = ' --reload --reload-dir backend\app\api --reload-dir backend\app\services --reload-dir backend\app\agent --reload-dir backend\app\core'
   }
   Write-Host '==> 启动后端：http://127.0.0.1:8000  (接口文档 http://127.0.0.1:8000/docs)'
   # 用 cmd.exe /k 开窗口：窗口不会一闪就关，出错也看得到。
   # 整条命令再包一层双引号，是 cmd 对「首个参数被引号包裹」的官方写法。
-  $backendArgs = '/k ""{0}" -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000{1}"' -f $venvPython, $reloadArgs
+  $backendArgs = '/k ""{0}" -m uvicorn main:app --app-dir backend\app --host 127.0.0.1 --port 8000{1}"' -f $venvPython, $reloadArgs
   Start-Process -FilePath 'cmd.exe' -ArgumentList $backendArgs -WorkingDirectory $root
 }
 

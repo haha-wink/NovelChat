@@ -22,8 +22,9 @@ import pathlib
 import re
 import sys
 
-BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BACKEND_DIR))
+BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]   # backend/
+APP_DIR = BACKEND_DIR / "app"
+sys.path.insert(0, str(APP_DIR))
 
 import httpx  # noqa: E402
 
@@ -35,22 +36,30 @@ from core import db as dbmod  # noqa: E402
 from core.config import get_settings  # noqa: E402
 from main import app  # noqa: E402
 from readers.document import DocumentError, extract_text  # noqa: E402
-from services import agent_log, agent_memory, character_miner as miner
-from services import affect, emotion_model
-from services import agent_manager, character_agent
-from services import group_chat
+from services import agent_log
+from services import agent_memory
+from services import character_miner as miner
+from services import affect
+from services import emotion_model
+from agent import manager as agent_manager
+from agent import character as character_agent
+from agent import group as group_chat
 from services import expression  # noqa: E402
 from services import shelf
 from services import merge  # noqa: E402
-from services import extractor, library, prompts  # noqa: E402
+from services import extractor
+from services import library
+from agent import prompts  # noqa: E402
 from services import cleaner  # noqa: E402
 from services import reply as reply_mod  # noqa: E402
-from services import chat_memory, rag  # noqa: E402
+from services import chat_memory
+from services import rag  # noqa: E402
 from services import scene as scene_mod  # noqa: E402
 from core import text as text_mod  # noqa: E402
 import channels  # noqa: E402
 import channels.web as web_module  # noqa: E402
-from services import name_library, web_tools  # noqa: E402
+from services import name_library
+from agent.tools import web as web_tools  # noqa: E402
 from services.media import ImageValidationError, decode_images  # noqa: E402
 
 SAMPLE = """第一章 雨夜试剑
@@ -528,7 +537,7 @@ def name_library_checks() -> None:
 
 
 async def avatar_crawler_checks() -> None:
-    from services.avatar_crawler import AvatarCrawler, is_allowed_image_url
+    from agent.tools.avatar import AvatarCrawler, is_allowed_image_url
 
     calls: list[str] = []
 
@@ -584,7 +593,7 @@ async def avatar_crawler_checks() -> None:
 
 async def avatar_api_checks() -> None:
     """头像接口的完整回路：抓取 → 存候选 → 选一张 → 读回来。"""
-    from services import avatar_crawler as crawler_module
+    from agent.tools import avatar as crawler_module
 
     original_find = crawler_module.AvatarCrawler.find
 
@@ -769,7 +778,7 @@ async def name_engine_checks() -> None:
 
 
 async def extraction_agent_checks() -> None:
-    from services.extraction_agent import ExtractionAgent
+    from agent.extraction import ExtractionAgent
 
     class _FakeCrawler:
         async def find(self, *, character_name, work_title=""):
@@ -919,7 +928,7 @@ async def extraction_agent_checks() -> None:
     # ------------------------------------------------------------------
     # 优化：结构化裁剪 / 类型防御 / 历史折叠 / 头像移出决策
     # ------------------------------------------------------------------
-    from services import extraction_agent as ea  # noqa: E402
+    from agent import extraction as ea  # noqa: E402
 
     big = {
         "names": [f"名字{i}" for i in range(200)],
@@ -2304,7 +2313,7 @@ def expression_checks() -> None:
     # 内置素材必须真的在盘上，否则前端只能退化成系统 emoji
     from pathlib import Path as _Path
 
-    sticker_dir = _Path(__file__).resolve().parent.parent / "data" / "stickers"
+    sticker_dir = BACKEND_DIR / "data" / "stickers"
     missing = [cp for cp in expression.all_codepoints() if not (sticker_dir / f"{cp}.svg").exists()]
     check("贴纸：素材已内置（离线可用）", missing == [], str(missing))
 
@@ -3704,7 +3713,7 @@ async def algo_http_checks() -> None:
 
 async def verify_endpoint_checks() -> None:
     """AI 审核接口（/api/books/{id}/verify）的接线测试，agent 本体用假实现。"""
-    from services import extraction_agent as agent_module
+    from agent import extraction as agent_module
 
     settings = get_settings()
     original_key = settings.deepseek_api_key

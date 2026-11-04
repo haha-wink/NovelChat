@@ -37,7 +37,8 @@ from datetime import datetime, timezone
 from typing import AsyncIterator, Awaitable, Callable, Optional
 
 from core import db
-from services import affect, expression
+from services import affect
+from services import expression
 from services import reply as reply_mod
 
 logger = logging.getLogger(__name__)

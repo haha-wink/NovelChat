@@ -84,7 +84,9 @@ def model_path() -> Path:
     configured = (get_settings().rag_model_path or "").strip()
     if configured:
         return Path(configured)
-    return Path(__file__).resolve().parent.parent / "data" / "models" / "bge-small-zh-v1.5"
+    from core.paths import MODELS_DIR
+
+    return MODELS_DIR / "bge-small-zh-v1.5"
 
 
 class LocalEmbedder:

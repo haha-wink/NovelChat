@@ -35,17 +35,28 @@ from core import db
 from core.config import get_settings
 from core.security import InvalidSessionError, Session, issue_session, verify_session
 from readers.document import SUPPORTED_SUFFIXES, DocumentError, extract_text
-from services import agent_log, affect, character_agent, expression, extractor, group_chat, library, merge, shelf
+from services import agent_log
+from services import affect
+from agent import character as character_agent
+from services import expression
+from services import extractor
+from agent import group as group_chat
+from services import library
+from services import merge
+from services import shelf
 from services import agent_memory
-from services import chat_memory, cleaner, rag, scene as scene_mod
+from services import chat_memory
+from services import cleaner
+from services import rag
+from services import scene as scene_mod
 from services import reply as reply_mod
 from channels import event_to_outbound
 from channels import registry as channel_registry
 from channels.web import channel as web_channel
 from services import summarizer as summarizer_module
-from services.agent_manager import get_agent
+from agent.manager import get_agent
 from services.media import ImageValidationError, decode_images
-from services.prompts import build_character_prompt
+from agent.prompts import build_character_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +339,8 @@ def _require_character(character_id: str) -> dict:
 # ---------------------------------------------------------------------------
 @router.get("/health")
 async def health() -> dict:
-    from services import emotion_model, name_engine
+    from services import emotion_model
+    from services import name_engine
 
     settings = get_settings()
     return {
@@ -1232,7 +1244,7 @@ async def delete_character(character_id: str) -> dict:
 # ---------------------------------------------------------------------------
 @router.post("/characters/{character_id}/avatars")
 async def crawl_character_avatars(character_id: str, payload: AvatarRequest | None = None) -> dict:
-    from services.avatar_crawler import AvatarCrawler
+    from agent.tools.avatar import AvatarCrawler
 
     settings = get_settings()
     if not settings.agent_enable_avatars:
@@ -1265,7 +1277,7 @@ async def crawl_character_avatars(character_id: str, payload: AvatarRequest | No
 @router.get("/avatar")
 async def avatar_proxy(url: str) -> Response:
     """把白名单域名下的图片代理回来（Bangumi/维基对热链不友好）。"""
-    from services.avatar_crawler import download_avatar, is_allowed_image_url
+    from agent.tools.avatar import download_avatar, is_allowed_image_url
 
     if not is_allowed_image_url(url):
         raise HTTPException(status_code=403, detail="图片域名不在允许列表内")
@@ -1285,7 +1297,7 @@ async def avatar_proxy(url: str) -> Response:
 # 贴纸（Twemoji）
 # ---------------------------------------------------------------------------
 #: 本地缓存目录：第一次访问从 CDN 拉，之后直接读盘，断网也能用
-STICKER_DIR = Path(__file__).resolve().parent.parent / "data" / "stickers"
+from core.paths import STICKER_DIR  # noqa: E402
 TWEMOJI_CDN = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/svg/{name}.svg"
 #: Twemoji 文件名就是小写十六进制码点，多码点用 - 连。**必须校验**，否则能穿越目录
 _STICKER_NAME = re.compile(r"^[0-9a-f]{1,8}(-[0-9a-f]{1,8})*$")
@@ -1341,7 +1353,7 @@ async def verify_book_characters(book_id: str) -> dict:
     if not text:
         raise HTTPException(status_code=400, detail="这本书的原文丢失了，请重新上传")
 
-    from services.extraction_agent import ExtractionAgent
+    from agent.extraction import ExtractionAgent
 
     agent = ExtractionAgent(
         book_title=book.get("title") or "",

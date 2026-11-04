@@ -29,7 +29,10 @@ import logging
 from typing import Optional
 
 from core import db
-from services import agent_log, agent_memory, library, merge
+from services import agent_log
+from services import agent_memory
+from services import library
+from services import merge
 
 logger = logging.getLogger(__name__)
 

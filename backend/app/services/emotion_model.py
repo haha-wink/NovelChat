@@ -40,6 +40,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from core.paths import MODELS_DIR  # noqa: E402
+
 #: 正向情绪词（情绪本身，不是"言语行为"）
 POSITIVE_WORDS: dict[str, float] = {
     "开心": 1.0, "高兴": 1.0, "快乐": 1.0, "幸福": 1.0, "满足": 0.8,
@@ -150,12 +152,7 @@ class RulesBackend(Backend):
 
 
 #: 默认模型目录（scripts/fetch_emotion_model.py 下载并导出到这里）
-DEFAULT_MODEL_DIR = (
-    Path(__file__).resolve().parent.parent
-    / "data"
-    / "models"
-    / "erlangshen-sentiment"
-)
+DEFAULT_MODEL_DIR = MODELS_DIR / "erlangshen-sentiment"
 
 #: 输入截断长度。对话消息都很短，128 足够，也省时间
 MAX_TOKENS = 128

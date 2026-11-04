@@ -19,7 +19,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT / "backend" / "app"))
 
 from core.config import get_settings  # noqa: E402
 from readers.document import DocumentError, extract_text  # noqa: E402

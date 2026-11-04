@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core import db
-from services import agent_log, emotion_model
+from services import agent_log
+from services import emotion_model
 
 logger = logging.getLogger(__name__)
 
