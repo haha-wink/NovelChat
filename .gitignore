@@ -45,3 +45,4 @@ jieba.cache
 out.json
 \.idea/
 torchinductor_*/
+frontend/.ssr-check/

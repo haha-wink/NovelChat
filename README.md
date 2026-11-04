@@ -48,12 +48,20 @@
 │   ├── tests/smoke_test.py   # 自检脚本（不依赖 pytest，直接跑）
 │   ├── requirements.txt
 │   └── .env                  # 密钥与开关（不入库）
-├── frontend/                 # 前端应用
-│   └── src/
-│       ├── App.vue           # 应用外壳与各视图
-│       ├── api/client.js     # 请求封装
-│       ├── utils/            # format.js（展示格式化）、sse.js（流解析）
-│       └── style.css
+├── frontend/                 # 前端应用（Vue 3 + Vite）
+│   ├── src/
+│   │   ├── App.vue           # 外壳：顶栏 + 视图切换 + 浮层
+│   │   ├── pages/            # 四个视图
+│   │   │   ├── ShelfPage.vue          书架 / 上传 / 书架管理
+│   │   │   ├── GroupChatPage.vue      群聊
+│   │   │   ├── GroupInfoPage.vue      群聊信息（成员、合并候选）
+│   │   │   └── CharacterChatPage.vue  单聊
+│   │   ├── components/modals/ # 浮层：合并选择、角色编辑、角色详情
+│   │   ├── stores/app.js     # 状态与动作（单例，组件解构同名绑定）
+│   │   ├── api/client.js     # 请求封装
+│   │   ├── utils/            # format.js、sse.js、markdown.js
+│   │   └── styles/app.css    # 全局样式
+│   └── tests/render-smoke.js # SSR 渲染冒烟（npm run check:render）
 ├── docs/                     # 文档
 └── scripts/                  # 安装 / 启动 / 取模型 / 自检脚本
 ```
@@ -90,8 +98,13 @@ copy backend\.env.example backend\.env   # 填 DEEPSEEK_API_KEY
 # 后端：685 项
 .\ai-agent-cyber-town.venv\Scripts\python.exe backend\tests\smoke_test.py
 
-# 前端：静态结构 + 关键交互（不跑浏览器）
+# 前端：静态结构 + 绑定完整性（不跑浏览器）
 node scripts\check-frontend.cjs
+
+# 前端：真渲染（SSR 把四个页面 + 三个浮层各渲染一遍，抓 undefined 绑定）
+cd frontend; npm run check:render
+
+# 前端：生产构建
 cd frontend; npm run build
 ```
 
