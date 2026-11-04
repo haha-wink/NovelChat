@@ -31,7 +31,12 @@ import httpx  # noqa: E402
 import anyio  # noqa: E402
 import functools  # noqa: E402
 
-import api.routes as api_routes  # noqa: E402
+import api.v1.router as api_routes  # noqa: E402
+from services import expression as expression_module  # noqa: E402
+from api.v1 import deps as api_deps  # noqa: E402
+from api.v1.endpoints import chat as chat_endpoint  # noqa: E402
+from api.v1.endpoints import shelves as shelves_endpoint  # noqa: E402
+from api.v1.endpoints import system as system_endpoint  # noqa: E402
 from core import db as dbmod  # noqa: E402
 from core.config import get_settings  # noqa: E402
 from main import app  # noqa: E402
@@ -1420,7 +1425,7 @@ def affect_checks() -> None:
     check("情绪：空消息不抛错", isinstance(weird, dict))
 
     # ---- 健康检查暴露后端 ----
-    health = asyncio.run(api_routes.health())
+    health = asyncio.run(system_endpoint.health())
     check("情绪：/api/health 暴露 emotion_model",
           health.get("emotion_model", {}).get("backend") in ("rules", "onnx")
           and "onnx_available" in health.get("emotion_model", {}),
@@ -3462,7 +3467,7 @@ async def http_checks() -> None:
     original_chunk = settings.chunk_chars
     original_mode = settings.extraction_mode
     original_caller = extractor.call_llm_json
-    original_get_agent = api_routes.get_agent
+    original_get_agent = chat_endpoint.get_agent
     session_secret_before = settings.session_secret
     calls = {"n": 0}
 
@@ -3568,13 +3573,13 @@ async def http_checks() -> None:
         check("HTTP：不存在的角色 -> 404", r.status_code == 404, r.text)
 
         # --- 聊天 ---
-        api_routes.get_agent = lambda **kwargs: _FakeAgent(["「沈砚」抬眼看你，", "把剑放在桌上。"])
+        chat_endpoint.get_agent = lambda **kwargs: _FakeAgent(["「沈砚」抬眼看你，", "把剑放在桌上。"])
         uploads = settings.uploads_path
         before_dirs = {p.name for p in uploads.glob("chat-*")} if uploads.is_dir() else set()
 
         # 贴纸按概率发，测起来会抖；这里直接让它必发，专测"事件有没有正确推给前端"
-        original_maybe_sticker = api_routes.expression.maybe_sticker
-        api_routes.expression.maybe_sticker = lambda state, **kwargs: {
+        original_maybe_sticker = expression_module.maybe_sticker
+        expression_module.maybe_sticker = lambda state, **kwargs: {
             "emotion": "喜悦",
             "codepoint": "1f604",
             "emoji": "\U0001f604",
@@ -3613,7 +3618,7 @@ async def http_checks() -> None:
         check("HTTP：流式文本完整", merged_text == "「沈砚」抬眼看你，把剑放在桌上。", merged_text)
         check("HTTP：有 done 事件", bool(events) and events[-1].get("type") == "done")
 
-        api_routes.expression.maybe_sticker = original_maybe_sticker
+        expression_module.maybe_sticker = original_maybe_sticker
         sticker_events = [e for e in events if e.get("type") == "sticker"]
         check("HTTP：聊天带贴纸事件", len(sticker_events) == 1, str(len(sticker_events)))
         check("HTTP：贴纸事件带可访问的 url",
@@ -3628,10 +3633,10 @@ async def http_checks() -> None:
         check("HTTP：聊天临时图片目录已清理", not (after_dirs - before_dirs), str(after_dirs - before_dirs))
 
         # --- 会话隔离 ---
-        session = api_routes.verify_session(token)
-        first = api_routes._conversation_session(session, shen["id"])
-        again = api_routes._conversation_session(session, shen["id"])
-        other = api_routes._conversation_session(session, me["id"])
+        session = api_deps.verify_session(token)
+        first = api_deps.conversation_session(session, shen["id"])
+        again = api_deps.conversation_session(session, shen["id"])
+        other = api_deps.conversation_session(session, me["id"])
         check("会话：同角色映射稳定", first == again)
         check("会话：不同角色互不串记忆", first != other)
 
@@ -3649,7 +3654,7 @@ async def http_checks() -> None:
     settings.extraction_mode = original_mode
     settings.session_secret = session_secret_before
     extractor.call_llm_json = original_caller  # type: ignore[assignment]
-    api_routes.get_agent = original_get_agent  # type: ignore[assignment]
+    chat_endpoint.get_agent = original_get_agent  # type: ignore[assignment]
 
 
 async def algo_http_checks() -> None:
@@ -3957,12 +3962,12 @@ async def group_chat_sse_checks() -> None:
         book_id=book["id"], name="苏晚", personality=["温柔"], source="novel",
     )
 
-    original_get_agent = api_routes.get_agent
+    original_get_agent = chat_endpoint.get_agent
     original_speakers = settings.group_max_speakers
     original_rounds = settings.group_max_rounds
     original_all = settings.group_all_threshold
 
-    api_routes.get_agent = lambda **kwargs: _FakeAgent(["@苏晚 你看呢？"])
+    chat_endpoint.get_agent = lambda **kwargs: _FakeAgent(["@苏晚 你看呢？"])
     settings.group_max_speakers = 1
     settings.group_max_rounds = 2
     settings.group_all_threshold = 0.0
@@ -4016,7 +4021,7 @@ async def group_chat_sse_checks() -> None:
                   [e["name"] for e in speaker_starts] == ["沈砚", "苏晚"],
                   str([e["name"] for e in speaker_starts]))
     finally:
-        api_routes.get_agent = original_get_agent
+        chat_endpoint.get_agent = original_get_agent
         settings.group_max_speakers = original_speakers
         settings.group_max_rounds = original_rounds
         settings.group_all_threshold = original_all
