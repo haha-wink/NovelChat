@@ -54,12 +54,12 @@ from services import shelf
 from services import merge  # noqa: E402
 from services import extractor
 from services import library
-from agent import prompts  # noqa: E402
+from services import prompts  # noqa: E402
 from services import cleaner  # noqa: E402
 from services import reply as reply_mod  # noqa: E402
 from services import chat_memory
 from services import rag  # noqa: E402
-from services import scene as scene_mod  # noqa: E402
+from core import scene as scene_mod  # noqa: E402
 from core import text as text_mod  # noqa: E402
 import channels  # noqa: E402
 import channels.web as web_module  # noqa: E402

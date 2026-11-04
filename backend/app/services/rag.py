@@ -40,7 +40,7 @@ from typing import Any, Optional
 
 from core import database as db
 from core.text import tokenize
-from services import scene as scene_mod
+from core import scene as scene_mod
 
 logger = logging.getLogger(__name__)
 

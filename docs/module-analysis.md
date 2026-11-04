@@ -79,7 +79,7 @@ POST /api/shelves/{id}/chat        api/v1/endpoints/chat.py:shelf_chat
 
 ```
 POST /api/chat                     api/v1/endpoints/chat.py:chat_endpoint
-  ├─ agent/manager.get_agent       按角色构建 Agent（提示词来自 agent/prompts.build_character_prompt）
+  ├─ agent/manager.get_agent       按角色构建 Agent（提示词来自 services/prompts.build_character_prompt）
   ├─ agent/character.attach_state  把情绪/好感度/记忆/场景塞进系统提示
   └─ SSE: delta / final / sticker   final 是去掉动作描写后的正文（services/reply.py）
 ```
@@ -265,29 +265,29 @@ POST /api/chat                     api/v1/endpoints/chat.py:chat_endpoint
 
 ### P0 —— 会咬人的
 
-**1. 分层倒挂：services 依赖 agent**
+**1. ~~分层倒挂：services 依赖 agent~~ ✅ 已修**
 
-```
-services/extractor.py:16   from agent.prompts import ...
-services/library.py:21     from agent.prompts import pick_avatar
-```
+`prompts.py` 只 import `typing`，是纯模板，却放在最高层（agent/），逼着 services 反向依赖它。
+已下沉到 `services/prompts.py`：
 
-`agent/prompts.py` 是纯模板代码（不调模型），却放在最高层，导致 services 反向依赖 agent。
-**影响**：想单独测 extractor 就得把整个 agent 层拖进来；将来要换 Agent 实现时，services 会被牵连。
-**建议**：把 `prompts.py` 下沉到 `services/prompts.py`（或 `core/prompts.py`），agent 层再 import 它。
+| 原位置 | 现在 |
+|---|---|
+| `services/extractor.py` | `from services.prompts import ...` |
+| `services/library.py` | `from services.prompts import pick_avatar` |
+| `agent/manager.py` | `from services.prompts import build_character_prompt`（agent → services，方向正确） |
 
-**2. 三处反向依赖被"函数内 import"藏起来了**
+**services 现在完全不 import agent。**
 
-| 位置 | 方向 | 实际依赖 |
+**2. ~~反向依赖被"函数内 import"藏起来~~ ✅ 已修**
+
+| 原位置 | 问题 | 处理 |
 |---|---|---|
-| `services/library.py`（4 处函数内 import） | services → services | `shelf.py` **模块级** import 了 `library`（用 `library.read_source` / `delete_book`），`library` 只能在函数里 import `shelf` —— 这是真正的循环 |
-| `core/database.py:946` `_backfill_memory_scene` | **core → services** | 建库时要给老记忆补场景标签，用了 `services.scene.detect`（纯规则，无副作用） |
-| `services/extractor.py:350` `merge.py:653` | services → services | 拆文件时的就近 import，非必需 |
+| `services/library.py` | 函数内 `from agent.extraction import ExtractionAgent` | 改成**注入**：`library.set_extraction_agent_factory(...)`，由 `api/v1/deps.py` 在导入时把实现接过去；脚本场景回退到动态导入 |
+| `core/database.py` | 函数内 `from services import scene`（core → services） | `scene.py` 下沉到 `core/scene.py`，改文件头导入 |
+| `services/agent_memory.py` | 同样的延迟导入 | 跟随下沉，改文件头导入 |
 
-注释里写得很诚实（"延迟导入避免 core 依赖 services"），但依赖方向依然错了。
-**建议**：
-- `scene.py` 是纯规则（60 行、无 IO），下沉到 `core/scene.py`，core 的反向依赖就消失了；
-- 把 `shelf` 需要的两个 library 函数（`read_source` / `delete_book`）改成由调用方传入，或下沉成 `core` 里的小函数，拆掉 shelf↔library 的环。
+移位文件：`agent/prompts.py → services/prompts.py`、`services/scene.py → core/scene.py`。
+用 AST 扫全仓：**模块级逆向依赖 0 处，函数内逆向依赖 0 处**。
 
 ### P1 —— 该清理的
 
@@ -335,12 +335,12 @@ token 只表达「你是谁」，没有角色/权限。本地单人项目够用�
 
 | 我想改… | 去哪 |
 |---|---|
-| 抽取质量（漏人/错人/别名） | `agent/extraction.py` + `agent/prompts.py` + `services/extractor.py` |
+| 抽取质量（漏人/错人/别名） | `agent/extraction.py` + `services/prompts.py` + `services/extractor.py` |
 | 人名判定规则 | `services/name_library.py`（词表）、`services/name_engine.py`（引擎） |
 | 合并太激进/太保守 | `services/merge.py` 的 `AUTO_MERGE_SCORE` / `SIMILARITY_FLOOR` |
 | 群聊谁说话 | `agent/group.py:score_member / select_speakers` |
-| 角色说话像不像 | `agent/prompts.py` + `services/affect.py:prompt_block` |
-| 记忆检索不准 | `services/rag.py`（权重）+ `services/scene.py`（场景） |
+| 角色说话像不像 | `services/prompts.py` + `services/affect.py:prompt_block` |
+| 记忆检索不准 | `services/rag.py`（权重）+ `core/scene.py`（场景） |
 | 情绪/好感度手感 | `services/affect.py`（分档）+ `services/emotion_model.py` |
 | 接口加字段 | `api/v1/schemas.py` + 对应 `endpoints/*.py` |
 | 表结构改动 | `core/database.py:init_db`（幂等迁移） |
@@ -352,7 +352,7 @@ token 只表达「你是谁」，没有角色/权限。本地单人项目够用�
 
 ## 12. 建议的下一步（按投入产出排序）
 
-1. **下沉 `prompts.py`**（半小时，拆掉唯一的分层倒挂）
+1. ~~下沉 `prompts.py` / `scene.py`~~（已完成，见 §10 P0）
 2. **清死代码 + 合并重复 helper**（1 小时，净减约 150 行）
 3. **拆 `core/database.py`**（半天，收益最大但要动所有模块，务必在测试全绿时做）
 4. **拆前端 store**（半天，同时决定要不要上 Pinia）

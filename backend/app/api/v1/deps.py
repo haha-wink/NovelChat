@@ -44,7 +44,7 @@ from services import agent_memory
 from services import chat_memory
 from services import cleaner
 from services import rag
-from services import scene as scene_mod
+from core import scene as scene_mod
 from services import reply as reply_mod
 from channels import event_to_outbound
 from channels import registry as channel_registry
@@ -52,7 +52,12 @@ from channels.web import channel as web_channel
 from services import summarizer as summarizer_module
 from agent.manager import get_agent
 from services.media import ImageValidationError, decode_images
-from agent.prompts import build_character_prompt
+from services.prompts import build_character_prompt
+
+# services 层不 import agent 层：由 api 层在导入时把实现接过去
+from agent.extraction import ExtractionAgent  # noqa: E402
+
+library.set_extraction_agent_factory(ExtractionAgent)
 
 logger = logging.getLogger(__name__)
 

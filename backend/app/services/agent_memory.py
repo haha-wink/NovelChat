@@ -27,6 +27,8 @@ from typing import Optional
 
 from core import database as db
 
+from core import scene as scene_mod
+
 logger = logging.getLogger(__name__)
 
 #: 提示词里默认带几段初始记忆
@@ -70,8 +72,6 @@ def remember(
     """
     if not scene:
         try:
-            from services import scene as scene_mod
-
             scene = scene_mod.detect(" ".join(excerpts))
         except Exception:  # noqa: BLE001 - 场景识别失败不影响写入
             scene = ""

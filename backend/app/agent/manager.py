@@ -22,7 +22,7 @@ from agno.models.deepseek import DeepSeek
 
 from core.config import get_settings
 from services import agent_memory
-from agent.prompts import build_character_prompt
+from services.prompts import build_character_prompt
 
 logger = logging.getLogger(__name__)
 

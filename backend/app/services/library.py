@@ -18,9 +18,34 @@ from services import agent_log
 from services import character_miner as miner
 from services import cleaner
 from services import extractor
-from agent.prompts import pick_avatar
+from services.prompts import pick_avatar
 
 logger = logging.getLogger(__name__)
+
+#: 抽取 Agent 的构造器。由 api 层注入，**services 不 import agent 层**。
+_extraction_agent_factory: Optional[Callable[..., object]] = None
+
+
+def set_extraction_agent_factory(factory: Callable[..., object]) -> None:
+    """注入「抽取 Agent」构造器（应用启动时由 api 层调用一次）。"""
+    global _extraction_agent_factory
+    _extraction_agent_factory = factory
+
+
+def _make_extraction_agent(**kwargs):
+    """按注入的构造器创建抽取 Agent。
+
+    正常路径由 api 层注入（见 api/v1/deps.py），services 不需要认识 agent。
+    脚本/工具直接调用本模块时没有装配，退回动态导入并留一条日志——
+    这样 ``python -c`` 跑抽取不会因为"没启动 Web 层"而失败。
+    """
+    factory = _extraction_agent_factory
+    if factory is None:
+        from importlib import import_module
+
+        logger.debug("抽取 Agent 未注入，回退到 agent.extraction.ExtractionAgent")
+        factory = import_module("agent.extraction").ExtractionAgent
+    return factory(**kwargs)
 
 #: book_id -> 后台抽取任务（同时兼作强引用，防止任务被 GC）
 _tasks: dict[str, asyncio.Task] = {}
@@ -158,11 +183,9 @@ async def _extract_characters(
             )
 
         if characters and mode == "agent" and api_key:
-            from agent.extraction import ExtractionAgent
-
             book = db.get_book(book_id) or {}
             db.update_book(book_id, progress=68, stage="角色档案管理员审核中")
-            agent = ExtractionAgent(
+            agent = _make_extraction_agent(
                 book_title=book.get("title") or "",
                 text=text,
                 api_key=api_key,
@@ -359,9 +382,17 @@ async def _run_extraction(book_id: str) -> None:
             owner_type="manager",
             payload={"reason": "chunks_missing"},
         )
+        # 区分两种"没有块"：上传时就没切出来（正文太少 / 清洗后为空） vs 文件被删
+        book_row = db.get_book(book_id) or {}
+        if not int(book_row.get("chunk_count") or 0):
+            reason = (
+                f"正文清洗后内容太少（{book_row.get('char_count') or 0} 字），"
+                "没切出任何片段；换一本，或确认上传的不是目录/空文件"
+            )
+        else:
+            reason = "原文块丢失（文件可能被手动删除），请删掉这本书后重新上传"
         db.update_book(
-            book_id, status="failed", progress=100, stage="失败",
-            error="原文块丢失（可能被手动删除），请删掉这本书后重新上传",
+            book_id, status="failed", progress=100, stage="失败", error=reason,
         )
         return
 

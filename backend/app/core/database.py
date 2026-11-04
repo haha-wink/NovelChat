@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from core.config import get_settings
 from core.text import tokenize as _tokenize
+from core import scene as scene_mod
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS books (
@@ -939,12 +940,7 @@ def _backfill_memory_tokens(conn: sqlite3.Connection) -> int:
 
 
 def _backfill_memory_scene(conn: sqlite3.Connection) -> int:
-    """给老记忆补场景标签（RAG 的场景加权靠它）。
-
-    延迟导入避免 core 依赖 services（scene 用的是纯规则，其实没有副作用）。
-    """
-    from services import scene as scene_mod
-
+    """给老记忆补场景标签（RAG 的场景加权靠它）。"""
     rows = conn.execute(
         "SELECT id, content FROM character_memory_items WHERE scene = ''"
     ).fetchall()
