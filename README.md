@@ -143,6 +143,7 @@ docker compose up -d --build
 |---|---|
 | `docs/agent-architecture.md` | 完整设计：分层、数据模型、提示词、RAG、各阶段实现 |
 | `docs/manager-agent-workflow.md` | 管理 Agent 的工作流（抽取链、书架链、合并链） |
+| `docs/module-analysis.md` | **模块与文件分析**：分层、三条主链路、逐模块职责、问题清单 |
 | `docs/project-map.md` | 文件级地图：每个文件干什么 |
 | `docs/manual-test.md` | 人工验收清单 |
 | `docs/nlp-engine.md` | 人名识别引擎的取舍与降级链 |
