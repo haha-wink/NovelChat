@@ -1,94 +1,135 @@
-# 💔 Breakup Recovery Agent Team
+# 小说角色扮演（Novel Roleplay）
 
-### 🎓 FREE Step-by-Step Tutorial 
-**👉 [Click here to follow our complete step-by-step tutorial](https://www.theunwindai.com/p/build-an-ai-breakup-recovery-agent-team-f29b) and learn how to build this from scratch with detailed code walkthroughs, explanations, and best practices.**
+上传小说 → 自动抽出角色 → 角色进入书架群 → 和它们群聊 / 单聊。
+每个角色有独立的**记忆**（原文片段 + 对话蒸馏）、**情绪与好感度**、**在线状态**。
 
-This is an AI-powered application designed to help users emotionally recover from breakups by providing support, guidance, and emotional outlet messages from a team of specialized AI agents. The app is built using **Streamlit** and **Agno**, leveraging **Gemini 2.0 Flash (Google Vision Model)   **.
-
-## 🚀 Features
-
-- 🧠 **Multi-Agent Team:** 
-    - **Therapist Agent:** Offers empathetic support and coping strategies.
-    - **Closure Agent:** Writes emotional messages users shouldn't send for catharsis.
-    - **Routine Planner Agent:** Suggests daily routines for emotional recovery.
-    - **Brutal Honesty Agent:** Provides direct, no-nonsense feedback on the breakup.
-- 📷 **Chat Screenshot Analysis:**
-    - Upload screenshots for chat analysis.
-- 🔑 **API Key Management:**
-    - Store and manage your Gemini API keys securely via Streamlit's sidebar.
-- ⚡ **Parallel Execution:** 
-    - Agents process inputs in coordination mode for comprehensive results.
-- ✅ **User-Friendly Interface:** 
-    - Simple, intuitive UI with easy interaction and display of agent responses.
+- 后端：FastAPI + Agno + DeepSeek，SQLite（无 ORM）
+- 前端：Vue 3 + Vite，单页应用
+- 本地小模型：RAG 嵌入（bge-small-zh）+ 情绪分类（Erlangshen，ONNX int8）
 
 ---
 
-## 🛠️ Tech Stack
+## 目录结构
 
-- **Frontend:** Streamlit (Python)
-- **AI Models:** Gemini 2.0 Flash (Google Vision Model)
-- **Image Processing:** PIL (for displaying screenshots)
-- **Text Extraction:** Google's Gemini Vision model to analyze chat screenshots
-- **Environment Variables:** API keys managed with `st.session_state` in Streamlit
+```
+.
+├── backend/                  # 后端服务
+│   ├── app/                  # 应用包（导入根：core.* / services.* / agent.*）
+│   │   ├── main.py           # 应用入口（lifespan、CORS、挂路由）
+│   │   ├── api/              # HTTP 层
+│   │   │   ├── deps.py       # 会话解析 / payload 组装 / SSE 编码
+│   │   │   └── v1/
+│   │   │       ├── router.py         # 路由汇总
+│   │   │       ├── schemas.py        # Pydantic 请求/响应模型
+│   │   │       └── endpoints/        # 按域拆分的接口
+│   │   │           ├── system.py     # health / session / channels / sticker
+│   │   │           ├── books.py      # 上传、列表、重抽、名单审核
+│   │   │           ├── shelves.py    # 书库书架、成员、历史、合并、经验记忆
+│   │   │           ├── characters.py # 角色 CRUD、状态、头像、合并
+│   │   │           ├── chat.py       # 单聊 / 群聊 SSE
+│   │   │           └── knowledge.py  # RAG 索引、记忆清洗
+│   │   ├── agent/            # Agent 层（要调用大模型的核心逻辑）
+│   │   │   ├── character.py  # 单角色对话
+│   │   │   ├── group.py      # 群聊引擎（选角、@ 唤醒、串行生成）
+│   │   │   ├── manager.py    # 按角色构建 Agent（LRU 缓存）
+│   │   │   ├── extraction.py # 角色档案管理员（ReAct 循环）
+│   │   │   ├── prompts.py    # 提示词模板
+│   │   │   └── tools/        # Agent 工具：联网检索、头像抓取
+│   │   ├── services/         # 业务逻辑层（不碰 HTTP）
+│   │   ├── core/             # 配置、数据库、鉴权、路径
+│   │   │   ├── config.py
+│   │   │   ├── database.py   # SQLite 数据层（建表 + 迁移 + 读写）
+│   │   │   ├── paths.py      # 路径的唯一真相
+│   │   │   ├── security.py
+│   │   │   └── text.py       # 轻量中文分词（给 BM25）
+│   │   ├── readers/          # txt / md / pdf 解析
+│   │   └── channels/         # 渠道抽象（web 已启用，QQ/微信预留）
+│   ├── data/                 # 运行时数据（不入库）：数据库、原文、模型、贴纸
+│   ├── tests/smoke_test.py   # 自检脚本（不依赖 pytest，直接跑）
+│   ├── requirements.txt
+│   └── .env                  # 密钥与开关（不入库）
+├── frontend/                 # 前端应用
+│   └── src/
+│       ├── App.vue           # 应用外壳与各视图
+│       ├── api/client.js     # 请求封装
+│       ├── utils/            # format.js（展示格式化）、sse.js（流解析）
+│       └── style.css
+├── docs/                     # 文档
+└── scripts/                  # 安装 / 启动 / 取模型 / 自检脚本
+```
+
+> **为什么 `backend/app` 是导入根**：启动用 `uvicorn main:app --app-dir backend/app`，
+> 模块名保持 `core.xxx` / `services.xxx`（不带 `app.` 前缀），迁移成本最低。
 
 ---
 
-## 📦 Installation
+## 快速开始
 
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/Shubhamsaboo/awesome-llm-apps
-   cd starter_ai_agents/ai_breakup_recovery_agent
-   ```
+```powershell
+# 1. 装环境（建 venv + 装依赖）
+.\scripts\setup.ps1
 
-2. **Install Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+# 2. 取本地模型（一次性，约 190MB）
+.\scripts\fetch_model.ps1
+.\ai-agent-cyber-town.venv\Scripts\python.exe .\scripts\fetch_emotion_model.py
 
-4. **Run the Streamlit App:**
-   ```bash
-   streamlit run ai_breakup_recovery_agent.py
-   ```
+# 3. 配置密钥
+copy backend\.env.example backend\.env   # 填 DEEPSEEK_API_KEY
 
----
+# 4. 起服务（后端 8000 + 前端 5173）
+.\scripts\dev.ps1
+```
 
-## 🔑 Environment Variables
-
-Make sure to provide your **Gemini API key** in the Streamlit sidebar:
-
-- GEMINI_API_KEY=your_google_gemini_api_key
+打开 http://localhost:5173 ，上传一部 txt / md / pdf 小说即可。
 
 ---
 
-## 🛠️ Usage
+## 自检
 
-1. **Enter Your Feelings:** 
-    - Describe how you're feeling in the text area.
-2. **Upload Screenshot (Optional):**
-    - Upload a chat screenshot (PNG, JPG, JPEG) for analysis.
-3. **Execute Agents:**
-    - Click **"Get Recovery Support"** to run the multi-agent team.
-4. **View Results:**
-    - Individual agent responses are displayed.
-    - A final summary is provided by the Team Leader.
+```powershell
+# 后端：685 项
+.\ai-agent-cyber-town.venv\Scripts\python.exe backend\tests\smoke_test.py
+
+# 前端：静态结构 + 关键交互（不跑浏览器）
+node scripts\check-frontend.cjs
+cd frontend; npm run build
+```
 
 ---
 
-## 🧑‍💻 Agents Overview
+## 配置
 
-- **Therapist Agent**
-    - Provides empathetic support and coping strategies.
-    - Uses **Gemini 2.0 Flash (Google Vision Model)** and DuckDuckGo tools for insights.
-  
-- **Closure Agent**
-    - Generates unsent emotional messages for emotional release.
-    - Ensures heartfelt and authentic messages.
+全部在 `backend/.env`（模板见 `backend/.env.example`）。常用项：
 
-- **Routine Planner Agent**
-    - Creates a daily recovery routine with balanced activities.
-    - Includes self-reflection, social interaction, and healthy distractions.
+| 变量 | 说明 |
+|---|---|
+| `DEEPSEEK_API_KEY` | 必填，抽取与对话都用它 |
+| `EXTRACTION_MODE` | `algo`（纯算法，免费）/ `hybrid` / `agent`（默认，最准） |
+| `EMOTION_MODEL` | `auto` / `onnx` / `rules` |
+| `RAG_BACKEND` | `auto` / `vector` / `lexical` |
+| `GROUP_MAX_SPEAKERS` / `GROUP_MAX_ROUNDS` | 群聊成本闸门 |
 
-- **Brutal Honesty Agent**
-    - Offers direct, objective feedback on the breakup.
-    - Uses factual language with no sugar-coating.
+---
+
+## 部署（可选）
+
+`docker-compose.yml` 提供一键起容器（后端 + 前端静态站点）。
+**注意**：这是给后续上服务器用的脚手架，本机没装 Docker，未实际验证。
+
+```bash
+docker compose up -d --build
+```
+
+数据库与原文卷挂载在 `backend/data`，升级镜像不会丢数据。
+
+---
+
+## 文档
+
+| 文件 | 内容 |
+|---|---|
+| `docs/agent-architecture.md` | 完整设计：分层、数据模型、提示词、RAG、各阶段实现 |
+| `docs/manager-agent-workflow.md` | 管理 Agent 的工作流（抽取链、书架链、合并链） |
+| `docs/project-map.md` | 文件级地图：每个文件干什么 |
+| `docs/manual-test.md` | 人工验收清单 |
+| `docs/nlp-engine.md` | 人名识别引擎的取舍与降级链 |

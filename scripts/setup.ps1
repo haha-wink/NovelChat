@@ -28,7 +28,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $venvPath = Join-Path $root $VenvName
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
-$requirements = Join-Path $root "requirements.txt"
+$requirements = Join-Path $root "backend\requirements.txt"
 $envFile = Join-Path $root "backend\.env"
 $envExample = Join-Path $root "backend\.env.example"
 $smokeTest = Join-Path $root "backend\tests\smoke_test.py"
@@ -41,8 +41,8 @@ function Die($msg) { Write-Host "    XX  $msg" -ForegroundColor Red; exit 1 }
 Step "Project layout"
 Write-Host "    root : $root"
 Write-Host "    venv : $venvPath"
-if (-not (Test-Path $requirements)) { Die "requirements.txt not found" }
-Ok "requirements.txt found"
+if (-not (Test-Path $requirements)) { Die "backend\requirements.txt not found" }
+Ok "backend/requirements.txt found"
 if (-not (Test-Path (Join-Path $root "backend\main.py"))) { Die "backend\main.py not found (wrong folder?)" }
 Ok "backend\main.py found"
 
@@ -62,8 +62,8 @@ if ($Check) {
     if (-not $venvExists -or $Force) { $plan += "python -m venv $venvPath" }
     $plan += "write pip config into the venv (timeout / retries / no-cache-dir)"
     $plan += "pip install --upgrade pip setuptools wheel (--no-cache-dir)"
-    if ($Mirror) { $plan += "pip install -r requirements.txt -i $Mirror --no-cache-dir --no-build-isolation" }
-    else { $plan += "pip install -r requirements.txt --no-cache-dir --no-build-isolation" }
+    if ($Mirror) { $plan += "pip install -r backend\requirements.txt -i $Mirror --no-cache-dir --no-build-isolation" }
+    else { $plan += "pip install -r backend\requirements.txt --no-cache-dir --no-build-isolation" }
     if (-not (Test-Path $envFile)) { $plan += "copy backend\.env.example to backend\.env" }
     if (-not $SkipTests) { $plan += "python backend\tests\smoke_test.py" }
     $i = 1

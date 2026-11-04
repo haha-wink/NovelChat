@@ -304,8 +304,8 @@ POST /api/shelves/{id}/chat（SSE）
 
 ## 8. 维护提示
 
-- 改提示词 → `services/prompts.py`；改"说话短不短/有没有动作描写"→ 还要看 `services/reply.py`
-- 改群聊选角 → `services/group_chat.py`；改在线/离线语义 → `core/db.py` 的 `set_member_status`
+- 改提示词 → `agent/prompts.py`；改"说话短不短/有没有动作描写"→ 还要看 `services/reply.py`
+- 改群聊选角 → `agent/group.py`；改在线/离线语义 → `core/db.py` 的 `set_member_status`
 - 加接口 → `api/routes.py`（只做参数校验，逻辑放 services）
 - 前端所有逻辑在 `App.vue` 一个文件里，改动后跑 `node scripts/check-frontend.cjs` + `npm run build`
 - 改完后端跑 `python backend/tests/smoke_test.py`（628 项）

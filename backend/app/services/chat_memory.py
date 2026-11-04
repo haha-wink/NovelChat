@@ -25,7 +25,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from core import db
+from core import database as db
 from services import agent_memory
 from services import agent_log
 from services import scene as scene_mod

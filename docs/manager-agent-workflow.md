@@ -1,6 +1,6 @@
 # 管理层 Agent 工作流
 
-> 对应代码：`services/extraction_agent.py`、`services/extractor.py`、`services/library.py`、
+> 对应代码：`agent/extraction.py`、`services/extractor.py`、`services/library.py`、
 > `services/shelf.py`、`services/merge.py`、`services/cleaner.py`、`services/chat_memory.py`、`services/agent_log.py`
 >
 > 设计意图见 `docs/agent-architecture.md` §7。

@@ -1,7 +1,7 @@
 # 人名识别引擎（jieba / HanLP / 内置规则）
 
 本项目**不自己维护人名表**，优先调用成熟的中文 NLP 库做中文人名与外文译名识别；
-只有在「一个库都装不上」时才回退到内置规则（`backend/services/name_library.py`），
+只有在「一个库都装不上」时才回退到内置规则（`backend/app/services/name_library.py`），
 保证功能不会因为缺依赖而失效。
 
 ## 用的是哪个库、为什么
@@ -97,10 +97,10 @@ NAME_ENGINE=builtin   # 只用内置规则（完全不依赖第三方库）
 
 | 文件 | 作用 |
 |---|---|
-| `backend/services/name_engine.py` | 引擎抽象：`JiebaBackend` / `HanLPBackend` / `BuiltinBackend`，`detect()` / `classify()` / `learn()` |
-| `backend/services/name_library.py` | 内置规则兜底（姓氏/名字用字/音译字/称谓词），同时也是 `classify()` 的底分来源 |
+| `backend/app/services/name_engine.py` | 引擎抽象：`JiebaBackend` / `HanLPBackend` / `BuiltinBackend`，`detect()` / `classify()` / `learn()` |
+| `backend/app/services/name_library.py` | 内置规则兜底（姓氏/名字用字/音译字/称谓词），同时也是 `classify()` 的底分来源 |
 | `scripts/check_nlp.py` | 体检 + 安装说明 + 样例扫描 |
-| `backend/api/routes.py` | `GET /api/health` 暴露 `name_engine` |
+| `backend/app/api/v1/endpoints/` | `GET /api/health` 暴露 `name_engine` |
 
 ## 常见问题
 

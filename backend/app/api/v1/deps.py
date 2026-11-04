@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 from agno.media import Image as AgnoImage
 
-from core import db
+from core import database as db
 from core.config import get_settings
 from core.security import InvalidSessionError, Session, issue_session, verify_session
 from readers.document import SUPPORTED_SUFFIXES, DocumentError, extract_text

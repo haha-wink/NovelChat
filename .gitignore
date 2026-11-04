@@ -43,3 +43,5 @@ Thumbs.db
 # ---- 运行时缓存 / 调试残留 ----
 jieba.cache
 out.json
+\.idea/
+torchinductor_*/

@@ -37,7 +37,7 @@ from api.v1 import deps as api_deps  # noqa: E402
 from api.v1.endpoints import chat as chat_endpoint  # noqa: E402
 from api.v1.endpoints import shelves as shelves_endpoint  # noqa: E402
 from api.v1.endpoints import system as system_endpoint  # noqa: E402
-from core import db as dbmod  # noqa: E402
+from core import database as dbmod  # noqa: E402
 from core.config import get_settings  # noqa: E402
 from main import app  # noqa: E402
 from readers.document import DocumentError, extract_text  # noqa: E402

@@ -23,7 +23,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from api.v1.router import router as api_router  # noqa: E402
-from core import db  # noqa: E402
+from core import database as db  # noqa: E402
 from core.config import get_settings  # noqa: E402
 
 logging.basicConfig(

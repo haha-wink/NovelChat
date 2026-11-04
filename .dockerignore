@@ -1,0 +1,17 @@
+# 构建镜像时排除的东西（不影响宿主机，只影响 docker build 上下文）
+
+# 依赖与产物
+**/node_modules
+frontend/dist
+**/__pycache__
+**/*.pyc
+
+# 运行时数据：数据库、原文、模型（走 volume，不打进镜像）
+backend/data
+
+# 本地环境与工具
+ai-agent-cyber-town.venv
+.git
+.gitignore
+*.log
+jieba.cache

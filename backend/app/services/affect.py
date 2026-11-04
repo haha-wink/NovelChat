@@ -31,7 +31,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from core import db
+from core import database as db
 from services import agent_log
 from services import emotion_model
 

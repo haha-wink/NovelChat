@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import anyio
 
-from core import db
+from core import database as db
 from core.config import get_settings
 from services import agent_log
 from services import character_miner as miner

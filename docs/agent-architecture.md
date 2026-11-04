@@ -141,7 +141,7 @@ library（书库，最大结构：用户的书库，可含多个书架）
 | `characters.excerpts` JSON 数组 | 无法知道哪段来自哪本书；删书无法回收；无法增量追加 | `character_memory_items` 表，每条带 `source_book_id`、`kind`、`importance`、`added_reason` |
 
 向后兼容：**`excerpts` 降级为派生缓存**——由条目表同步生成（`_sync_excerpts_from_items`），
-提示词（`services/prompts.py`）、前端、接口全部零改动。迁移时把每条拆成
+提示词（`agent/prompts.py`）、前端、接口全部零改动。迁移时把每条拆成
 `source_book_id=该角色所属书` 的记忆条目，幂等（已有条目的角色不会重复灌入）。
 
 ---

@@ -32,7 +32,7 @@ import logging
 import re
 from typing import Optional
 
-from core import db
+from core import database as db
 from core.text import tokenize
 
 logger = logging.getLogger(__name__)

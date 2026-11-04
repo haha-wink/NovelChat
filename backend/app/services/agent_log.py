@@ -32,7 +32,7 @@ import logging
 import uuid
 from typing import Any, Optional
 
-from core import db
+from core import database as db
 
 logger = logging.getLogger(__name__)
 

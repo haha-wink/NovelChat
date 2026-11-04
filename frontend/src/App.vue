@@ -718,6 +718,16 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { api } from './api/client.js'
+import { readSSEStream } from './utils/sse.js'
+import {
+  avatarSrc,
+  formatCount,
+  formatTime,
+  groupMentionText,
+  memberStateText,
+  statusText
+} from './utils/format.js'
 import { renderMarkdown } from './utils/markdown.js'
 
 const MAX_IMAGES = 4
@@ -836,29 +846,6 @@ const currentMessages = computed(() => {
 })
 
 // ---------------- 请求封装 ----------------
-async function api(path, { method = 'GET', body, headers } = {}) {
-  const init = { method, headers: { ...(headers || {}) } }
-  if (body !== undefined) {
-    init.headers['Content-Type'] = 'application/json'
-    init.body = JSON.stringify(body)
-  }
-  const response = await fetch(path, init)
-  if (!response.ok) {
-    let detail = `请求失败（HTTP ${response.status}）`
-    try {
-      const data = await response.json()
-      if (data?.detail) detail = data.detail
-    } catch (parseError) {
-      /* 非 JSON 错误体，保留默认文案 */
-    }
-    const failure = new Error(detail)
-    failure.status = response.status
-    throw failure
-  }
-  if (response.status === 204) return null
-  return response.json()
-}
-
 async function loadHealth() {
   try {
     health.value = await api('/api/health')
@@ -967,17 +954,6 @@ async function removeBook(book) {
   } catch (failure) {
     error.value = failure.message
   }
-}
-
-function statusText(book) {
-  if (book.status === 'ready') return `✓ 已就绪 · ${book.character_count ?? 0} 个角色`
-  if (book.status === 'failed') return `✗ ${book.error || '抽取失败'}`
-  return `抽取中 ${book.progress || 0}% · ${book.stage || '排队中'}`
-}
-
-function formatCount(value) {
-  const number = Number(value || 0)
-  return number >= 10000 ? `${(number / 10000).toFixed(1)} 万` : `${number}`
 }
 
 // ---------------- 书架（新建 / 改名 / 删除 / 进群）----------------
@@ -1175,14 +1151,6 @@ function closeEditor() {
 }
 
 // ---------------- 角色详情 / 状态 ----------------
-function formatTime(value) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
 function closeStatus() {
   status.open = false
   status.data = null
@@ -1273,10 +1241,6 @@ async function toggleMemberStatus() {
 }
 
 //: 头像统一走代理，避免第三方图片热链被拒
-function avatarSrc(url) {
-  return url ? `/api/avatar?url=${encodeURIComponent(url)}` : ''
-}
-
 async function crawlAvatars() {
   if (!editor.characterId) return
   editor.crawling = true
@@ -1523,42 +1487,21 @@ function fetchChat(token, characterId, prompt, images) {
 }
 
 async function readStream(response, messages, index) {
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder('utf-8')
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop()
-
-    for (const part of parts) {
-      const line = part.trim()
-      if (!line.startsWith('data:')) continue
-      const payload = line.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
-      try {
-        const event = JSON.parse(payload)
-        if (event.type === 'delta' && event.text) {
-          messages[index].content += event.text
-          scrollToBottom()
-        } else if (event.type === 'final' && typeof event.text === 'string') {
-          // 后端把动作旁白去掉后的最终文本：覆盖刚才流式显示的内容
-          messages[index].content = event.text
-          scrollToBottom()
-        } else if (event.type === 'sticker' && event.codepoint) {
-          messages[index].sticker = event
-          scrollToBottom()
-        } else if (event.type === 'error') {
-          messages[index].content += `\n\n[系统错误: ${event.message}]`
-        }
-      } catch (parseError) {
-        console.error('解析流数据失败', parseError, payload)
-      }
+  await readSSEStream(response, (event) => {
+    if (event.type === 'delta' && event.text) {
+      messages[index].content += event.text
+      scrollToBottom()
+    } else if (event.type === 'final' && typeof event.text === 'string') {
+      // 后端把动作旁白去掉后的最终文本：覆盖刚才流式显示的内容
+      messages[index].content = event.text
+      scrollToBottom()
+    } else if (event.type === 'sticker' && event.codepoint) {
+      messages[index].sticker = event
+      scrollToBottom()
+    } else if (event.type === 'error') {
+      messages[index].content += `\n\n[系统错误: ${event.message}]`
     }
-  }
+  })
 }
 
 // ---------------- 群聊 ----------------
@@ -1567,19 +1510,6 @@ function handleGroupKeydown(event) {
     event.preventDefault()
     sendGroupMessage()
   }
-}
-
-function groupMentionText(mentions) {
-  return (mentions || [])
-    .map((item) => (item === 'all' ? '全体成员' : item))
-    .join('、')
-}
-
-function memberStateText(member) {
-  if (member.status === 'offline') return '离线'
-  if (member.state === 'cooldown') return '刚说过'
-  if (member.state === 'speaking') return '发言中'
-  return '在线'
 }
 
 async function scrollGroupBottom() {
@@ -1856,72 +1786,47 @@ async function sendGroupMessage() {
 }
 
 async function readGroupStream(response) {
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder('utf-8')
-  let buffer = ''
   //: character_id -> 消息下标（同一个人在后续轮次会新建一条消息）
   const active = new Map()
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop()
-
-    for (const part of parts) {
-      const line = part.trim()
-      if (!line.startsWith('data:')) continue
-      const payload = line.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
-
-      let event
-      try {
-        event = JSON.parse(payload)
-      } catch (parseError) {
-        console.error('群聊流解析失败', parseError, payload)
-        continue
-      }
-
-      if (event.type === 'speaker_start') {
-        group.messages.push({
-          kind: 'character',
-          character_id: event.character_id,
-          name: event.name,
-          avatar: event.avatar || '🎭',
-          avatar_url: event.avatar_url || '',
-          content: '',
-          mentions: [],
-          typing: true,
-          forced: Boolean(event.forced)
-        })
-        active.set(event.character_id, group.messages.length - 1)
-        scrollGroupBottom()
-      } else if (event.type === 'delta') {
-        const index = active.get(event.character_id)
-        if (index !== undefined) {
-          group.messages[index].content += event.text
-          scrollGroupBottom()
-        }
-      } else if (event.type === 'speaker_end') {
-        const index = active.get(event.character_id)
-        if (index !== undefined) {
-          group.messages[index].typing = false
-          group.messages[index].mentions = event.mentions || []
-          group.messages[index].sticker = event.sticker || null
-          if (event.text) group.messages[index].content = event.text
-        }
-        active.delete(event.character_id)
-      } else if (event.type === 'system') {
-        group.messages.push({ kind: 'system', content: event.text })
-        scrollGroupBottom()
-      } else if (event.type === 'error') {
-        group.messages.push({ kind: 'system', content: `⚠️ ${event.message}` })
+  await readSSEStream(response, (event) => {
+    if (event.type === 'speaker_start') {
+      group.messages.push({
+        kind: 'character',
+        character_id: event.character_id,
+        name: event.name,
+        avatar: event.avatar || '🎭',
+        avatar_url: event.avatar_url || '',
+        content: '',
+        mentions: [],
+        typing: true,
+        forced: Boolean(event.forced)
+      })
+      active.set(event.character_id, group.messages.length - 1)
+      scrollGroupBottom()
+    } else if (event.type === 'delta') {
+      const index = active.get(event.character_id)
+      if (index !== undefined) {
+        group.messages[index].content += event.text
         scrollGroupBottom()
       }
+    } else if (event.type === 'speaker_end') {
+      const index = active.get(event.character_id)
+      if (index !== undefined) {
+        group.messages[index].typing = false
+        group.messages[index].mentions = event.mentions || []
+        group.messages[index].sticker = event.sticker || null
+        if (event.text) group.messages[index].content = event.text
+      }
+      active.delete(event.character_id)
+    } else if (event.type === 'system') {
+      group.messages.push({ kind: 'system', content: event.text })
+      scrollGroupBottom()
+    } else if (event.type === 'error') {
+      group.messages.push({ kind: 'system', content: `⚠️ ${event.message}` })
+      scrollGroupBottom()
     }
-  }
+  })
 }
 
 // ---------------- 生命周期 ----------------

@@ -21,7 +21,7 @@
     project-local temp dir instead of %TEMP%.
 
 .EXAMPLE
-    .\scripts\pip.ps1 install -r requirements.txt
+    .\scripts\pip.ps1 install -r backend\requirements.txt
 
 .EXAMPLE
     .\scripts\pip.ps1 install --upgrade pip

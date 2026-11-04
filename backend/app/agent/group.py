@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import AsyncIterator, Awaitable, Callable, Optional
 
-from core import db
+from core import database as db
 from services import affect
 from services import expression
 from services import reply as reply_mod
