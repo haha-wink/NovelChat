@@ -265,9 +265,22 @@ resume 传 None      → 重新跑 generate，跑完
 **一个关键约束**：`llm` 和 `summarizer` 是函数，**不能放进 state**（checkpointer 只序列化 state）。
 所以它们走 `config["configurable"]`——顺带的好处是续跑时换一个生成函数就行。
 
-**局限**：`InMemorySaver` 在进程重启后清空。要跨重启恢复，得换
-`AsyncSqliteSaver`（依赖 `langgraph-checkpoint-sqlite`，已验证兼容 dataclass），
-代价是启动时要维护一个长连接。
+**存储用的是 SQLite，不是内存**：启动时挂 `AsyncSqliteSaver`
+（`backend/data/workspace/graph_checkpoints.db`），所以**后端重启也能续**。
+
+```
+第一次运行 → 断开 → [模拟重启：关连接、重开同一个库] → 断点 next=('generate',)
+                                                  → 输入 '在吗' 还在
+                                                  → 传 None 续跑 → '续上了'
+```
+
+两个实现细节：
+
+1. `AsyncSqliteSaver.from_conn_string` 是异步上下文管理器，启动时手动 `__aenter__`
+   让它活到进程结束，退出时 `__aexit__`（`main.py` 的 lifespan）。
+2. **过期清理不能一句 SQL**：`checkpoints` 表没有时间列，时间戳在 msgpack 体里，
+   所以 `prune_checkpoints` 要先 `serde.loads_typed` 解出来再判断，
+   按 `GRAPH_CHECKPOINT_RETENTION_DAYS`（默认 7 天）删整个 thread。
 
 ## 9. 两张图的分工
 

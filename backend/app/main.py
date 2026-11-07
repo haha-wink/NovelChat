@@ -147,12 +147,28 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001 - 回收失败不该挡住启动
         logger.exception("回收被中断的抽取任务失败")
 
+    # 对话断点：流式生成到一半断开时，用同一个 turn_id 能从断点续上。
+    # 存 SQLite 而不是内存，所以后端重启也不会丢。
+    try:
+        from agent import graph as agent_graph
+
+        await agent_graph.init_checkpointer()
+    except Exception:  # noqa: BLE001 - 断点不可用就退回内存，不影响聊天
+        logger.exception("初始化对话断点失败（将退回内存模式）")
+
     # 模型预热放后台线程：加载不能挡在启动路径上（RAG 与情绪模型串行，见 _warm_models）
     threading.Thread(target=_warm_models, name="model-warmup", daemon=True).start()
 
     try:
         yield
     finally:
+        try:
+            from agent import graph as agent_graph
+
+            await agent_graph.close_checkpointer()
+        except Exception:  # noqa: BLE001
+            logger.exception("关闭对话断点失败（已忽略）")
+
         from services import library
 
         for book_id in list(library._tasks):

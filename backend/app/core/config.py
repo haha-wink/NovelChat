@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     prompt_style_min_samples: int = 3
 
     # ---------- 聊天图片 ----------
+    # ---------- 对话断点（LangGraph checkpointer）----------
+    #: 断点快照保留天数；跑完的一轮就没用了，按天清理，0 = 不清理
+    graph_checkpoint_retention_days: int = 7
+
     # ---------- 对话判官（情绪/意图的 LLM 精判）----------
     #: off = 只用规则（零调用）；auto = 规则拿不准时才问；always = 每轮都问
     #: 默认 auto：反讽、长期低落、意图揉在一起时交给模型看一眼

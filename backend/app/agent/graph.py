@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from pathlib import Path
 from typing import Any, Callable, Optional, TypedDict
 
 from langchain_core.runnables import RunnableConfig
@@ -331,19 +332,134 @@ def build_turn_graph(checkpointer=None):
 #: 进程内单例（编译有开销，但图是无状态的，可安全复用）
 _TURN_GRAPH = None
 
-#: 断点续跑用的状态快照。放内存：进程重启就没了——
-#: 够覆盖"网络抖一下/切换页面"这类中断，重启恢复需要持久化后端（见文档）。
+#: 断点快照的存储。启动时换成 SQLite（进程重启也能续），
+#: 没初始化时退回内存（测试、脚本直接用图的情况）。
 _CHECKPOINTER = None
+_SAVER_CM = None
 
 
 def get_checkpointer():
-    """按需创建 checkpointer（内存版）。"""
+    """没初始化持久化后端时用的内存版。"""
     global _CHECKPOINTER
     if _CHECKPOINTER is None:
         from langgraph.checkpoint.memory import InMemorySaver
 
         _CHECKPOINTER = InMemorySaver()
     return _CHECKPOINTER
+
+
+async def init_checkpointer(path=None):
+    """启动时调用：把断点存进 SQLite，重启后还能续跑。
+
+    返回实际使用的数据库路径（日志用）。
+    """
+    global _TURN_GRAPH, _CHECKPOINTER, _SAVER_CM
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    settings = get_settings()
+    db_file = Path(path) if path else (settings.workspace_path / "graph_checkpoints.db")
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # from_conn_string 是个异步上下文管理器，这里手动 enter 让它活到进程结束
+    _SAVER_CM = AsyncSqliteSaver.from_conn_string(str(db_file))
+    _CHECKPOINTER = await _SAVER_CM.__aenter__()
+    _TURN_GRAPH = build_turn_graph(_CHECKPOINTER)
+
+    try:
+        await prune_checkpoints(_CHECKPOINTER, days=int(settings.graph_checkpoint_retention_days))
+    except Exception:  # noqa: BLE001 - 清理失败不影响启动
+        logger.exception("清理对话断点失败（已忽略）")
+
+    logger.info("对话断点已启用（SQLite）：%s", db_file)
+    return db_file
+
+
+async def close_checkpointer() -> None:
+    """进程退出时释放连接。"""
+    global _SAVER_CM, _CHECKPOINTER, _TURN_GRAPH
+    if _SAVER_CM is not None:
+        try:
+            await _SAVER_CM.__aexit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            logger.exception("关闭断点数据库失败（已忽略）")
+    _SAVER_CM = None
+    _CHECKPOINTER = None
+    _TURN_GRAPH = None
+
+
+async def prune_checkpoints(saver, *, days: int = 7) -> int:
+    """删掉超过保留期的断点，返回删掉的线程数。
+
+    一轮对话跑完，它的快照就没用了（下次是全新的 turn_id），
+    不清理的话这张表会一直长。
+
+    注意：``checkpoints`` 表里没有时间列——时间戳在 checkpoint 的 msgpack 体里，
+    所以得先解出来再判断，不能一句 SQL 删完。
+    """
+    if days <= 0:
+        return 0
+
+    from datetime import datetime, timedelta, timezone
+
+    conn = getattr(saver, "conn", None)
+    serde = getattr(saver, "serde", None)
+    if conn is None or serde is None:
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    newest: dict[str, datetime] = {}
+
+    # 全新的库还没有这张表（首次启动必然如此），别打成错误
+    try:
+        check = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='checkpoints'"
+        )
+        if not await check.fetchone():
+            return 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+    try:
+        cursor = await conn.execute("SELECT thread_id, type, checkpoint FROM checkpoints")
+        for thread_id, ctype, blob in await cursor.fetchall():
+            try:
+                payload = serde.loads_typed((ctype, blob))
+                raw_ts = payload.get("ts") if isinstance(payload, dict) else None
+                if not raw_ts:
+                    continue
+                stamp = datetime.fromisoformat(str(raw_ts))
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+            except Exception:  # noqa: BLE001 - 解不开就跳过，别误删
+                continue
+            current = newest.get(thread_id)
+            if current is None or stamp > current:
+                newest[thread_id] = stamp
+    except Exception:  # noqa: BLE001
+        logger.exception("读取断点时间失败（跳过清理）")
+        return 0
+
+    stale = [thread_id for thread_id, stamp in newest.items() if stamp < cutoff]
+    if not stale:
+        return 0
+
+    removed = 0
+    for thread_id in stale:
+        try:
+            await conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
+            await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
+            removed += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("删除断点失败：%s", thread_id)
+    try:
+        await conn.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("提交断点清理失败（已忽略）")
+
+    if removed:
+        logger.info("清理过期对话断点：%d 个线程（保留 %d 天）", removed, days)
+    return removed
 
 
 def get_turn_graph():

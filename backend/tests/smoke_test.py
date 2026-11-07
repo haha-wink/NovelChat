@@ -1921,6 +1921,94 @@ def group_chat_checks() -> None:
     check("群聊：冷却期内扣分", hot_score < cold_score, f"{hot_score} / {cold_score}")
 
 
+async def sqlite_checkpoint_checks() -> None:
+    """断点存 SQLite：后端重启后还能续跑；过期断点会被清掉。"""
+    import tempfile
+
+    from agent import graph as agent_graph
+
+    character = {
+        "id": "char_sql", "name": "沈砚", "role": "剑客",
+        "personality": [], "speech_style": "", "background": "",
+    }
+    initial = {
+        "user_id": "u_sql", "user_name": "读者", "character": character,
+        "book_title": "测试", "shelf_id": "", "raw_text": "在吗",
+        "image_urls": [], "api_key": "k", "model": "m",
+        "extra_context": "", "persist": False, "session_id": "s_sql",
+    }
+    path = tempfile.mktemp(suffix=".db")
+    config = {
+        "configurable": {"thread_id": "sql-restart", "llm": None, "summarizer": None},
+        "recursion_limit": 30,
+    }
+
+    async def flaky(_state):
+        yield "半句"
+        raise ConnectionError("断开")
+
+    async def good(_state):
+        yield "续上了"
+
+    await agent_graph.init_checkpointer(path)
+    try:
+        graph = agent_graph.get_turn_graph()
+        config["configurable"]["llm"] = flaky
+        try:
+            async for _ in graph.astream(initial, config=config, stream_mode=["custom"]):
+                pass
+        except ConnectionError:
+            pass
+
+        # 模拟进程重启：关连接、重新打开同一个库
+        await agent_graph.close_checkpointer()
+        await agent_graph.init_checkpointer(path)
+        graph = agent_graph.get_turn_graph()
+
+        snapshot = await graph.aget_state(config)
+        check("断点库：重启后断点还在", snapshot.next == ("generate",), str(snapshot.next))
+        check("断点库：重启后输入没丢",
+              snapshot.values.get("text") == "在吗", str(snapshot.values.get("text")))
+
+        config["configurable"]["llm"] = good
+        final: dict = {}
+        async for mode, chunk in graph.astream(
+            None, config=config, stream_mode=["custom", "values"]
+        ):
+            if mode == "values" and isinstance(chunk, dict) and chunk.get("reply"):
+                final = chunk
+        check("断点库：重启后续跑成功", final.get("reply") == "续上了", str(final.get("reply")))
+
+        # 过期清理：把这条断点的时间改成 2020 年，再看会不会被删
+        saver = agent_graph._CHECKPOINTER  # noqa: SLF001 - 测试专用
+        cursor = await saver.conn.execute(
+            "SELECT thread_id, checkpoint_id, type, checkpoint FROM checkpoints"
+        )
+        for thread_id, checkpoint_id, ctype, blob in await cursor.fetchall():
+            payload = saver.serde.loads_typed((ctype, blob))
+            payload["ts"] = "2020-01-01T00:00:00+00:00"
+            new_type, new_blob = saver.serde.dumps_typed(payload)
+            await saver.conn.execute(
+                "UPDATE checkpoints SET checkpoint = ?, type = ? "
+                "WHERE thread_id = ? AND checkpoint_id = ?",
+                (new_blob, new_type, thread_id, checkpoint_id),
+            )
+        await saver.conn.commit()
+
+        removed = await agent_graph.prune_checkpoints(saver, days=7)
+        check("断点库：过期断点被清掉", removed >= 1, str(removed))
+        cursor = await saver.conn.execute("SELECT COUNT(*) FROM checkpoints")
+        check("断点库：清理后表变空", (await cursor.fetchone())[0] == 0)
+    finally:
+        await agent_graph.close_checkpointer()
+
+    # 关掉之后应退回内存模式，别把后面的用例带沟里
+    check("断点库：关闭后回到内存模式",
+          agent_graph.get_checkpointer() is not None
+          and agent_graph._SAVER_CM is None,  # noqa: SLF001
+          "checkpointer 未重置")
+
+
 async def checkpoint_checks() -> None:
     """断点续跑：生成到一半断了，用同一个 thread_id 能接着跑完。"""
     from agent import graph as agent_graph
@@ -4810,6 +4898,7 @@ def main() -> int:
     interrupted_extraction_checks()
     asyncio.run(extract_fallback_checks())
     asyncio.run(auto_merge_checks())
+    asyncio.run(sqlite_checkpoint_checks())
     asyncio.run(checkpoint_checks())
     asyncio.run(langgraph_checks())
     asyncio.run(dialogue_judge_checks())
