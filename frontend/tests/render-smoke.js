@@ -72,7 +72,7 @@ function seed(app) {
     token: null,
     messages: [
       { role: 'user', content: '你好' },
-      { role: 'user', content: '[已上传截图]', isImage: true, fileName: 'a.png', image: tinyPng },
+      { role: 'user', content: '', isImage: true, fileName: 'a.png', images: [tinyPng] },
       { role: 'assistant', content: '嗯。', sticker: { url: 'https://example.com/a.svg', emoji: '😀' } },
       { role: 'system', content: '系统' }
     ]

@@ -40,18 +40,21 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
     if not prompt and not images:
         raise HTTPException(status_code=400, detail="内容为空：请输入文字或上传截图")
 
-    # 图片只落盘一次，本回合所有发言人都看得到同一批
+    # 图片落盘一次：本回合所有发言人都看得到同一批，历史里也能翻回来看
     agno_images: list = []
-    image_dir: Path | None = None
+    image_urls: list[str] = []
     if images:
         upload_root = settings.uploads_path
         upload_root.mkdir(parents=True, exist_ok=True)
-        image_dir = upload_root / f"group-{uuid.uuid4().hex}"
+        folder = uuid.uuid4().hex
+        image_dir = upload_root / "chat" / folder
         image_dir.mkdir(parents=True, exist_ok=True)
         for index, item in enumerate(images):
-            file_path = image_dir / f"image-{index}.{item.suffix}"
+            file_name = f"image-{index}.{item.suffix}"
+            file_path = image_dir / file_name
             file_path.write_bytes(item.data)
             agno_images.append(AgnoImage(filepath=str(file_path)))
+            image_urls.append(f"/api/chat-image/{folder}/{file_name}")
 
     # 纯图片时也要给模型一句话，否则 arun 拿到空串
     user_text = prompt or "我发了一张图片，你看看。"
@@ -124,6 +127,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 shelf_id=shelf_id,
                 user_id=session.user_id,
                 text=prompt or "［图片］",
+                image_urls=image_urls,
                 generate=generate,
                 session_id=f"group:{session.user_id}:{shelf_id}",
             ):
@@ -140,10 +144,6 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
         except Exception as exc:  # noqa: BLE001
             logger.exception("群聊出错（shelf=%s）", shelf_id)
             yield sse({"type": "error", "message": f"群聊失败：{exc}"})
-        finally:
-            # 本回合的临时截图用完就删，别把 uploads 越攒越大
-            if image_dir is not None:
-                shutil.rmtree(image_dir, ignore_errors=True)
 
     return StreamingResponse(
         event_stream(),
@@ -154,6 +154,23 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
             "Connection": "keep-alive",
         },
     )
+
+
+@router.get("/chat-image/{folder}/{name}")
+async def chat_image(folder: str, name: str) -> FileResponse:
+    """读回聊天里发过的图片。
+
+    目录名固定成 32 位 hex、文件名固定成 image-N.扩展名——只允许这种形状，
+    避免把 uploads 目录当成任意文件下载口。
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", folder):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    if not re.fullmatch(r"image-\d+\.(png|jpg|jpeg|gif|webp)", name):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    path = get_settings().uploads_path / "chat" / folder / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="图片不存在")
+    return FileResponse(path)
 
 
 @router.post("/chat")
@@ -241,19 +258,23 @@ async def chat_endpoint(req: ChatRequest, request: Request):
         },
     )
 
+    image_urls: list[str] = []
+
     async def event_stream() -> AsyncIterator[str]:
-        tmp_dir: Path | None = None
         try:
             agno_images = []
             if images:
                 upload_root = settings.uploads_path
                 upload_root.mkdir(parents=True, exist_ok=True)
-                tmp_dir = upload_root / f"chat-{uuid.uuid4().hex}"
-                tmp_dir.mkdir(parents=True, exist_ok=True)
+                folder = uuid.uuid4().hex
+                folder_path = upload_root / "chat" / folder
+                folder_path.mkdir(parents=True, exist_ok=True)
                 for index, item in enumerate(images):
-                    file_path = tmp_dir / f"image-{index}.{item.suffix}"
+                    file_name = f"image-{index}.{item.suffix}"
+                    file_path = folder_path / file_name
                     file_path.write_bytes(item.data)
                     agno_images.append(AgnoImage(filepath=str(file_path)))
+                    image_urls.append(f"/api/chat-image/{folder}/{file_name}")
 
             accumulated = ""
             async for chunk in agent.arun(
@@ -326,6 +347,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                                 character_id=character["id"],
                                 session_id=agno_session,
                                 speaker_name=speaker,
+                                images=image_urls if role == "user" else [],
                             )
                         )
             except Exception:  # noqa: BLE001
@@ -370,9 +392,6 @@ async def chat_endpoint(req: ChatRequest, request: Request):
         except Exception as exc:  # noqa: BLE001
             logger.exception("流式响应出错（session=%s）", agno_session)
             yield sse({"type": "error", "message": f"生成失败：{exc}"})
-        finally:
-            if tmp_dir is not None:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return StreamingResponse(
         event_stream(),

@@ -355,6 +355,7 @@ async def run_turn(
     generate: Callable[[dict, list[dict]], AsyncIterator[str]],
     session_id: str = "",
     members: Optional[list[dict]] = None,
+    image_urls: Optional[list[str]] = None,
     tweaks: Optional[dict] = None,
     rng: Optional[random.Random] = None,
 ) -> AsyncIterator[dict]:
@@ -402,6 +403,7 @@ async def run_turn(
         role="user",
         content=text,
         mentions=mentions,
+        images=list(image_urls or []),
     )
     yield {"type": "user", "text": text, "mentions": mentions}
 

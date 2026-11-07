@@ -3732,8 +3732,19 @@ async def http_checks() -> None:
               and any(e.get("type") == "sticker" for e in events[:-1]),
               str([e.get("type") for e in events]))
 
-        after_dirs = {p.name for p in uploads.glob("chat-*")} if uploads.is_dir() else set()
-        check("HTTP：聊天临时图片目录已清理", not (after_dirs - before_dirs), str(after_dirs - before_dirs))
+        # 图片改成持久化：落在 uploads/chat/<folder>/，并能被聊天历史引用
+        r = await client.get(f"/api/characters/{shen['id']}/history?token={token}&limit=10")
+        history_turns = r.json()["turns"]
+        image_turns = [turn for turn in history_turns if turn.get("images")]
+        check("HTTP：单聊图片写进历史", bool(image_turns),
+              str([turn.get("images") for turn in history_turns][-3:]))
+        if image_turns:
+            image_url = image_turns[-1]["images"][0]
+            got = await client.get(image_url)
+            check("HTTP：单聊图片能按地址读回",
+                  got.status_code == 200 and got.content[:4] == b"\x89PNG", str(got.status_code))
+            import shutil as _shutil
+            _shutil.rmtree(uploads / "chat" / image_url.split("/")[-2], ignore_errors=True)
 
         # --- 会话隔离 ---
         session = api_deps.verify_session(token)
@@ -4155,6 +4166,26 @@ async def group_chat_sse_checks() -> None:
                 json={"token": session["token"], "prompt": "", "images_base64": ["not-an-image"]},
             )
             check("群聊图片：坏图片被拒", bad_image.status_code == 400, bad_image.text[:120])
+
+            # 图片要能被历史读回来：落库成 /api/chat-image/<folder>/<name>
+            turns = dbmod.list_chat_turns(shelf["id"], limit=10)
+            image_turns = [item for item in turns if item.get("images")]
+            check("群聊图片：图片地址写进了流水",
+                  bool(image_turns) and image_turns[-1]["images"][0].startswith("/api/chat-image/"),
+                  str([item.get("images") for item in image_turns][-2:]))
+            image_url = image_turns[-1]["images"][0] if image_turns else ""
+            fetched = await client.get(image_url)
+            check("群聊图片：能按地址读回原图",
+                  fetched.status_code == 200 and fetched.content[:4] == b"\x89PNG",
+                  f"{fetched.status_code} {fetched.content[:8]}")
+            check("群聊图片：读图接口拒绝非法目录名",
+                  (await client.get("/api/chat-image/..%2F..%2Fapp.db/x.png")).status_code in (404, 400),
+                  "")
+            # 清理测试落下的图片目录
+            if image_url:
+                folder = image_url.split("/")[-2]
+                import shutil as _shutil
+                _shutil.rmtree(get_settings().uploads_path / "chat" / folder, ignore_errors=True)
 
             check("群聊SSE：沈砚被 @ 后必答，且它 @ 苏晚触发了第二轮",
                   [e["name"] for e in speaker_starts] == ["沈砚", "苏晚"],

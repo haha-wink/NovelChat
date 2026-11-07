@@ -357,10 +357,14 @@ async function loadChatHistory(character) {
     const data = await api(`/api/characters/${character.id}/history${query}`)
     const conversation =
       conversations[character.id] || (conversations[character.id] = { messages: [], token: null })
-    conversation.messages = (data.turns || []).map((turn) => ({
-      role: turn.role === 'user' ? 'user' : 'assistant',
-      content: turn.content || ''
-    }))
+    conversation.messages = (data.turns || []).map((turn) => {
+      const images = turn.images || []
+      return {
+        role: turn.role === 'user' ? 'user' : 'assistant',
+        content: images.length && (turn.content || '') === '［图片］' ? '' : turn.content || '',
+        images
+      }
+    })
   } catch (failure) {
     // 历史拉不到不该挡着聊天，静默忽略
   }
@@ -741,10 +745,10 @@ async function sendMessage() {
   pendingImages.value.forEach((image) => {
     conversation.messages.push({
       role: 'user',
-      content: '[已上传截图]',
+      content: '',
       isImage: true,
       fileName: image.fileName,
-      image: image.base64
+      images: [image.base64]
     })
     imagesPayload.push(image.base64)
   })
@@ -899,7 +903,13 @@ async function loadGroupHistory() {
 
 function turnToGroupMessage(turn) {
   if (turn.role === 'user') {
-    return { kind: 'user', content: turn.content || '', mentions: turn.mentions || [] }
+    const images = turn.images || []
+    return {
+      kind: 'user',
+      content: images.length && (turn.content || '') === '［图片］' ? '' : turn.content || '',
+      mentions: turn.mentions || [],
+      images
+    }
   }
   const member =
     group.members.find((item) => item.character_id === turn.character_id) ||
