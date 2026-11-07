@@ -446,6 +446,25 @@ function closeStatus() {
   status.loading = false
 }
 
+/** 从「角色详情」直接进单聊 / 编辑：先把角色取出来，再关面板。
+ *
+ * 以前模板写的是 ``closeStatus(); openChat(status.data.character)``——
+ * closeStatus 会把 status.data 置空，第二个表达式立刻抛错，按钮就"点了没反应"。
+ */
+function chatFromStatus() {
+  const character = status.data?.character
+  if (!character) return undefined
+  closeStatus()
+  return openChat(character)
+}
+
+function editFromStatus() {
+  const character = status.data?.character
+  if (!character) return undefined
+  closeStatus()
+  return openEditor(character)
+}
+
 async function openStatus(character) {
   if (!character?.id) return
   status.open = true
@@ -1138,6 +1157,8 @@ export function stopPolling() {
 }
 
 const state = {
+  chatFromStatus,
+  editFromStatus,
   avatarSrc,
   formatCount,
   formatTime,

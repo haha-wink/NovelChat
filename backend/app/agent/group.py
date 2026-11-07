@@ -217,6 +217,7 @@ def select_speakers(
     all_threshold: float = 0.35,
     cooldown_seconds: int = 45,
     explicit_names: Optional[list[str]] = None,
+    always_reply: bool = True,
     now: Optional[datetime] = None,
     rng: Optional[random.Random] = None,
 ) -> list[Speaker]:
@@ -224,7 +225,9 @@ def select_speakers(
 
     * 被 **显式 @** 的角色必答（跳阈值、跳冷却），按 @ 顺序排前面；
     * ``@全体成员`` 把阈值降到 ``all_threshold``，但仍受 ``max_speakers`` 限制；
-    * 其余按分数排序，过阈值才入选。
+    * 其余按分数排序，过阈值才入选；
+    * ``always_reply=True`` 时，若没人过线，让**意愿最高**的那位兜底接一句——
+      否则不 @ 就没人说话，群里会死寂（这是之前的真实反馈）。
     """
     now = now or _now()
     rng = rng or random
@@ -291,8 +294,8 @@ def select_speakers(
         chosen_ids.add(character_id)
 
     # 2) 其余按意愿分排队
+    scored: list[tuple[float, dict, str]] = []
     if len(chosen) < max_speakers:
-        scored: list[tuple[float, dict, str]] = []
         for member in usable:
             character_id = str(member.get("character_id") or "")
             if character_id in chosen_ids:
@@ -326,6 +329,21 @@ def select_speakers(
                     arousal=float(member.get("arousal") or 0.35),
                 )
             )
+
+    # 3) 兜底：一个都没过线时，最少也要有一个人接话
+    if not chosen and always_reply and scored:
+        value, member, reason = scored[0]
+        chosen.append(
+            Speaker(
+                character_id=str(member.get("character_id") or ""),
+                name=str(member.get("name") or ""),
+                score=value,
+                reason=f"{reason} / 兜底接话",
+                emotion=str(member.get("emotion") or "平静"),
+                valence=float(member.get("valence") or 0.0),
+                arousal=float(member.get("arousal") or 0.35),
+            )
+        )
     return chosen
 
 
@@ -355,6 +373,7 @@ async def run_turn(
         "threshold": settings.group_speak_threshold,
         "all_threshold": settings.group_all_threshold,
         "cooldown_seconds": settings.group_cooldown_seconds,
+        "always_reply": settings.group_always_reply,
     }
     options.update(tweaks or {})
     rng = rng or random.Random()

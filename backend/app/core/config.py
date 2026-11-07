@@ -127,10 +127,14 @@ class Settings(BaseSettings):
     #: 一个回合最多几轮（角色 @ 别人会触发下一轮）
     group_max_rounds: int = 2
     #: 发言资格阈值：低于它就不说话（宁可不热闹，也别谁都插一句）
-    group_speak_threshold: float = 0.55
+    #: 意愿分过线才发言。分数构成为 0.30*外向 + 0.25*相关 + 0.15*情绪 + 噪声，
+    #: 没有 @ 时相关为 0，典型分只有 0.2~0.4——原来写 0.55 等于永远没人说话。
+    group_speak_threshold: float = 0.30
     #: 被 @全体成员 时阈值下调到这里
-    group_all_threshold: float = 0.35
+    group_all_threshold: float = 0.18
     #: 同一角色两次发言的最小间隔（秒），防止话痨垄断
+    #: 没人过线时也让意愿最高的人接一句（否则不 @ 就没人理）
+    group_always_reply: bool = True
     group_cooldown_seconds: int = 45
 
     # ---------- RAG 记忆检索 ----------

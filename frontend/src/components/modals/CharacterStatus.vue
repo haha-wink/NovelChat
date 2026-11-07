@@ -119,9 +119,9 @@
             <button class="ghost" @click="toggleMemberStatus">
               {{ status.data.member?.status === 'offline' ? '上线' : '离线' }}
             </button>
-            <button class="ghost" @click="closeStatus(); openEditor(status.data.character)">编辑</button>
+            <button class="ghost" @click="editFromStatus()">编辑</button>
             <button class="ghost danger" @click="removeCharacter(status.data.character)">删除</button>
-            <button class="primary" @click="closeStatus(); openChat(status.data.character)">
+            <button class="primary" @click="chatFromStatus()">
               单独聊
             </button>
           </template>
@@ -135,6 +135,8 @@ import { useApp } from '../../stores/app.js'
 
 // 一次拿全部应用状态与动作；模板里直接写名字
 const {
+  chatFromStatus,
+  editFromStatus,
   MAX_IMAGES,
   MAX_IMAGE_BYTES,
   NAME_KEY,

@@ -1866,9 +1866,18 @@ def group_chat_checks() -> None:
     # ---- 选角：阈值挡住无关的人 ----
     none_chosen = group_chat.select_speakers(
         members, text="今天天气不错", mentions=[],
+        max_speakers=2, threshold=0.99, all_threshold=0.99,
+        always_reply=False, rng=_random.Random(1),
+    )
+    check("群聊：关掉兜底时没人过阈值就不说话", none_chosen == [], str(none_chosen))
+
+    fallback = group_chat.select_speakers(
+        members, text="今天天气不错", mentions=[],
         max_speakers=2, threshold=0.99, all_threshold=0.99, rng=_random.Random(1),
     )
-    check("群聊：没人过阈值就不说话", none_chosen == [], str(none_chosen))
+    check("群聊：默认兜底接话（不 @ 也有人理）",
+          len(fallback) == 1 and "兜底接话" in fallback[0].reason,
+          str([(s.name, s.reason) for s in fallback]))
 
     # ---- 选角：@全体 降低阈值 ----
     low = group_chat.select_speakers(
@@ -1911,6 +1920,53 @@ def group_chat_checks() -> None:
     cold_score, _ = group_chat.score_member(cold, text="聊聊", now=now, rng=_random.Random(4))
     check("群聊：冷却期内扣分", hot_score < cold_score, f"{hot_score} / {cold_score}")
 
+
+async def group_awake_checks() -> None:
+    """群聊唤醒：不 @ 也得有人接话（否则群里死寂）。"""
+    import random as _random
+
+    from agent import group as group_mod
+
+    members = [
+        {
+            "character_id": "c1", "name": "路明非", "status": "online", "state": "idle",
+            "extraversion": 0.85, "arousal": 0.4, "personality": ["热情"],
+            "last_spoke_at": None,
+        },
+        {
+            "character_id": "c2", "name": "楚子航", "status": "online", "state": "idle",
+            "extraversion": 0.25, "arousal": 0.2, "personality": ["寡言"],
+            "last_spoke_at": None,
+        },
+    ]
+    rng = _random.Random(11)
+
+    plain = group_mod.select_speakers(members, text="你还好吗", mentions=[], rng=rng)
+    check("群聊唤醒：不 @ 也有人接话", len(plain) == 1, str([s.name for s in plain]))
+    check("群聊唤醒：兜底的是意愿最高的人",
+          bool(plain) and plain[0].name == "路明非", str([s.name for s in plain]))
+
+    muted = group_mod.select_speakers(
+        [{**m, "state": "muted"} for m in members], text="喂", mentions=[], rng=rng
+    )
+    check("群聊唤醒：全员静音时没人说话", muted == [], str(muted))
+
+    strict = group_mod.select_speakers(
+        members, text="嗯", mentions=[], always_reply=False, rng=_random.Random(11)
+    )
+    check("群聊唤醒：关掉兜底就允许沉默", strict == [], str([s.name for s in strict]))
+
+    forced = group_mod.select_speakers(
+        members, text="@楚子航 在吗", mentions=["楚子航"], rng=rng
+    )
+    check("群聊唤醒：@ 的人必答且排第一",
+          bool(forced) and forced[0].name == "楚子航" and forced[0].forced,
+          str([(s.name, s.forced) for s in forced]))
+
+    everyone = group_mod.select_speakers(
+        members, text="@全体成员 开会", mentions=["all"], rng=rng
+    )
+    check("群聊唤醒：@全体成员 全员应答", len(everyone) == 2, str([s.name for s in everyone]))
 
 async def group_turn_checks() -> None:
     """跑完整回合：用假生成器，不碰模型。"""
@@ -4100,6 +4156,7 @@ def main() -> int:
     interrupted_extraction_checks()
     asyncio.run(extract_fallback_checks())
     asyncio.run(auto_merge_checks())
+    asyncio.run(group_awake_checks())
     asyncio.run(group_turn_checks())
     asyncio.run(group_presence_checks())
     asyncio.run(history_and_shelf_checks())
