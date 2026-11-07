@@ -1921,6 +1921,101 @@ def group_chat_checks() -> None:
     check("群聊：冷却期内扣分", hot_score < cold_score, f"{hot_score} / {cold_score}")
 
 
+async def langgraph_checks() -> None:
+    """直接跑一遍状态图（不经过 HTTP、不连模型）：节点顺序、流式、校验、落库。"""
+    from agent import graph as agent_graph
+
+    info = agent_graph.describe()
+    check("LangGraph：图已编译", bool(info["compiled"]), str(info))
+    check("LangGraph：八个节点齐全", len(info["nodes"]) == 8, str(info["nodes"]))
+    check("LangGraph：节点顺序固定",
+          info["nodes"] == ["preprocess", "classify", "observe", "recall",
+                            "plan", "generate", "verify", "persist"],
+          str(info["nodes"]))
+
+    test_lib = dbmod.create_library("自检图库", "临时")
+    shelf = dbmod.create_shelf(test_lib["id"], "图测试书架")
+    book = dbmod.create_book(
+        title="图测试书",
+        source_name="图测试书.txt",
+        source_type="txt",
+        char_count=100,
+        chunk_count=1,
+        shelf_id=shelf["id"],
+    )
+    character = library.create_character(
+        book["id"],
+        name="沈砚",
+        role="剑客",
+        personality=["寡言"],
+        speech_style="短句",
+        background="行走江湖",
+    )
+
+    async def fake_llm(state):
+        # 故意写一句说教腔，看 verify 节点会不会改写
+        for piece in ("你应该", "早点睡。"):
+            yield piece
+
+    initial = {
+        "user_id": "u_graph",
+        "user_name": "读者",
+        "character": character,
+        "book_title": "图测试书",
+        "shelf_id": shelf["id"],
+        "raw_text": "今天好累啊",
+        "image_urls": [],
+        "api_key": "k",
+        "model": "m",
+        "extra_context": "",
+        "persist": True,
+        "session_id": "s_graph",
+        "summarizer": None,
+        "llm": fake_llm,
+    }
+
+    events: list[dict] = []
+    final: dict = {}
+    async for mode, chunk in agent_graph.get_turn_graph().astream(
+        initial, stream_mode=["custom", "values"]
+    ):
+        if mode == "custom":
+            events.append(chunk)
+        elif isinstance(chunk, dict) and chunk.get("reply"):
+            final = chunk
+
+    deltas = [item for item in events if item.get("type") == "delta"]
+    check("LangGraph：generate 节点吐出了 delta", len(deltas) == 2, str(len(deltas)))
+    check("LangGraph：文本拼起来了",
+          "".join(item["text"] for item in deltas) == "你应该早点睡。",
+          "".join(item["text"] for item in deltas))
+    check("LangGraph：verify 改写了说教腔",
+          final.get("reply") == "你可以早点睡。", str(final.get("reply")))
+    check("LangGraph：state 里带上了本轮判断",
+          bool(final.get("signals")) and final["signals"].emotion == "疲惫",
+          str(getattr(final.get("signals"), "emotion", None)))
+    check("LangGraph：plan 产出了 SOP 块",
+          "【应对策略】" in (final.get("context_block") or ""), (final.get("context_block") or "")[:40])
+
+    turns = dbmod.list_chat_turns(shelf["id"], limit=10)
+    check("LangGraph：persist 写了 user + assistant 两条",
+          len(turns) == 2, str([(item["role"], item["content"][:8]) for item in turns]))
+    check("LangGraph：user 那条带了意图与情绪",
+          turns[0]["intent"] == "vent" and turns[0]["emotion"] == "疲惫",
+          str((turns[0]["intent"], turns[0]["emotion"])))
+
+    # persist=False 时不落库（群聊由引擎统一落库时用）
+    initial["persist"] = False
+    async for _ in agent_graph.get_turn_graph().astream(initial, stream_mode=["custom"]):
+        pass
+    check("LangGraph：persist=False 不写库",
+          len(dbmod.list_chat_turns(shelf["id"], limit=10)) == 2,
+          str(len(dbmod.list_chat_turns(shelf["id"], limit=10))))
+
+    dbmod.delete_book(book["id"])
+    dbmod.delete_shelf(shelf["id"])
+
+
 async def dialogue_judge_checks() -> None:
     """LLM 判官：只在需要时出手，挂了就回退规则。"""
     from services import dialogue, extractor
@@ -4428,6 +4523,7 @@ def main() -> int:
     interrupted_extraction_checks()
     asyncio.run(extract_fallback_checks())
     asyncio.run(auto_merge_checks())
+    asyncio.run(langgraph_checks())
     asyncio.run(dialogue_judge_checks())
     asyncio.run(dialogue_checks())
     asyncio.run(housekeeping_checks())

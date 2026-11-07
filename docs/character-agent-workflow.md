@@ -156,6 +156,8 @@ else:                                delta = content; accumulated += content
 
 ---
 
+> 编排层已改用 LangGraph 状态图实现，细节见 [langgraph-workflow.md](./langgraph-workflow.md)。
+
 ## 2.5 对话工作流九段落地（NovelChat）
 
 > **定位**：NovelChat 是**情感聊天**项目——用户借小说角色的性格与语气，聊的是自己的事。

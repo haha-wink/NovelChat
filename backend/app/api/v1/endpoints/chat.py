@@ -1,8 +1,11 @@
 """对话：单聊与群聊的 SSE 流。"""
 
+import copy
+
 from fastapi import APIRouter
 
 from api.v1.deps import *  # noqa: F401,F403
+from agent import graph as agent_graph
 from services import dialogue
 
 router = APIRouter()
@@ -160,6 +163,221 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
         except Exception as exc:  # noqa: BLE001
             logger.exception("群聊出错（shelf=%s）", shelf_id)
             yield sse({"type": "error", "message": f"群聊失败：{exc}"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.get("/chat-image/{folder}/{name}")
+async def chat_image(folder: str, name: str) -> FileResponse:
+    """读回聊天里发过的图片。
+
+    目录名固定成 32 位 hex、文件名固定成 image-N.扩展名——只允许这种形状，
+    避免把 uploads 目录当成任意文件下载口。
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", folder):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    if not re.fullmatch(r"image-\d+\.(png|jpg|jpeg|gif|webp)", name):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    path = get_settings().uploads_path / "chat" / folder / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="图片不存在")
+    return FileResponse(path)
+
+
+@router.post("/chat")
+async def chat_endpoint(req: ChatRequest, request: Request):
+    settings = get_settings()
+    session = resolve_session(req.token, request)
+
+    character_ids = [cid for cid in (req.character_ids or []) if cid] or (
+        [req.character_id] if req.character_id else []
+    )
+    if not character_ids:
+        raise HTTPException(status_code=400, detail="缺少 character_id：请先选择角色")
+    if len(character_ids) > 1:
+        raise HTTPException(status_code=400, detail="当前版本一次只能和一个角色对话")
+    character_id = character_ids[0]
+
+    prompt = (req.prompt or "").strip()
+    if len(prompt) > settings.max_prompt_chars:
+        raise HTTPException(
+            status_code=413, detail=f"单次输入过长（上限 {settings.max_prompt_chars} 字）"
+        )
+
+    try:
+        images = decode_images(
+            req.images_base64,
+            max_count=settings.max_images,
+            max_image_bytes=settings.max_image_bytes,
+            max_total_bytes=settings.max_total_image_bytes,
+        )
+    except ImageValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not prompt and not images:
+        raise HTTPException(status_code=400, detail="内容为空：请输入文字或上传截图")
+
+    api_key = settings.api_key_for(req.api_key)
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="服务端未配置 DEEPSEEK_API_KEY，请在 backend/.env 中设置后重启后端",
+        )
+
+    character = await anyio.to_thread.run_sync(require_character, character_id)
+    book = await anyio.to_thread.run_sync(require_book, character["book_id"])
+
+    agno_session = conversation_session(session, character_id)
+    shelf_id = str(book.get("shelf_id") or "")
+
+    # 图片落盘一次，生成节点与对话流水共用同一批
+    agno_images: list = []
+    image_urls: list[str] = []
+
+    async def run_agent(state: dict) -> AsyncIterator[str]:
+        """注入给 LangGraph 的生成函数：建 Agent → 挂本轮上下文 → 流式产出。
+
+        ``state["context_block"]`` 由图的 plan 节点拼好（此刻状态 + 相关记忆 + SOP），
+        这里只负责把 Agent 的副本挂上它，然后逐段吐字。
+        """
+        agent = await anyio.to_thread.run_sync(
+            functools.partial(
+                get_agent,
+                api_key=api_key,
+                character=character,
+                book_title=book["title"],
+                user_name=session.display_name,
+            )
+        )
+        # 缓存里的 Agent 是共享的，本轮上下文挂副本（并发下不串状态）
+        per_run = copy.copy(agent)
+        per_run.additional_context = state.get("context_block") or None
+
+        accumulated = ""
+        async for chunk in per_run.arun(
+            (state.get("text") or "") or "请看着这张截图，说说你的想法。",
+            images=agno_images or None,
+            user_id=session.user_id,
+            session_id=agno_session,
+            stream=True,
+        ):
+            if await request.is_disconnected():
+                logger.info("客户端断开，停止流（session=%s）", agno_session)
+                break
+
+            content = getattr(chunk, "content", None) or ""
+            if not content or should_skip(content):
+                continue
+
+            if content.startswith(accumulated):
+                delta = content[len(accumulated):]
+                accumulated = content
+            elif accumulated.endswith(content):
+                delta = ""
+            else:
+                delta = content
+                accumulated += content
+
+            if delta:
+                yield delta
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            if images:
+                upload_root = settings.uploads_path
+                upload_root.mkdir(parents=True, exist_ok=True)
+                folder = uuid.uuid4().hex
+                folder_path = upload_root / "chat" / folder
+                folder_path.mkdir(parents=True, exist_ok=True)
+                for index, item in enumerate(images):
+                    file_name = f"image-{index}.{item.suffix}"
+                    file_path = folder_path / file_name
+                    file_path.write_bytes(item.data)
+                    agno_images.append(AgnoImage(filepath=str(file_path)))
+                    image_urls.append(f"/api/chat-image/{folder}/{file_name}")
+
+            # 一轮对话 = 跑一次状态图：
+            # preprocess → classify → observe → recall → plan → generate → verify → persist
+            initial: dict = {
+                "user_id": session.user_id,
+                "user_name": session.display_name,
+                "character": character,
+                "book_title": book["title"],
+                "shelf_id": shelf_id,
+                "raw_text": prompt,
+                "image_urls": image_urls,
+                "api_key": api_key,
+                "model": settings.deepseek_model,
+                "extra_context": "",
+                "persist": True,
+                "session_id": agno_session,
+                "summarizer": memory_summarizer(),
+                "llm": run_agent,
+            }
+
+            final: dict = {}
+            async for mode, chunk in agent_graph.get_turn_graph().astream(
+                initial, stream_mode=["custom", "values"]
+            ):
+                if mode == "custom":
+                    # 节点自己写出来的 SSE 事件（delta / final）
+                    yield sse(chunk)
+                elif isinstance(chunk, dict) and chunk.get("reply"):
+                    final = chunk
+
+            signals = final.get("signals")
+            state_after = final.get("affect_state") or {}
+
+            # 本轮用了什么情绪说话，记一笔便于复盘语气
+            try:
+                agent_log.log(
+                    "chat_turn_done",
+                    owner_type="character",
+                    owner_id=character_id,
+                    book_id=book["id"],
+                    user_id=session.user_id,
+                    session_id=agno_session,
+                    severity="debug",
+                    payload={
+                        "mood": state_after.get("emotion"),
+                        "has_images": bool(images),
+                        "dialog": dialogue.describe(signals) if signals else {},
+                        "notes": final.get("notes") or [],
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("记录对话日志失败（已忽略）")
+
+            # 贴纸：问起状态/心情、或者这一轮心情变了 -> 一定发；否则按情绪强度掷骰子。
+            try:
+                mood_changed = bool(
+                    state_after.get("previous_emotion")
+                    and state_after["previous_emotion"] != state_after.get("emotion")
+                )
+                sticker = expression.maybe_sticker(
+                    state_after,
+                    mood_changed=mood_changed,
+                    asked_about_mood=expression.asks_about_mood(prompt),
+                )
+                if sticker:
+                    yield sse({"type": "sticker", **sticker})
+            except Exception:  # noqa: BLE001
+                logger.exception("贴纸决策失败（已忽略）")
+
+            yield sse({"type": "done"})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("流式响应出错（session=%s）", agno_session)
+            yield sse({"type": "error", "message": f"生成失败：{exc}"})
 
     return StreamingResponse(
         event_stream(),

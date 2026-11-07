@@ -13,12 +13,15 @@ _STICKER_NAME = re.compile(r"^[0-9a-f]{1,8}(-[0-9a-f]{1,8})*$")
 
 @router.get("/health")
 async def health() -> dict:
+    from agent import graph as agent_graph
     from services import emotion_model
     from services import name_engine
 
     settings = get_settings()
     return {
         "status": "ok",
+        # 对话工作流跑在哪张图上（节点顺序一目了然）
+        "workflow": agent_graph.describe(),
         "api_key_configured": bool(settings.deepseek_api_key.strip()),
         "model": settings.deepseek_model,
         "extraction_model": settings.extraction_model_name,
