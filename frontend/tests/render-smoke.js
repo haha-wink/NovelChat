@@ -45,8 +45,11 @@ function seed(app) {
   app.group.shelfId = 'shelf_1'
   app.group.shelfTitle = '龙族大家庭'
   app.group.members = [member]
+  const tinyPng =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
   app.group.messages = [
-    { kind: 'user', content: '你好' },
+    { kind: 'user', content: '给你看张图', images: [tinyPng] },
     { kind: 'system', content: '系统提示' },
     {
       kind: 'character', character_id: 'char_1', name: '沈砚', avatar: '🗡️',
@@ -65,11 +68,15 @@ function seed(app) {
   app.mergePanel.learned = 7
 
   app.activeCharacter.value = character
-  app.conversations[character.id] = [
-    { role: 'user', content: '你好' },
-    { role: 'assistant', content: '嗯。', sticker: { url: 'https://example.com/a.svg', emoji: '😀' } },
-    { role: 'system', content: '系统' }
-  ]
+  app.conversations[character.id] = {
+    token: null,
+    messages: [
+      { role: 'user', content: '你好' },
+      { role: 'user', content: '[已上传截图]', isImage: true, fileName: 'a.png', image: tinyPng },
+      { role: 'assistant', content: '嗯。', sticker: { url: 'https://example.com/a.svg', emoji: '😀' } },
+      { role: 'system', content: '系统' }
+    ]
+  }
 }
 
 export async function renderAll() {

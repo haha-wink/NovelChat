@@ -51,6 +51,17 @@
                   <span v-if="message.typing" class="typing-dot">正在输入…</span>
                 </p>
                 <div class="message-bubble">
+                  <div v-if="message.images && message.images.length" class="sent-images">
+                    <a
+                      v-for="(image, imageIndex) in message.images"
+                      :key="imageIndex"
+                      :href="image"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <img class="sent-image" :src="image" alt="已发送的图片" />
+                    </a>
+                  </div>
                   <div v-if="message.content" v-html="renderMarkdown(message.content)"></div>
                   <div v-else class="typing"><span></span><span></span><span></span></div>
                 </div>

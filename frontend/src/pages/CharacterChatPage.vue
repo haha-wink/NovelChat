@@ -55,7 +55,10 @@
               <div class="message-content">
                 <div class="message-bubble">
                   <div v-if="message.isImage" class="image-placeholder">
-                    🖼️ [已上传截图: {{ message.fileName }}]
+                    <a v-if="message.image" :href="message.image" target="_blank" rel="noreferrer">
+                      <img class="sent-image" :src="message.image" :alt="message.fileName || '已发送的图片'" />
+                    </a>
+                    <span v-else>🖼️ [已上传截图: {{ message.fileName }}]</span>
                   </div>
                   <div v-else v-html="renderMarkdown(message.content)"></div>
                 </div>

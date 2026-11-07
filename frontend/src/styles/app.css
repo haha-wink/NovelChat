@@ -448,3 +448,15 @@ button.small { padding: 5px 10px; font-size: 12px; }
   .form-grid { grid-template-columns: 1fr; }
   .message-content { max-width: 88%; }
 }
+
+/* ---------- 已发送的图片（气泡里的缩略图） ---------- */
+.sent-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.sent-image {
+  display: block;
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  cursor: zoom-in;
+}

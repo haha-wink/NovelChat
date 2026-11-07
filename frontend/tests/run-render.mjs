@@ -13,5 +13,10 @@ for (const [view, html] of Object.entries(out)) {
   console.log(`  ${view.padEnd(10)} ${String(html.length).padStart(6)} 字符 / ${markers} 个 class`)
   if (html.length < 100) throw new Error(`${view} 渲染结果异常`)
 }
-console.log('SSR 四视图 + 浮层渲染全部通过')
+for (const view of ['group', 'chat']) {
+  if (!out[view].includes('sent-image')) {
+    throw new Error(`${view} 视图没有渲染出发送图片的缩略图`)
+  }
+}
+console.log('SSR 四视图 + 浮层渲染全部通过（含已发送图片的缩略图）')
 

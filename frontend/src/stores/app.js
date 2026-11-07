@@ -739,7 +739,13 @@ async function sendMessage() {
 
   const imagesPayload = []
   pendingImages.value.forEach((image) => {
-    conversation.messages.push({ role: 'user', content: '[已上传截图]', isImage: true, fileName: image.fileName })
+    conversation.messages.push({
+      role: 'user',
+      content: '[已上传截图]',
+      isImage: true,
+      fileName: image.fileName,
+      image: image.base64
+    })
     imagesPayload.push(image.base64)
   })
   conversation.messages.push({ role: 'user', content: userText })
