@@ -114,7 +114,8 @@ class Settings(BaseSettings):
     # ---------- 聊天图片 ----------
     # ---------- 对话判官（情绪/意图的 LLM 精判）----------
     #: off = 只用规则（零调用）；auto = 规则拿不准时才问；always = 每轮都问
-    dialogue_judge_mode: str = "off"
+    #: 默认 auto：反讽、长期低落、意图揉在一起时交给模型看一眼
+    dialogue_judge_mode: str = "auto"
     #: 判官用哪个模型，留空复用 deepseek_model
     dialogue_judge_model: str = ""
     #: 判官超时（秒）；超时直接回退规则结论

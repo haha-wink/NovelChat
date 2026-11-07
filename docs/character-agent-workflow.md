@@ -201,8 +201,8 @@ else:                                delta = content; accumulated += content
 
 | 档位 | 行为 | 成本 |
 |---|---|---|
-| `off`（默认） | 只跑规则 | 0 |
-| `auto` | **只在 `ambiguous=True` 时**问一次模型 | 偶发 1 次 |
+| `off` | 只跑规则 | 0 |
+| `auto`（**默认**） | **只在 `ambiguous=True` 时**问一次模型 | 偶发 1 次 |
 | `always` | 每轮都问 | 每轮 +1 次 |
 
 判官拿到的是「反讽、隐喻、话里有话」这类规则读不懂的情况；返回严格 JSON
