@@ -59,7 +59,8 @@ from services import cleaner  # noqa: E402
 from services import reply as reply_mod  # noqa: E402
 from services import chat_memory
 from services import rag  # noqa: E402
-from core import scene as scene_mod  # noqa: E402
+from core import scene as scene_mod
+from services import style as style_mod  # noqa: E402
 from core import text as text_mod  # noqa: E402
 import channels  # noqa: E402
 import channels.web as web_module  # noqa: E402
@@ -268,6 +269,52 @@ def pipeline_checks() -> None:
         check(f"提示词：包含「{token}」", token in prompt)
     check("提示词：有安全兜底", "自伤" in prompt)
     check("提示词：没有未替换的占位符", "{" not in prompt.replace("【", "").replace("】", "").split("【扮演规则】")[0] or True)
+
+    # --- 说话样本 + 语言习惯：让角色"像本人"而不是"像个人设" ---
+    quoted = prompts.build_character_prompt(
+        {
+            "name": "苏晚",
+            "role": "女主角",
+            "personality": ["温柔"],
+            "speech_style": "慢半拍，带笑",
+            "background": "江南商贾之女",
+            "relationships": [{"with": "沈砚", "relation": "旧识"}],
+            "excerpts": ["她站在雨里没动。"],
+            "quotes": [
+                "其实……我一直在等。",
+                "大概吧。",
+                "你迟到了三年。",
+                "大概吧。",          # 重复：应被去重
+                "LOL",              # 噪声：纯短英文，应被丢掉
+            ],
+        },
+        book_title="雨夜试剑",
+        user_name="阿青",
+    )
+    check("提示词：原话进「说话样本」",
+          "【说话样本】（以下都是" in quoted and "其实……我一直在等。" in quoted)
+    check("提示词：重复台词只算一次", quoted.count("大概吧。") == 1, str(quoted.count("大概吧。")))
+    check("提示词：噪声台词被丢掉", "LOL" not in quoted)
+    check("提示词：带上语言习惯的数字",
+          "【语言习惯】（统计自" in quoted and "每条平均" in quoted)
+
+    bare = prompts.build_character_prompt(
+        {"name": "路人", "personality": ["沉默"], "excerpts": []}, book_title="雨夜试剑"
+    )
+    check("提示词：没有原话时不硬造样本段",
+          "【说话样本】（以下都是" not in bare and "【语言习惯】（统计自" not in bare)
+
+    stats = style_mod.analyze(
+        ["其实……我一直在等……", "其实，你迟到了。", "大概吧。", "康斯坦丁在哪？"]
+    )
+    check("风格：统计出条数与平均长度", stats["count"] == 4 and stats["avg"] > 0, str(stats))
+    check("风格：识别省略号收尾", stats["ellipsis"] >= 25, str(stats["ellipsis"]))
+    check("风格：口头禅抓到重复说法", "其实" in stats["catchphrases"], str(stats["catchphrases"]))
+    check("风格：专名碎片不算口头禅",
+          all("康斯" not in word and "坦丁" not in word for word in stats["catchphrases"]),
+          str(stats["catchphrases"]))
+    check("风格：样本不足时不统计", style_mod.analyze(["嗯。", "哦。"]) == {})
+
 
     override = prompts.build_character_prompt(
         {"name": "我", "prompt_override": "只输出：我在这里。"},

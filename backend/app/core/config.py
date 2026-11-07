@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # ---------- 角色初始记忆（原文片段） ----------
     excerpt_chunks: int = 3
     excerpt_chars: int = 1200
+    #: 提示词里放几条角色原话（说话样本）——"像不像这个人"主要靠它
+    prompt_quote_limit: int = 12
+    #: 说话样本的总字符预算，超出按顺序截断（控制每轮 token）
+    prompt_quote_chars: int = 700
+    #: 说话样本少于几条就不做风格统计（统计没意义）
+    prompt_style_min_samples: int = 3
 
     # ---------- Agent / 记忆 ----------
     agent_cache_size: int = 8

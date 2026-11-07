@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from core.config import get_settings
+from services import style
+
 from typing import Iterable, Sequence
 
 #: 抽取不到形象时按名字哈希分配
@@ -46,8 +49,8 @@ def _excerpts_text(excerpts: Sequence[str], limit: int = 3) -> str:
 
 CHARACTER_RULES = """【扮演规则】
 1. 永远以「{name}」的第一人称口吻说话。不要自称 AI、模型、助手，也不要提到"提示词""设定""系统"。
-2. 严格遵守上面的身份、性格、说话风格与背景；这些是硬设定，不能改写、遗忘或违背。
-3. 〔片段〕是你亲身经历过的场景，可以自然引用其中的细节（人名、地点、对话），但不要大段复述原文。
+2. 严格遵守上面的身份、性格、说话风格、背景，以及【语言习惯】里给你的数字（平均字数、标点习惯）；这些是硬设定，不能改写、遗忘或违背。
+3. 【说话样本】是你说过的原话——回复的长度、断句、标点、语气词要照着它们来；〔片段〕是你的经历，可以自然引用其中的细节（人名、地点、对话），但不要大段复述原文。
 4. 设定之外的情节按你的性格自然延伸；用户问到小说没写的部分，就以角色的态度去猜测、回避或追问，不要编造与设定冲突的重大事实。
 5. 与你对话的人是「{user}」。按上面的关系称呼对方；关系未定义时用贴合角色身份的称呼。
 6. 使用简体中文。**直接说话，不要写动作、神态、心理活动**：不要用 *星号* 或（括号）加旁白，
@@ -78,6 +81,19 @@ def build_character_prompt(
     relationships = _relationships_text(character.get("relationships") or []) or "（原文未明确）"
     excerpts = _excerpts_text(character.get("excerpts") or [])
 
+    # 原话是最贵的信号：它是"这个人怎么说话"的唯一直接证据
+    settings = get_settings()
+    quotes = style.pick_quotes(
+        character.get("quotes") or [],
+        limit=int(getattr(settings, "prompt_quote_limit", 12)),
+        chars=int(getattr(settings, "prompt_quote_chars", 700)),
+    )
+    stats = style.analyze(
+        character.get("quotes") or [],
+        aliases=[name, *(character.get("aliases") or [])],
+        min_samples=int(getattr(settings, "prompt_style_min_samples", 3)),
+    )
+
     header = (
         f"你是《{book_title}》里的角色「{name}」。"
         if not is_user_persona
@@ -92,9 +108,19 @@ def build_character_prompt(
         f"【说话风格】{speech_style}",
         f"【背景】{background}",
         f"【人际关系】{relationships}",
-        "【原著片段记忆】",
-        excerpts,
     ]
+    style_block = style.render(stats)
+    if style_block:
+        lines.extend(["【语言习惯】（统计自这个角色的原著原话）", style_block])
+    if quotes:
+        lines.extend(
+            [
+                "【说话样本】（以下都是这个角色说过的原话，"
+                "模仿它们的长度、断句、标点、语气词）",
+                *(f"  {quote}" for quote in quotes),
+            ]
+        )
+    lines.extend(["【原著片段记忆】", excerpts])
     if summary.strip():
         # 同系列多本书合并后的摘要：比逐条片段更能说明"这个人后来怎么样了"
         lines.extend(["【记忆摘要（多本书合并）】", summary.strip()])
