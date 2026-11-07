@@ -39,9 +39,15 @@ verify(reply, plan)       安全兜底 + 去说教 + 危机补充
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import re
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 一、预处理
@@ -144,10 +150,35 @@ class TurnSignals:
     crisis: bool = False
     #: 命中的依据（排查用，不发给模型）
     evidence: list[str] = field(default_factory=list)
+    #: 规则拿不准（否定、反问、两种意图都像）——LLM 判官只在这种情况下出手
+    ambiguous: bool = False
 
     @property
     def intent_label(self) -> str:
         return INTENT_LABELS.get(self.intent, "闲聊")
+
+
+#: 否定词：出现在情绪词前面时，说明这个词不成立（"我不开心" != 开心）
+_NEGATIONS = ("不", "没", "并不", "不太", "没有", "别")
+
+
+def _negated(text: str, word: str, index: int) -> bool:
+    """判断情绪词前面两三个字符内有没有否定词。"""
+    head = text[max(0, index - 3): index]
+    return any(head.endswith(neg) for neg in _NEGATIONS)
+
+
+def _matches(text: str, words: Sequence[str]) -> list[str]:
+    """命中词（带否定过滤）。同一句里"不开心"不算"开心"。"""
+    hits: list[str] = []
+    for word in words:
+        start = text.find(word)
+        while start >= 0:
+            if not _negated(text, word, start):
+                hits.append(word)
+                break
+            start = text.find(word, start + 1)
+    return hits
 
 
 def classify(text: str) -> TurnSignals:
@@ -164,11 +195,17 @@ def classify(text: str) -> TurnSignals:
     best_emotion = "平静"
     best_hits = 0
     for emotion, words in EMOTION_WORDS:
-        hits = [word for word in words if word in raw]
+        hits = _matches(raw, words)
         if len(hits) > best_hits:
             best_emotion, best_hits = emotion, len(hits)
             evidence.extend(hits[:2])
     signals.emotion = best_emotion
+
+    # 1.5) 否定式：「不开心」按难过算（跳过词表会把它误判成平静）
+    if not best_hits and re.search(r"[不没](?:太|怎么|那么)?开心", raw):
+        best_emotion, best_hits = "难过", 1
+        signals.emotion = best_emotion
+        evidence.append("否定式：不开心")
 
     # 2) 强度：词命中 + 标点 + 长度
     intensity = min(0.55, 0.25 * best_hits)
@@ -204,6 +241,15 @@ def classify(text: str) -> TurnSignals:
             signals.intent = INTENT_HELP
         else:
             signals.intent = INTENT_CHAT
+
+    # 4) 歧义：规则不确定时才值得多花一次模型调用
+    help_hit_all = [word for word in _HELP_WORDS if word in raw]
+    vent_hit_all = [word for word in _VENT_WORDS if word in raw]
+    signals.ambiguous = bool(
+        (help_hit_all and vent_hit_all)                      # 又倒苦水又问办法
+        or (not best_hits and len(raw) >= 40)                # 挺长但没有情绪词
+        or ("?" in raw or "？" in raw) and not best_hits     # 问句但读不出情绪
+    )
 
     signals.evidence = evidence
     return signals
@@ -361,3 +407,150 @@ def describe(signals: TurnSignals) -> dict:
         "crisis": signals.crisis,
         "evidence": signals.evidence,
     }
+
+
+# ---------------------------------------------------------------------------
+# 五、LLM 判官（可选，只在规则拿不准时出手）
+# ---------------------------------------------------------------------------
+
+#: 判官档位：off 只用规则 / auto 规则不确定才问 / always 每轮都问
+JUDGE_OFF = "off"
+JUDGE_AUTO = "auto"
+JUDGE_ALWAYS = "always"
+
+JUDGE_SYSTEM = """你是对话分析器。读用户发来的一句话，判断说话者的状态与诉求。
+
+只输出一个 JSON 对象，不要解释、不要代码块围栏：
+{
+  "emotion": "焦虑|难过|愤怒|疲惫|开心|平静",
+  "intensity": 0.0 到 1.0 的小数,
+  "intent": "vent（在倒苦水、想被听见）|seek_help（在要办法）|chat（闲聊）|crisis（自伤/自杀风险）",
+  "crisis": true 或 false,
+  "reason": "一句话依据"
+}
+
+判断要点：
+- 反讽、隐喻、话里有话时，按真实意思判，不要按字面。
+- 「你」开头的攻击（例如命令别人去死）不是危机；只有指向自己的伤害才是 crisis。
+- 只是抱怨但没要办法，是 vent；既抱怨又问怎么办，是 seek_help。
+- 拿不准时 intensity 给中等，不要瞎给 0.9。"""
+
+#: 判官结果缓存：同一句话短时间内不重复问模型（用户编辑/重发很常见）
+_JUDGE_CACHE: "OrderedDict[str, tuple[float, TurnSignals]]" = OrderedDict()
+_JUDGE_TTL = 300.0
+_JUDGE_MAX = 256
+
+_VALID_EMOTIONS = {"焦虑", "难过", "愤怒", "疲惫", "开心", "平静"}
+_VALID_INTENTS = {INTENT_VENT, INTENT_HELP, INTENT_CHAT, INTENT_CRISIS}
+
+
+def _cache_get(key: str):
+    now = time.time()
+    hit = _JUDGE_CACHE.get(key)
+    if hit and now - hit[0] < _JUDGE_TTL:
+        _JUDGE_CACHE.move_to_end(key)
+        return hit[1]
+    if hit:
+        _JUDGE_CACHE.pop(key, None)
+    return None
+
+
+def _cache_put(key: str, signals: TurnSignals) -> None:
+    _JUDGE_CACHE[key] = (time.time(), signals)
+    _JUDGE_CACHE.move_to_end(key)
+    while len(_JUDGE_CACHE) > _JUDGE_MAX:
+        _JUDGE_CACHE.popitem(last=False)
+
+
+def merge_judge(signals: TurnSignals, verdict: dict) -> TurnSignals:
+    """把判官结论并进规则结论。
+
+    * 安全优先：任一方判危机 -> 危机（宁可多判）
+    * 意图/情绪/强度：判官说了算（它看得到反讽）
+    """
+    if not verdict:
+        return signals
+
+    intent = str(verdict.get("intent") or "").strip()
+    emotion = str(verdict.get("emotion") or "").strip()
+    crisis = bool(verdict.get("crisis"))
+    try:
+        intensity = float(verdict.get("intensity"))
+    except (TypeError, ValueError):
+        intensity = None
+
+    if intent in _VALID_INTENTS and intent != INTENT_CRISIS:
+        signals.intent = intent
+    if emotion in _VALID_EMOTIONS:
+        signals.emotion = emotion
+    if intensity is not None:
+        signals.intensity = round(min(1.0, max(0.0, intensity)), 2)
+
+    if crisis or intent == INTENT_CRISIS:
+        signals.crisis = True
+        signals.intent = INTENT_CRISIS
+        signals.emotion = emotion if emotion in _VALID_EMOTIONS else "难过"
+        signals.intensity = max(signals.intensity, 0.9)
+
+    reason = str(verdict.get("reason") or "").strip()
+    signals.evidence.append(f"judge:{reason[:40]}" if reason else "judge")
+    signals.ambiguous = False
+    return signals
+
+
+async def llm_judge(
+    text: str, *, api_key: str, model: str, timeout: float = 6.0
+) -> Optional[dict]:
+    """问一次模型。失败/超时/返回不合法一律返回 None（回退规则结论）。"""
+    if not api_key or not model or not text.strip():
+        return None
+    try:
+        from services import extractor
+
+        return await extractor.call_llm_json(
+            [
+                {"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "user", "content": f"用户这句话：\n{text[:500]}"},
+            ],
+            api_key=api_key,
+            model=model,
+            timeout=timeout,
+            max_tokens=200,
+        )
+    except Exception:  # noqa: BLE001 - 判官挂了不影响聊天
+        logger.exception("对话判官失败（已回退规则）")
+        return None
+
+
+async def classify_with_judge(
+    text: str,
+    *,
+    mode: str = JUDGE_OFF,
+    api_key: str = "",
+    model: str = "",
+    timeout: float = 6.0,
+) -> TurnSignals:
+    """规则 + 可选判官。
+
+    ``mode``：
+    * ``off``    只用规则（零调用）
+    * ``auto``   规则标记 ambiguous 时才问
+    * ``always`` 每轮都问（贵，但最准）
+    """
+    signals = classify(text)
+    mode = (mode or JUDGE_OFF).strip().lower()
+    if mode not in (JUDGE_AUTO, JUDGE_ALWAYS):
+        return signals
+    if mode == JUDGE_AUTO and not signals.ambiguous:
+        return signals
+
+    key = hashlib.sha1(signals.text.encode("utf-8")).hexdigest()
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    verdict = await llm_judge(signals.text, api_key=api_key, model=model, timeout=timeout)
+    if verdict:
+        merge_judge(signals, verdict)
+    _cache_put(key, signals)
+    return signals

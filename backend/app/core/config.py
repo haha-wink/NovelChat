@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     prompt_style_min_samples: int = 3
 
     # ---------- 聊天图片 ----------
+    # ---------- 对话判官（情绪/意图的 LLM 精判）----------
+    #: off = 只用规则（零调用）；auto = 规则拿不准时才问；always = 每轮都问
+    dialogue_judge_mode: str = "off"
+    #: 判官用哪个模型，留空复用 deepseek_model
+    dialogue_judge_model: str = ""
+    #: 判官超时（秒）；超时直接回退规则结论
+    dialogue_judge_timeout: float = 6.0
+
     #: 聊天图片保留天数；0 = 永久保留（目录会一直变大）
     chat_image_retention_days: int = 30
 

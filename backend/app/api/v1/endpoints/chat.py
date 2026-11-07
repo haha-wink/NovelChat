@@ -61,15 +61,21 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
     # 纯图片时也要给模型一句话，否则 arun 拿到空串
     user_text = prompt or "我发了一张图片，你看看。"
 
-    # 【情绪 & 意图识别】整条消息判一次，群里所有人共用同一份判断
-    signals = dialogue.classify(prompt)
-    turn_plan = dialogue.plan(signals)
-
     api_key = settings.api_key_for(req.api_key)
     if not api_key:
         raise HTTPException(
             status_code=503, detail="服务端未配置 DEEPSEEK_API_KEY"
         )
+
+    # 【情绪 & 意图识别】整条消息判一次，群里所有人共用同一份判断
+    signals = await dialogue.classify_with_judge(
+        prompt,
+        mode=settings.dialogue_judge_mode,
+        api_key=api_key,
+        model=(settings.dialogue_judge_model or settings.deepseek_model),
+        timeout=float(settings.dialogue_judge_timeout),
+    )
+    turn_plan = dialogue.plan(signals)
 
     async def generate(member: dict, transcript: list[dict]):
         """给 group_chat 用的生成器：构建角色 Agent -> 流式产出文本片段。"""
@@ -226,8 +232,14 @@ async def chat_endpoint(req: ChatRequest, request: Request):
     character = await anyio.to_thread.run_sync(require_character, character_id)
     book = await anyio.to_thread.run_sync(require_book, character["book_id"])
 
-    # 【情绪 & 意图识别】纯规则，零模型调用；危机判断优先
-    signals = dialogue.classify(prompt)
+    # 【情绪 & 意图识别】规则打底；DIALOGUE_JUDGE_MODE=auto 时只在拿不准时问模型
+    signals = await dialogue.classify_with_judge(
+        prompt,
+        mode=settings.dialogue_judge_mode,
+        api_key=api_key,
+        model=(settings.dialogue_judge_model or settings.deepseek_model),
+        timeout=float(settings.dialogue_judge_timeout),
+    )
     turn_plan = dialogue.plan(signals, character=character)
 
     # 【Agent 状态调度】先按用户这句话推进角色状态，再生成——

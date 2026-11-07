@@ -1921,6 +1921,85 @@ def group_chat_checks() -> None:
     check("群聊：冷却期内扣分", hot_score < cold_score, f"{hot_score} / {cold_score}")
 
 
+async def dialogue_judge_checks() -> None:
+    """LLM 判官：只在需要时出手，挂了就回退规则。"""
+    from services import dialogue, extractor
+
+    original = extractor.call_llm_json
+    calls: list = []
+
+    async def fake(messages, **kwargs):  # noqa: ANN001, ANN003
+        calls.append(messages)
+        return {
+            "emotion": "焦虑",
+            "intensity": 0.7,
+            "intent": "seek_help",
+            "crisis": False,
+            "reason": "在问办法",
+        }
+
+    extractor.call_llm_json = fake  # type: ignore[assignment]
+    try:
+        calls.clear()
+        await dialogue.classify_with_judge("今天天气一般", mode="off", api_key="k", model="m")
+        check("判官：off 模式一次都不调模型", not calls, str(len(calls)))
+
+        calls.clear()
+        clear_sig = await dialogue.classify_with_judge(
+            "我好难过", mode="auto", api_key="k", model="m"
+        )
+        check("判官：auto 下明确的话不问模型", not calls, str(len(calls)))
+        check("判官：明确的话保持规则结论",
+              clear_sig.emotion == "难过", clear_sig.emotion)
+
+        calls.clear()
+        vague = "我该怎么办，好累啊"
+        base_sig = dialogue.classify(vague)
+        judged = await dialogue.classify_with_judge(
+            vague, mode="auto", api_key="k", model="m"
+        )
+        check("判官：规则标记歧义", base_sig.ambiguous, str(base_sig.ambiguous))
+        check("判官：歧义句才调模型", bool(calls), str(len(calls)))
+        check("判官：结论覆盖规则", judged.intent == "seek_help", judged.intent)
+        check("判官：证据里记下来了",
+              any("judge" in item for item in judged.evidence), str(judged.evidence))
+
+        calls.clear()
+        await dialogue.classify_with_judge(vague, mode="auto", api_key="k", model="m")
+        check("判官：同一句走缓存不重复调用", not calls, str(len(calls)))
+
+        calls.clear()
+        await dialogue.classify_with_judge("随便说一句", mode="always", api_key="k", model="m")
+        check("判官：always 每句都问", bool(calls), str(len(calls)))
+    finally:
+        extractor.call_llm_json = original  # type: ignore[assignment]
+
+    async def boom(*args, **kwargs):  # noqa: ANN001, ANN003
+        raise RuntimeError("模型挂了")
+
+    extractor.call_llm_json = boom  # type: ignore[assignment]
+    try:
+        fallback = await dialogue.classify_with_judge(
+            "我该怎么办，好累啊，但是说出来也没人懂",
+            mode="always", api_key="k", model="m",
+        )
+        check("判官：模型挂了回退规则结论",
+              fallback.intent in ("seek_help", "vent", "chat"), fallback.intent)
+    finally:
+        extractor.call_llm_json = original  # type: ignore[assignment]
+
+    merged = dialogue.merge_judge(
+        dialogue.classify("今天还行"),
+        {"crisis": True, "intent": "crisis", "emotion": "难过", "intensity": 0.9},
+    )
+    check("判官：任一方判危机就按危机处理",
+          merged.crisis and merged.intent == "crisis", f"{merged.crisis}/{merged.intent}")
+
+    negated = dialogue.classify("我不开心")
+    check("规则：否定式「不开心」按难过算", negated.emotion == "难过", negated.emotion)
+    check("规则：否定词不算正向命中", dialogue.classify("不难过").emotion == "平静")
+
+
 async def dialogue_checks() -> None:
     """对话工作流：预处理 → 情绪/意图 → SOP → 后置校验。"""
     from services import dialogue
@@ -4349,6 +4428,7 @@ def main() -> int:
     interrupted_extraction_checks()
     asyncio.run(extract_fallback_checks())
     asyncio.run(auto_merge_checks())
+    asyncio.run(dialogue_judge_checks())
     asyncio.run(dialogue_checks())
     asyncio.run(housekeeping_checks())
     asyncio.run(group_awake_checks())
