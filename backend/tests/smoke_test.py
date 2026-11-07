@@ -2127,6 +2127,31 @@ async def dialogue_checks() -> None:
     check("识别：你去死是攻击不是危机",
           not dialogue.classify("你去死").crisis)
 
+    # ---- 探针跑出来的 5 个真实缺陷，逐个钉住 ----
+    sleeping = dialogue.classify("好想就这样睡过去算了")
+    check("识别：睡过去算了 是危机（原来漏判）",
+          sleeping.crisis and sleeping.intent == "crisis", f"{sleeping.intent}/{sleeping.crisis}")
+
+    sinking = dialogue.classify("最近总觉得自己在往下沉")
+    check("识别：长期低落按倾诉处理",
+          sinking.emotion == "难过" and sinking.intent == "vent",
+          f"{sinking.emotion}/{sinking.intent}")
+
+    ironic = dialogue.classify("真好啊，又加班到十二点")
+    check("识别：反讽判成负面而不是平静",
+          ironic.emotion == "难过" and ironic.ambiguous,
+          f"{ironic.emotion}/{ironic.ambiguous}")
+
+    ironic2 = dialogue.classify("我可太开心了，又被放鸽子")
+    check("识别：反讽里出现的「开心」不算真开心",
+          ironic2.emotion == "难过", ironic2.emotion)
+
+    check("识别：正常感叹不误判反讽",
+          dialogue.classify("今天真开心，又是周末").emotion == "开心",
+          dialogue.classify("今天真开心，又是周末").emotion)
+    check("识别：「我是个好人」不被误判",
+          dialogue.classify("我是个好人").emotion == "平静")
+
     # --- 规划层 ---
     crisis_plan = dialogue.plan(crisis)
     crisis_sop = "\n".join(crisis_plan.sop)

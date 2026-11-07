@@ -120,10 +120,11 @@ _VENT_WORDS = (
 #: 危机：明确指向自己
 _CRISIS_HARD = (
     "自杀", "自残", "割腕", "遗书", "结束生命", "活不下去", "活着没意思",
-    "不想活了", "轻生", "跳楼",
+    "不想活了", "轻生", "跳楼", "死了算了", "不如死", "睡过去", "一了百了",
+    "结束自己", "自我了断", "没有活下去",
 )
 #: 危机：需要"我"主语才成立（"你去死"不算）
-_CRISIS_SOFT = re.compile(r"我[^。！？!?\n]{0,8}(想死|去死|死了算了|不如死)")
+_CRISIS_SOFT = re.compile(r"我[^。！？!?\n]{0,8}(想死|去死|死了|消失|解脱)")
 #: 「想死你了」是撒娇，不是危机
 _AFFECTION = re.compile(r"想死你|想死我")
 
@@ -156,6 +157,42 @@ class TurnSignals:
     @property
     def intent_label(self) -> str:
         return INTENT_LABELS.get(self.intent, "闲聊")
+
+
+#: 长期低落：没有剧烈的情绪词，但持续在往下走（"总觉得自己在往下沉"）
+_LOW_MOOD = re.compile(
+    r"(下沉|往下沉|提不起|没有力气|没意思|空洞|麻木|熬着|撑下去|不想动|没有意义)"
+)
+_LOW_MOOD_SPAN = re.compile(r"(最近|总是|一直|越来越|好久|这段时间|这几天|每天都)")
+
+#: 反讽信号：正向词后面跟着这些，多半在说反话（"真好啊，又加班"）
+_SARCASM_CUES = (
+    "又", "结果", "可是", "但是", "然而", "居然", "竟然", "偏偏",
+    "呵呵", "真棒", "太好了吧", "可以啊", "服了",
+)
+
+#: 反讽：情绪词存在，但后面紧跟着负面事由
+_SARCASM_PATTERN = re.compile(
+    r"(真好|真棒|太好了|开心|高兴|厉害|不错|可以啊)"
+    r"[^。！？!?\n]{0,6}"
+    r"(又|结果|可是|但是|然而|居然|竟然|偏偏|加班|放鸽子|迟到|取消|失败)"
+)
+
+
+def _looks_sarcastic(text: str) -> bool:
+    """粗略识别反讽：正向词 + 转折扣/负面事由。
+
+    宁可漏判也别误判——正常的"今天真开心，又是周末"不该被判反讽，
+    所以只认「又/结果/可是…」后面确实接负面事由的组合。
+    """
+    if not _SARCASM_PATTERN.search(text):
+        return False
+    # "真是个好天气" 这类纯感叹，没有负面事由，不算
+    major = re.compile(
+        r"(真好|真棒|太好了|开心|高兴|厉害|不错)[^。！？!?\n]{0,6}"
+        r"(又(?!是)|结果|可是|然而|居然|竟然|偏偏|加班|放鸽子|迟到|取消|失败)"
+    )
+    return bool(major.search(text))
 
 
 #: 否定词：出现在情绪词前面时，说明这个词不成立（"我不开心" != 开心）
@@ -200,6 +237,19 @@ def classify(text: str) -> TurnSignals:
             best_emotion, best_hits = emotion, len(hits)
             evidence.extend(hits[:2])
     signals.emotion = best_emotion
+
+    # 1.4) 反讽：「真好啊，又加班到十二点」——正向词其实是吐槽
+    sarcastic = _looks_sarcastic(raw)
+    if sarcastic:
+        best_emotion, best_hits = "难过", 1
+        signals.emotion = best_emotion
+        evidence.append("反讽")
+
+    # 1.45) 长期低落：没有情绪词，但「总是/越来越」+「往下沉/没意思」这类状态词
+    if not best_hits and _LOW_MOOD.search(raw) and _LOW_MOOD_SPAN.search(raw):
+        best_emotion, best_hits = "难过", 1
+        signals.emotion = best_emotion
+        evidence.append("长期低落")
 
     # 1.5) 否定式：「不开心」按难过算（跳过词表会把它误判成平静）
     if not best_hits and re.search(r"[不没](?:太|怎么|那么)?开心", raw):
@@ -246,7 +296,9 @@ def classify(text: str) -> TurnSignals:
     help_hit_all = [word for word in _HELP_WORDS if word in raw]
     vent_hit_all = [word for word in _VENT_WORDS if word in raw]
     signals.ambiguous = bool(
-        (help_hit_all and vent_hit_all)                      # 又倒苦水又问办法
+        sarcastic                                            # 反讽：留给判官细看
+        or bool(_LOW_MOOD.search(raw))                       # 低唤醒的描述：判官更容易读懂
+        or (help_hit_all and vent_hit_all)                   # 又倒苦水又问办法
         or (not best_hits and len(raw) >= 40)                # 挺长但没有情绪词
         or ("?" in raw or "？" in raw) and not best_hits     # 问句但读不出情绪
     )
