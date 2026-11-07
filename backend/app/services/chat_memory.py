@@ -78,6 +78,33 @@ def pending_turns(shelf_id: str, *, user_id: Optional[str] = None, limit: int = 
     return db.list_chat_turns(shelf_id, user_id=user_id, limit=limit, ascending=True)
 
 
+def _mood_digest(turns: list[dict]) -> str:
+    """从这批流水里压出「情绪 + 意图」两行摘要。
+
+    对话记忆如果只记"聊了什么"，角色记不住"你每次提到工作就会焦虑"。
+    所以蒸馏时把情绪分布一起写进去，和事实一起向量化。
+    """
+    from collections import Counter
+
+    intents = Counter(str(item.get("intent") or "") for item in turns)
+    emotions = Counter(str(item.get("emotion") or "") for item in turns)
+    intents.pop("", None)
+    emotions.pop("", None)
+
+    parts: list[str] = []
+    if emotions:
+        parts.append("情绪：" + "、".join(f"{name}×{count}" for name, count in emotions.most_common(3)))
+    if intents:
+        from services import dialogue
+
+        labels = "、".join(
+            f"{dialogue.INTENT_LABELS.get(name, name)}×{count}"
+            for name, count in intents.most_common(3)
+        )
+        parts.append("意图：" + labels)
+    return "；".join(parts)
+
+
 def distill(
     shelf_id: str,
     character_id: str,
@@ -133,6 +160,9 @@ def distill(
     text = " ".join((summary or "").split())[:MAX_SUMMARY_CHARS] if summary else _local_summary(targets)
     if character_name:
         text = f"（与{character_name}的对话）{text}"
+    mood = _mood_digest(targets)
+    if mood:
+        text = f"{text}\n[本轮情绪] {mood}"
 
     agent_memory.remember(
         character_id,

@@ -38,6 +38,7 @@ from typing import AsyncIterator, Awaitable, Callable, Optional
 
 from core import database as db
 from services import affect
+from services import dialogue
 from services import expression
 from services import reply as reply_mod
 
@@ -356,6 +357,7 @@ async def run_turn(
     session_id: str = "",
     members: Optional[list[dict]] = None,
     image_urls: Optional[list[str]] = None,
+    dialogue_plan=None,
     tweaks: Optional[dict] = None,
     rng: Optional[random.Random] = None,
 ) -> AsyncIterator[dict]:
@@ -404,6 +406,8 @@ async def run_turn(
         content=text,
         mentions=mentions,
         images=list(image_urls or []),
+        intent=(dialogue_plan.signals.intent if dialogue_plan else ""),
+        emotion=(dialogue_plan.signals.emotion if dialogue_plan else ""),
     )
     yield {"type": "user", "text": text, "mentions": mentions}
 
@@ -477,6 +481,22 @@ async def run_turn(
             reply = reply_mod.strip_stage_directions("".join(pieces).strip())
             if not reply:
                 continue
+
+            # 【后置校验】安全兜底 / 去说教 / 危机补充。
+            # 前端在 speaker_end 会用这里的最终文本覆盖流式内容，所以流不受影响。
+            if dialogue_plan is not None:
+                verdict = dialogue.verify(reply, dialogue_plan)
+                if verdict.notes:
+                    agent_log.log(
+                        "reply_verified",
+                        owner_type="character",
+                        owner_id=speaker.character_id,
+                        shelf_id=shelf_id,
+                        severity="debug",
+                        payload={"notes": verdict.notes, "scope": "group"},
+                    )
+                if verdict.text:
+                    reply = verdict.text
 
             # 情绪推进：群聊里每个人的心情也被用户这句话影响（规则引擎，不发模型请求）
             mood_changed = False

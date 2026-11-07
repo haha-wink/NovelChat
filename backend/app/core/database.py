@@ -218,6 +218,8 @@ CREATE TABLE IF NOT EXISTS chat_turns (
     images       TEXT NOT NULL DEFAULT '[]',
     stickers     TEXT NOT NULL DEFAULT '[]',
     mentions     TEXT NOT NULL DEFAULT '[]',
+    intent       TEXT NOT NULL DEFAULT '',           -- 用户这句的意图（倾诉/求助/闲聊/危机）
+    emotion      TEXT NOT NULL DEFAULT '',           -- 用户这句的情绪标签
     round_no     INTEGER NOT NULL DEFAULT 0,
     distilled    INTEGER NOT NULL DEFAULT 0,        -- 已蒸馏成长期记忆（**仍保留**，供历史回看）
     created_at   TEXT NOT NULL
@@ -359,6 +361,12 @@ def init_db() -> None:
                 "UPDATE character_memory_items SET origin_character_id = character_id "
                 "WHERE origin_character_id IS NULL"
             )
+        turn_columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_turns)")}
+        if "intent" not in turn_columns:
+            conn.execute("ALTER TABLE chat_turns ADD COLUMN intent TEXT NOT NULL DEFAULT ''")
+        if "emotion" not in turn_columns:
+            conn.execute("ALTER TABLE chat_turns ADD COLUMN emotion TEXT NOT NULL DEFAULT ''")
+
         if "scene" not in memory_columns:
             conn.execute(
                 "ALTER TABLE character_memory_items ADD COLUMN scene TEXT NOT NULL DEFAULT ''"
@@ -2008,6 +2016,8 @@ def add_chat_turn(
     images: Optional[list] = None,
     stickers: Optional[list] = None,
     mentions: Optional[list] = None,
+    intent: str = "",
+    emotion: str = "",
     round_no: int = 0,
 ) -> dict:
     turn_id = new_id("turn")
@@ -2016,8 +2026,8 @@ def add_chat_turn(
             """
             INSERT INTO chat_turns
                 (id, shelf_id, character_id, user_id, session_id, role, speaker_name,
-                 content, images, stickers, mentions, round_no, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 content, images, stickers, mentions, intent, emotion, round_no, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 turn_id,
@@ -2031,6 +2041,8 @@ def add_chat_turn(
                 _dumps(images or []),
                 _dumps(stickers or []),
                 _dumps(mentions or []),
+                intent or "",
+                emotion or "",
                 int(round_no),
                 _now_ms(),
             ),

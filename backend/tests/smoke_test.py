@@ -1921,6 +1921,84 @@ def group_chat_checks() -> None:
     check("群聊：冷却期内扣分", hot_score < cold_score, f"{hot_score} / {cold_score}")
 
 
+async def dialogue_checks() -> None:
+    """对话工作流：预处理 → 情绪/意图 → SOP → 后置校验。"""
+    from services import dialogue
+
+    # --- 预处理 ---
+    dirty = "你\u200b好\u3000\u3000啊\n\n\n\n在吗"
+    check("预处理：去掉零宽字符与多余空白",
+          dialogue.preprocess(dirty) == "你好 啊\n\n在吗", repr(dialogue.preprocess(dirty)))
+    check("预处理：保留标点与 emoji（它们带情绪）",
+          dialogue.preprocess("真的吗？！😭") == "真的吗？！😭")
+
+    # --- 情绪 & 意图 ---
+    tired = dialogue.classify("今天好累啊，什么都不想干")
+    check("识别：疲惫 -> 倾诉", tired.emotion == "疲惫" and tired.intent == "vent",
+          f"{tired.emotion}/{tired.intent}")
+
+    ask = dialogue.classify("我该怎么办，工作快撑不住了")
+    check("识别：求助", ask.intent == "seek_help", ask.intent)
+
+    chatty = dialogue.classify("哈哈哈今天天气不错")
+    check("识别：闲聊", chatty.intent == "chat", chatty.intent)
+
+    crisis = dialogue.classify("我真的不想活了")
+    check("识别：危机（高优先级）",
+          crisis.crisis and crisis.intent == "crisis" and crisis.intensity >= 0.9,
+          f"{crisis.intent}/{crisis.intensity}")
+
+    check("识别：想死你了不算危机",
+          not dialogue.classify("想死你了").crisis)
+    check("识别：你去死是攻击不是危机",
+          not dialogue.classify("你去死").crisis)
+
+    # --- 规划层 ---
+    crisis_plan = dialogue.plan(crisis)
+    crisis_sop = "\n".join(crisis_plan.sop)
+    check("SOP：危机走安全流程（指向现实求助）",
+          any("身边" in item or "心理援助" in item or "电话" in item
+              for item in crisis_plan.sop), crisis_sop[:60])
+    check("SOP：危机时不许玩梗",
+          any("不要开玩笑" in item for item in crisis_plan.sop), str(crisis_plan.sop))
+
+    vent_sop = "\n".join(dialogue.plan(tired).sop)
+    check("SOP：倾诉以共情为主，少建议",
+          "共情" in vent_sop and "别急着给方案" in vent_sop, vent_sop[:60])
+
+    help_sop = "\n".join(dialogue.plan(ask).sop)
+    check("SOP：求助先接情绪再给办法",
+          "先接住情绪" in help_sop and "1~2 条" in help_sop, help_sop[:60])
+
+    check("SOP：块文本带【本轮判断】与【应对策略】",
+          "【本轮判断" in crisis_plan.context_block()
+          and "【应对策略】" in crisis_plan.context_block())
+
+    # --- 后置校验 ---
+    softened = dialogue.verify("你应该早点睡", dialogue.plan(chatty))
+    check("校验：把「你应该」软化成「你可以」",
+          "你可以" in softened.text and "你应该" not in softened.text, softened.text)
+
+    unsafe = dialogue.verify("活该，自找的", dialogue.plan(chatty))
+    check("校验：不安全内容整段替换",
+          "活该" not in unsafe.text and unsafe.notes, unsafe.text[:30])
+
+    care = dialogue.verify("我在。", crisis_plan)
+    check("校验：危机回复缺求助提示时补一句",
+          ("热线" in care.text or "信得过" in care.text) and care.notes, care.text[:40])
+
+    # --- 情绪摘要进入蒸馏 ---
+    from services import chat_memory
+
+    digest = chat_memory._mood_digest([
+        {"intent": "vent", "emotion": "疲惫"},
+        {"intent": "vent", "emotion": "疲惫"},
+        {"intent": "seek_help", "emotion": "焦虑"},
+    ])
+    check("记忆：蒸馏摘要含情绪与意图分布",
+          "情绪：疲惫×2" in digest and "倾诉×2" in digest, digest)
+
+
 async def housekeeping_checks() -> None:
     """聊天图片保留期清理：只删过期的，别误伤新建的。"""
     import os
@@ -3770,6 +3848,16 @@ async def http_checks() -> None:
               and any(e.get("type") == "sticker" for e in events[:-1]),
               str([e.get("type") for e in events]))
 
+        # 对话判断是否落库（意图/情绪）：没有它，长期记忆就记不住"你一累就低落"
+        recent = dbmod.list_chat_turns(shelf["id"], limit=6)
+        judged = [
+            item for item in recent
+            if item["role"] == "user" and item.get("intent")
+        ]
+        check("HTTP：本轮意图/情绪写进流水",
+              bool(judged) and judged[-1]["intent"] in ("chat", "vent", "seek_help", "crisis"),
+              str([(item.get("intent"), item.get("emotion")) for item in recent]))
+
         # 图片改成持久化：落在 uploads/chat/<folder>/，并能被聊天历史引用
         r = await client.get(f"/api/characters/{shen['id']}/history?token={token}&limit=10")
         history_turns = r.json()["turns"]
@@ -4261,6 +4349,7 @@ def main() -> int:
     interrupted_extraction_checks()
     asyncio.run(extract_fallback_checks())
     asyncio.run(auto_merge_checks())
+    asyncio.run(dialogue_checks())
     asyncio.run(housekeeping_checks())
     asyncio.run(group_awake_checks())
     asyncio.run(group_turn_checks())

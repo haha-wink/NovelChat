@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from api.v1.deps import *  # noqa: F401,F403
+from services import dialogue
 
 router = APIRouter()
 
@@ -21,7 +22,8 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
     if not shelf:
         raise HTTPException(status_code=404, detail="书架不存在")
 
-    prompt = (req.prompt or "").strip()
+    # 【输入预处理】去零宽字符、压空白（不动标点和 emoji，它们本身带情绪）
+    prompt = dialogue.preprocess(req.prompt or "")
     if len(prompt) > settings.max_prompt_chars:
         raise HTTPException(
             status_code=413, detail=f"单次输入过长（上限 {settings.max_prompt_chars} 字）"
@@ -58,6 +60,10 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
 
     # 纯图片时也要给模型一句话，否则 arun 拿到空串
     user_text = prompt or "我发了一张图片，你看看。"
+
+    # 【情绪 & 意图识别】整条消息判一次，群里所有人共用同一份判断
+    signals = dialogue.classify(prompt)
+    turn_plan = dialogue.plan(signals)
 
     api_key = settings.api_key_for(req.api_key)
     if not api_key:
@@ -97,6 +103,9 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
             + "\n".join(lines)
             + f"\n\n你在群聊里，用「{member['name']}」的身份说话：**只说 1 句，最多 2 句短话**；"
             "不要写动作、神态、心理描写，不要复述别人说过的话。"
+            # 用户这句话的情绪/意图，对群里每个角色都成立
+            + "\n\n"
+            + turn_plan.context_block()
         )
 
         accumulated = ""
@@ -128,6 +137,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 user_id=session.user_id,
                 text=prompt or "［图片］",
                 image_urls=image_urls,
+                dialogue_plan=turn_plan,
                 generate=generate,
                 session_id=f"group:{session.user_id}:{shelf_id}",
             ):
@@ -216,6 +226,27 @@ async def chat_endpoint(req: ChatRequest, request: Request):
     character = await anyio.to_thread.run_sync(require_character, character_id)
     book = await anyio.to_thread.run_sync(require_book, character["book_id"])
 
+    # 【情绪 & 意图识别】纯规则，零模型调用；危机判断优先
+    signals = dialogue.classify(prompt)
+    turn_plan = dialogue.plan(signals, character=character)
+
+    # 【Agent 状态调度】先按用户这句话推进角色状态，再生成——
+    # 这样回复里的语气反映的是"听完这句之后"的心情，而不是上一轮的。
+    affect_state: dict = {}
+    try:
+        affect_state = await anyio.to_thread.run_sync(
+            functools.partial(
+                affect.observe_user_message,
+                character=character,
+                user_id=session.user_id,
+                text=prompt,
+                image_count=len(images),
+                session_id="",
+            )
+        ) or {}
+    except Exception:  # noqa: BLE001
+        logger.exception("情绪更新失败（已忽略）")
+
     build = functools.partial(
         get_agent,
         api_key=api_key,
@@ -236,6 +267,10 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                 user_text=prompt,
             )
         )
+        # 【规划层】把本轮判断与 SOP 挂上去（易变部分，不进 Agent 缓存）
+        agent.additional_context = (
+            (agent.additional_context or "") + "\n\n" + turn_plan.context_block()
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("构建角色 Agent 失败")
         raise HTTPException(status_code=500, detail=f"角色初始化失败：{exc}") from exc
@@ -255,6 +290,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
             "mood": affect_state.get("emotion"),
             "turns": affect_state.get("turns", 0),
             "has_images": bool(images),
+            "dialog": dialogue.describe(signals),
         },
     )
 
@@ -304,29 +340,25 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                 if delta:
                     yield sse({"type": "delta", "text": delta})
 
-            # 去掉动作/神态旁白（模型偶尔仍会写）。只影响最终文本——
-            # 前端收到 final 后用干净文本覆盖刚才流式显示的版本。
+            # 【后置校验】去动作/神态旁白 → 安全兜底 → 去说教 → 危机补充
             clean_reply = reply_mod.strip_stage_directions(accumulated)
-            if clean_reply and clean_reply != accumulated.strip():
-                accumulated = clean_reply
-                yield sse({"type": "final", "text": clean_reply})
+            verdict = dialogue.verify(clean_reply, turn_plan)
+            if verdict.notes:
+                agent_log.log(
+                    "reply_verified",
+                    owner_type="character",
+                    owner_id=character_id,
+                    user_id=session.user_id,
+                    session_id=agno_session,
+                    severity="debug",
+                    payload={"notes": verdict.notes, "intent": signals.intent},
+                )
+            if verdict.text and verdict.text != accumulated.strip():
+                accumulated = verdict.text
+                yield sse({"type": "final", "text": verdict.text})
 
-            # 情绪与好感度推进：放在回复生成完成之后，不拖慢首字；失败不影响回复。
-            # 数值不返回给前端（用户不看数字），只影响下一轮的语气。
-            state_after: dict = {}
-            try:
-                state_after = await anyio.to_thread.run_sync(
-                    functools.partial(
-                        affect.observe_user_message,
-                        character=character,
-                        user_id=session.user_id,
-                        text=prompt,
-                        image_count=len(images),
-                        session_id=agno_session,
-                    )
-                ) or {}
-            except Exception:  # noqa: BLE001
-                logger.exception("情绪更新失败（已忽略）")
+            # 情绪已在生成前推进过（见上），这里只复用结果给贴纸用
+            state_after = affect_state
 
             # 记一条对话流水：7 天窗口内保留原文，超期由 chat_memory 蒸馏成长期记忆。
             # 没有这条记录，角色就永远不记得"我们聊过什么"。
@@ -348,6 +380,8 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                                 session_id=agno_session,
                                 speaker_name=speaker,
                                 images=image_urls if role == "user" else [],
+                                intent=signals.intent if role == "user" else "",
+                                emotion=signals.emotion if role == "user" else "",
                             )
                         )
             except Exception:  # noqa: BLE001
