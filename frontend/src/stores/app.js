@@ -300,6 +300,7 @@ async function openShelfChat(shelf) {
 }
 
 async function enterGroup(shelfId, title, book = null) {
+  pendingImages.value = []
   group.shelfId = shelfId
   group.shelfTitle = title || ''
   group.messages = []
@@ -338,6 +339,7 @@ function backToGroup() {
 }
 
 async function openChat(character) {
+  pendingImages.value = []
   activeCharacter.value = character
   view.value = 'chat'
   const conversation =
@@ -1044,14 +1046,23 @@ function parseLocalMentions(text) {
 
 async function sendGroupMessage() {
   const text = group.input.trim()
-  if (!text || group.loading) return
+  const images = pendingImages.value.slice()
+  if ((!text && images.length === 0) || group.loading) return
   if (!group.members.length) {
     alert('这个书架还没有角色，先把书加进来')
     return
   }
 
-  group.messages.push({ kind: 'user', content: text, mentions: parseLocalMentions(text) })
+  // 纯图片也要有个气泡，否则群里看不出用户发过东西
+  const content = text || (images.length ? '（发了张图）' : '')
+  group.messages.push({
+    kind: 'user',
+    content,
+    mentions: parseLocalMentions(text),
+    images: images.map((image) => image.base64)
+  })
   group.input = ''
+  pendingImages.value = []
   group.loading = true
   scrollGroupBottom()
 
@@ -1061,7 +1072,11 @@ async function sendGroupMessage() {
       fetch(`/api/shelves/${group.shelfId}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: authToken, prompt: text })
+        body: JSON.stringify({
+          token: authToken,
+          prompt: text,
+          images_base64: images.map((image) => image.base64)
+        })
       })
 
     let response = await request(token)

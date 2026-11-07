@@ -22,12 +22,39 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
         raise HTTPException(status_code=404, detail="书架不存在")
 
     prompt = (req.prompt or "").strip()
-    if not prompt:
-        raise HTTPException(status_code=400, detail="群聊目前只支持文字消息")
     if len(prompt) > settings.max_prompt_chars:
         raise HTTPException(
             status_code=413, detail=f"单次输入过长（上限 {settings.max_prompt_chars} 字）"
         )
+
+    try:
+        images = decode_images(
+            req.images_base64,
+            max_count=settings.max_images,
+            max_image_bytes=settings.max_image_bytes,
+            max_total_bytes=settings.max_total_image_bytes,
+        )
+    except ImageValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not prompt and not images:
+        raise HTTPException(status_code=400, detail="内容为空：请输入文字或上传截图")
+
+    # 图片只落盘一次，本回合所有发言人都看得到同一批
+    agno_images: list = []
+    image_dir: Path | None = None
+    if images:
+        upload_root = settings.uploads_path
+        upload_root.mkdir(parents=True, exist_ok=True)
+        image_dir = upload_root / f"group-{uuid.uuid4().hex}"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        for index, item in enumerate(images):
+            file_path = image_dir / f"image-{index}.{item.suffix}"
+            file_path.write_bytes(item.data)
+            agno_images.append(AgnoImage(filepath=str(file_path)))
+
+    # 纯图片时也要给模型一句话，否则 arun 拿到空串
+    user_text = prompt or "我发了一张图片，你看看。"
 
     api_key = settings.api_key_for(req.api_key)
     if not api_key:
@@ -56,7 +83,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 agent,
                 character,
                 session.user_id,
-                user_text=prompt,
+                user_text=user_text,
             )
         )
         # 附加群聊上下文：后说话的人要接得上前面的话
@@ -71,7 +98,8 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
 
         accumulated = ""
         async for chunk in agent.arun(
-            transcript[0]["text"],
+            user_text,
+            images=agno_images or None,
             user_id=session.user_id,
             session_id=conversation_session(session, member["character_id"]),
             stream=True,
@@ -95,7 +123,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
             async for event in group_chat.run_turn(
                 shelf_id=shelf_id,
                 user_id=session.user_id,
-                text=prompt,
+                text=prompt or "［图片］",
                 generate=generate,
                 session_id=f"group:{session.user_id}:{shelf_id}",
             ):
@@ -112,6 +140,10 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
         except Exception as exc:  # noqa: BLE001
             logger.exception("群聊出错（shelf=%s）", shelf_id)
             yield sse({"type": "error", "message": f"群聊失败：{exc}"})
+        finally:
+            # 本回合的临时截图用完就删，别把 uploads 越攒越大
+            if image_dir is not None:
+                shutil.rmtree(image_dir, ignore_errors=True)
 
     return StreamingResponse(
         event_stream(),

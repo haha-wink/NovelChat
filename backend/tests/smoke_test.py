@@ -4120,6 +4120,42 @@ async def group_chat_sse_checks() -> None:
                   bool(ends) and {"text", "mentions"} <= set(ends[0]), str(ends[:1]))
             check("群聊SSE：speaker_end 带贴纸字段（可能为空）",
                   bool(ends) and "sticker" in ends[0], str(ends[:1]))
+            # --- 群聊也支持发图（以前后端直接拒绝："群聊目前只支持文字消息"）---
+            empty = await client.post(
+                f"/api/shelves/{shelf['id']}/chat",
+                json={"token": session["token"], "prompt": ""},
+            )
+            check("群聊图片：空内容被拒", empty.status_code == 400, empty.text[:120])
+
+            tiny_png = (
+                "data:image/png;base64,"
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            )
+            with_image = await client.post(
+                f"/api/shelves/{shelf['id']}/chat",
+                json={
+                    "token": session["token"],
+                    "prompt": "",
+                    "images_base64": [tiny_png],
+                },
+            )
+            check("群聊图片：只发图也能进流程", with_image.status_code == 200, with_image.text[:120])
+            image_events = [
+                json.loads(line[5:].strip())
+                for line in with_image.text.splitlines()
+                if line.startswith("data:")
+            ]
+            check(
+                "群聊图片：纯图片时用户消息记为［图片］",
+                any(e.get("type") == "user" and "图片" in str(e.get("text") or "") for e in image_events),
+                str([e.get("type") for e in image_events[:4]]),
+            )
+            bad_image = await client.post(
+                f"/api/shelves/{shelf['id']}/chat",
+                json={"token": session["token"], "prompt": "", "images_base64": ["not-an-image"]},
+            )
+            check("群聊图片：坏图片被拒", bad_image.status_code == 400, bad_image.text[:120])
+
             check("群聊SSE：沈砚被 @ 后必答，且它 @ 苏晚触发了第二轮",
                   [e["name"] for e in speaker_starts] == ["沈砚", "苏晚"],
                   str([e["name"] for e in speaker_starts]))

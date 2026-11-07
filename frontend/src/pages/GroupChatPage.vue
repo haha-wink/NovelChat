@@ -75,7 +75,24 @@
       </div>
 
       <div class="chat-input-wrapper">
+        <div v-if="pendingImages.length > 0" class="pending-images">
+          <div v-for="(image, index) in pendingImages" :key="index" class="preview-item">
+            <img :src="image.base64" alt="preview" />
+            <button class="remove-btn" @click="pendingImages.splice(index, 1)">×</button>
+          </div>
+        </div>
+
         <div class="chat-input-box">
+          <label for="group-file-upload" class="upload-btn" title="上传图片（可选）">
+            📎
+            <input
+              id="group-file-upload"
+              type="file"
+              accept="image/png, image/jpeg, image/jpg"
+              hidden
+              @change="handleFileSelect"
+            />
+          </label>
           <textarea
             v-model="group.input"
             @keydown="handleGroupKeydown"
@@ -85,7 +102,7 @@
           ></textarea>
           <button
             class="send-btn"
-            :disabled="!group.input.trim() || group.loading"
+            :disabled="(!group.input.trim() && pendingImages.length === 0) || group.loading"
             @click="sendGroupMessage"
           >
             发送
