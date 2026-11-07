@@ -357,14 +357,11 @@ async function loadChatHistory(character) {
     const data = await api(`/api/characters/${character.id}/history${query}`)
     const conversation =
       conversations[character.id] || (conversations[character.id] = { messages: [], token: null })
-    conversation.messages = (data.turns || []).map((turn) => {
-      const images = turn.images || []
-      return {
-        role: turn.role === 'user' ? 'user' : 'assistant',
-        content: images.length && (turn.content || '') === '［图片］' ? '' : turn.content || '',
-        images
-      }
-    })
+    conversation.messages = (data.turns || []).map((turn) => ({
+      role: turn.role === 'user' ? 'user' : 'assistant',
+      content: turn.content || '',
+      images: turn.images || []
+    }))
   } catch (failure) {
     // 历史拉不到不该挡着聊天，静默忽略
   }
@@ -903,12 +900,11 @@ async function loadGroupHistory() {
 
 function turnToGroupMessage(turn) {
   if (turn.role === 'user') {
-    const images = turn.images || []
     return {
       kind: 'user',
-      content: images.length && (turn.content || '') === '［图片］' ? '' : turn.content || '',
+      content: turn.content || '',
       mentions: turn.mentions || [],
-      images
+      images: turn.images || []
     }
   }
   const member =

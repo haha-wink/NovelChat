@@ -120,6 +120,17 @@ async def lifespan(app: FastAPI):
     # 不标记失败的话前端会一直转圈，用户只能删书重传。
     try:
         interrupted = db.recover_interrupted_extractions()
+
+        # 聊天图片按保留期清一次（失败不影响启动）
+        try:
+            from services import housekeeping
+
+            housekeeping.cleanup_chat_images(
+                get_settings().uploads_path / "chat",
+                days=int(get_settings().chat_image_retention_days),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("清理聊天图片失败（已忽略）")
         from services import agent_log
 
         for book in interrupted:

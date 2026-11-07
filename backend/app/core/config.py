@@ -111,6 +111,10 @@ class Settings(BaseSettings):
     #: 说话样本少于几条就不做风格统计（统计没意义）
     prompt_style_min_samples: int = 3
 
+    # ---------- 聊天图片 ----------
+    #: 聊天图片保留天数；0 = 永久保留（目录会一直变大）
+    chat_image_retention_days: int = 30
+
     # ---------- Agent / 记忆 ----------
     agent_cache_size: int = 8
     history_runs: int = 8

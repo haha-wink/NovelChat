@@ -1921,6 +1921,44 @@ def group_chat_checks() -> None:
     check("群聊：冷却期内扣分", hot_score < cold_score, f"{hot_score} / {cold_score}")
 
 
+async def housekeeping_checks() -> None:
+    """聊天图片保留期清理：只删过期的，别误伤新建的。"""
+    import os
+    import time as _time
+
+    from services import housekeeping
+
+    base = get_settings().uploads_path / "_hk_test"
+    base.mkdir(parents=True, exist_ok=True)
+    fresh = base / ("a" * 32)
+    stale = base / ("b" * 32)
+    for directory in (fresh, stale):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "image-0.png").write_bytes(b"x" * 1024)
+    old = _time.time() - 40 * 86400
+    os.utime(stale, (old, old))
+
+    result = housekeeping.cleanup_chat_images(base, days=30)
+    check("清理：删掉过期的图片目录",
+          result["removed"] == 1 and not stale.exists(), str(result))
+    check("清理：保留没过期的", fresh.exists(), str(result))
+    check("清理：统计了释放的字节", result["freed_bytes"] >= 1024, str(result))
+
+    result0 = housekeeping.cleanup_chat_images(base, days=0)
+    check("清理：days=0 表示永久保留", result0["removed"] == 0 and fresh.exists(), str(result0))
+
+    # 目录名不合规的不动（防止手滑删到别的东西）
+    stray = base / "not-a-hex-dir"
+    stray.mkdir(exist_ok=True)
+    old2 = _time.time() - 40 * 86400
+    os.utime(stray, (old2, old2))
+    housekeeping.cleanup_chat_images(base, days=1)
+    check("清理：非法目录名不碰", stray.exists())
+
+    import shutil as _shutil
+    _shutil.rmtree(base, ignore_errors=True)
+
+
 async def group_awake_checks() -> None:
     """群聊唤醒：不 @ 也得有人接话（否则群里死寂）。"""
     import random as _random
@@ -4223,6 +4261,7 @@ def main() -> int:
     interrupted_extraction_checks()
     asyncio.run(extract_fallback_checks())
     asyncio.run(auto_merge_checks())
+    asyncio.run(housekeeping_checks())
     asyncio.run(group_awake_checks())
     asyncio.run(group_turn_checks())
     asyncio.run(group_presence_checks())

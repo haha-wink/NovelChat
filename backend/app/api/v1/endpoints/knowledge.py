@@ -69,3 +69,30 @@ async def clean_memories(dry_run: bool = True, character_id: Optional[str] = Non
             cleaner.clean_memories, dry_run=dry_run, character_id=character_id
         )
     )
+
+
+@router.post("/maintenance/clean-chat-images")
+async def clean_chat_images(days: int = 0) -> dict:
+    """手动清理聊天图片。
+
+    ``days`` 留空或 <=0 时用配置里的保留期（``CHAT_IMAGE_RETENTION_DAYS``）。
+    想永久保留就把配置设成 0——服务层对 ``days <= 0`` 是"不删"，不会误清空。
+    """
+    from services import housekeeping
+
+    settings = get_settings()
+    keep_days = int(days) if days > 0 else int(settings.chat_image_retention_days)
+    result = await anyio.to_thread.run_sync(
+        functools.partial(
+            housekeeping.cleanup_chat_images,
+            settings.uploads_path / "chat",
+            days=keep_days,
+        )
+    )
+    agent_log.log(
+        "chat_images_cleaned",
+        owner_type="manager",
+        severity="info",
+        payload={"days": keep_days, **result},
+    )
+    return {"days": keep_days, **result}

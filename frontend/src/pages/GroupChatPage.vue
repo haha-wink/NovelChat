@@ -59,7 +59,12 @@
                       target="_blank"
                       rel="noreferrer"
                     >
-                      <img class="sent-image" :src="image" alt="已发送的图片" />
+                      <img
+                        class="sent-image"
+                        :src="image"
+                        alt="已发送的图片"
+                        @error="$event.target.style.display = 'none'"
+                      />
                     </a>
                   </div>
                   <div v-if="message.content" v-html="renderMarkdown(message.content)"></div>
