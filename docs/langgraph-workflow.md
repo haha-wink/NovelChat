@@ -205,6 +205,70 @@ START → prepare ─┬─(有人)──────────→ pick ─┬
 
 ---
 
+## 8.5 并行与断点续跑（真正用到框架的地方）
+
+### ① `Send` 让群聊多角色并行生成
+
+以前 `speak → speak` 是一个个排队；现在 `pick` 之后用 `Send` 把本轮所有人**同时**派出去：
+
+```python
+def fan_out(state):
+    if state["finished"] or not state["queue"]:
+        return "finish"
+    return [Send("speak", {**state, "current": speaker}) for speaker in state["queue"]]
+```
+
+框架负责：并发调度、把每个分支的返回值**合并**回同一份 state、等这一批全部结束再往下走。
+我们只描述"派给谁"。
+
+代价：**同轮的人看不到彼此这一轮说了什么**（接力性换速度）。
+跨轮的 `transcript` 仍然累积，所以上一轮说过的话照样能看到。
+
+状态里要让框架合并的字段标了 reducer：
+
+| 字段 | reducer | 原因 |
+|---|---|---|
+| `transcript` | `operator.add` | 每人追加自己那条 |
+| `spoken` | `operator.add` | 同上 |
+| `pending_forced` | `operator.add` | 各自 @ 的人合并 |
+| `last_speaker_id` | 取最后一次非空 | 并行时"谁最后说"本就无确定答案 |
+
+实测（2 人，各延迟 120ms）：**0.22s vs 串行 0.30s**，且两人的 `start` 都早于任一 `end`。
+
+### ③ checkpointer 让断流可续
+
+编译时挂 `InMemorySaver`，每跑完一个节点存一份快照：
+
+```python
+graph.compile(checkpointer=InMemorySaver())
+```
+
+端点给每轮分配 `turn_id`（SSE 第一条事件 `{"type":"turn","thread_id":...}`），
+断流后客户端带同一个 id + `resume: true` 再来：
+
+```python
+payload = None if (req.resume and pending) else initial   # None = 从断点继续
+async for mode, chunk in graph.astream(payload, config=config, ...):
+```
+
+实测（`checkpoint_checks`）：
+
+```
+中途断开            → 抛 ConnectionError，已流出 2 段
+断点 next           → ('generate',)      ← 停在生成节点
+状态里的输入        → '在吗'              ← 没有丢
+resume 传 None      → 重新跑 generate，跑完
+最终 reply          → '续上了：我在。'
+断点 next           → ()                  ← 已结束
+```
+
+**一个关键约束**：`llm` 和 `summarizer` 是函数，**不能放进 state**（checkpointer 只序列化 state）。
+所以它们走 `config["configurable"]`——顺带的好处是续跑时换一个生成函数就行。
+
+**局限**：`InMemorySaver` 在进程重启后清空。要跨重启恢复，得换
+`AsyncSqliteSaver`（依赖 `langgraph-checkpoint-sqlite`，已验证兼容 dataclass），
+代价是启动时要维护一个长连接。
+
 ## 9. 两张图的分工
 
 | | 单聊 `agent/graph.py` | 群聊 `agent/group_graph.py` |

@@ -460,3 +460,34 @@ button.small { padding: 5px 10px; font-size: 12px; }
   object-fit: cover;
   cursor: zoom-in;
 }
+
+/* 断流后「继续生成」的提示条 */
+.resume-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255, 193, 7, 0.14);
+  border: 1px solid rgba(255, 193, 7, 0.35);
+  font-size: 13px;
+  color: #8a6d1b;
+}
+
+.resume-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 4px 14px;
+  background: #ffc107;
+  color: #4a3a00;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.resume-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

@@ -206,8 +206,10 @@ async def run_live(text: str, signals, character: dict, book_title: str, user_na
             "extra_context": "",
             "persist": False,          # 探测不写库
             "session_id": "probe-session",
-            "summarizer": None,
-            "llm": llm,
+        },
+        config={
+            "configurable": {"thread_id": "probe", "llm": llm, "summarizer": None},
+            "recursion_limit": 100,
         },
         stream_mode=["custom", "values"],
     ):

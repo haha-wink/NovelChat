@@ -32,16 +32,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
 
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
 from core import database as db
 from services import dialogue, expression
 from services import reply as reply_mod
 
 logger = logging.getLogger(__name__)
+
+
+def _keep_last(left: str, right: str) -> str:
+    """并行写入时保留最后一次非空值。"""
+    return right or left
 
 
 class GroupState(TypedDict, total=False):
@@ -60,13 +67,16 @@ class GroupState(TypedDict, total=False):
     # ---- 中间 ----
     names: list[str]
     mentions: list[str]
-    transcript: list[dict]
-    spoken: list[str]
-    last_speaker_id: str
-    pending_forced: list[str]
+    #: 用 reducer 合并：并行发言时每个节点只追加自己那条
+    transcript: Annotated[list, operator.add]
+    spoken: Annotated[list, operator.add]
+    pending_forced: Annotated[list, operator.add]
+    #: 并行时"谁最后说话"没有确定答案，取最后写入的那个即可（只用于选人冷却加权）
+    last_speaker_id: Annotated[str, _keep_last]
     round_no: int
     queue: list[dict]
-    cursor: int
+    #: Send 分叉时带下去的"这个人"
+    current: dict
     finished: bool
 
 
@@ -148,13 +158,16 @@ async def pick_node(state: GroupState) -> dict:
         threshold=float(options.get("threshold", 0.3)),
         all_threshold=float(options.get("all_threshold", 0.18)),
         cooldown_seconds=int(options.get("cooldown_seconds", 0)),
-        explicit_names=list(state.get("pending_forced") or []),
+        explicit_names=[
+            name for name in (state.get("pending_forced") or [])
+            if name not in (state.get("spoken") or [])
+        ],
         always_reply=bool(options.get("always_reply", True)),
         rng=state.get("rng"),
     )
 
     if not speakers:
-        return {"finished": True, "queue": [], "cursor": 0, "round_no": round_no - 1}
+        return {"finished": True, "queue": [], "round_no": round_no - 1}
 
     _emit({"type": "round_start", "round": round_no})
     queue = [
@@ -170,32 +183,24 @@ async def pick_node(state: GroupState) -> dict:
         }
         for item in speakers
     ]
-    return {
-        "queue": queue,
-        "cursor": 0,
-        "round_no": round_no,
-        "pending_forced": [],
-        "finished": False,
-    }
+    return {"queue": queue, "round_no": round_no, "finished": False}
 
 
 async def speak_node(state: GroupState) -> dict:
     """让队列里的下一个人说话：生成 → 校验 → 落库 → 贴纸。"""
     from agent import group as group_mod
 
-    queue = state.get("queue") or []
-    index = int(state.get("cursor") or 0)
-    if index >= len(queue):
-        return {"finished": True}
-
-    speaker = queue[index]
+    # 并行分叉时，每个人由 Send 把自己的那条塞进 current
+    speaker = state.get("current") or {}
+    if not speaker:
+        return {}
     members = state.get("members") or []
     member = next(
         (m for m in members if str(m.get("character_id")) == speaker["character_id"]),
         None,
     )
     if member is None:
-        return {"cursor": index + 1}
+        return {}
 
     _emit({
         "type": "speaker_start",
@@ -233,7 +238,7 @@ async def speak_node(state: GroupState) -> dict:
     # 前端在 speaker_end 用最终文本覆盖流式内容，所以流不受影响。
     reply = reply_mod.strip_stage_directions("".join(pieces).strip())
     if not reply:
-        return {"cursor": index + 1}
+        return {}
 
     plan = state.get("dialogue_plan")
     if plan is not None:
@@ -304,41 +309,51 @@ async def speak_node(state: GroupState) -> dict:
         "sticker": sticker,
     })
 
-    # 角色 @ 了别人 -> 下一轮必答
-    pending = list(state.get("pending_forced") or [])
-    spoken = list(state.get("spoken") or [])
-    for name in reply_mentions:
-        if name != group_mod.MENTION_ALL and name not in spoken and name not in pending:
-            pending.append(name)
-
-    spoken.append(speaker["name"])
-    transcript.append({"speaker": speaker["name"], "text": reply})
-
-    await asyncio.sleep(0)  # 让出控制权，保证流式体验
+    # 角色 @ 了别人 -> 下一轮必答（用 reducer 合并，并行也不丢）
+    spoken_now = set(state.get("spoken") or [])
+    forced = [
+        name for name in reply_mentions
+        if name != group_mod.MENTION_ALL and name not in spoken_now
+    ]
 
     return {
-        "cursor": index + 1,
-        "transcript": transcript,
-        "spoken": spoken,
+        "transcript": [{"speaker": speaker["name"], "text": reply}],
+        "spoken": [speaker["name"]],
         "last_speaker_id": speaker["character_id"],
-        "pending_forced": pending,
+        "pending_forced": forced,
     }
 
 
-def route_after_speak(state: GroupState) -> str:
+def fan_out(state: GroupState):
+    """本轮要说话的人 -> 每人一个 Send，并行跑。
+
+    这是 LangGraph 相对手写循环真正省事的地方：并发、合并、什么时候算"这一批跑完"，
+    框架都替你管了；我们只描述"派给谁"。
+    """
     queue = state.get("queue") or []
-    index = int(state.get("cursor") or 0)
-    if index < len(queue):
-        return "speak"
-    if not (state.get("pending_forced") or []):
+    if state.get("finished") or not queue:
+        return "finish"
+    return [
+        Send("speak", {**state, "current": speaker})
+        for speaker in queue
+    ]
+
+
+async def decide_node(state: GroupState) -> dict:
+    """并行那批跑完之后：还有没有下一轮。"""
+    return {}
+
+
+def route_after_speak(state: GroupState) -> str:
+    pending = [
+        name for name in (state.get("pending_forced") or [])
+        if name not in (state.get("spoken") or [])
+    ]
+    if not pending:
         return "finish"
     if int(state.get("round_no") or 0) >= int((state.get("options") or {}).get("max_rounds", 3)):
         return "finish"
     return "pick"
-
-
-def route_after_pick(state: GroupState) -> str:
-    return "finish" if state.get("finished") else "speak"
 
 
 def route_after_prepare(state: GroupState) -> str:
@@ -367,13 +382,15 @@ def build_group_graph():
     graph.add_conditional_edges(
         "prepare", route_after_prepare, {"pick": "pick", "finish": "finish"}
     )
+    # pick 之后用 Send 把本轮所有发言人**同时**派出去（fan-out）
     graph.add_conditional_edges(
-        "pick", route_after_pick, {"speak": "speak", "finish": "finish"}
+        "pick", fan_out, {"speak": "speak", "finish": "finish"}
     )
+    # 并行的那批都跑完后，统一判断要不要下一轮
+    graph.add_edge("speak", "decide")
+    graph.add_node("decide", decide_node)
     graph.add_conditional_edges(
-        "speak",
-        route_after_speak,
-        {"speak": "speak", "pick": "pick", "finish": "finish"},
+        "decide", route_after_speak, {"pick": "pick", "finish": "finish"}
     )
     graph.add_edge("finish", END)
     return graph.compile()

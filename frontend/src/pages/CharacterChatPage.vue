@@ -107,6 +107,12 @@
       </div>
 
       <div class="chat-input-wrapper">
+        <!-- 上一轮生成中断（网络抖动/切页面）：这里可以接着生成，不用重新提问 -->
+        <div v-if="currentConversation?.canResume" class="resume-banner">
+          <span>上一轮回复中断了</span>
+          <button class="resume-btn" :disabled="isLoading" @click="resumeChat">继续</button>
+        </div>
+
         <div v-if="pendingImages.length > 0" class="pending-images">
           <div v-for="(image, index) in pendingImages" :key="index" class="preview-item">
             <img :src="image.base64" alt="preview" />
@@ -225,6 +231,8 @@ const {
   handleFileSelect,
   scrollToBottom,
   sendMessage,
+  resumeChat,
+  currentConversation,
   fetchChat,
   readStream,
   handleGroupKeydown,

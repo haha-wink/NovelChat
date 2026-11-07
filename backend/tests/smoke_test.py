@@ -1921,6 +1921,82 @@ def group_chat_checks() -> None:
     check("群聊：冷却期内扣分", hot_score < cold_score, f"{hot_score} / {cold_score}")
 
 
+async def checkpoint_checks() -> None:
+    """断点续跑：生成到一半断了，用同一个 thread_id 能接着跑完。"""
+    from agent import graph as agent_graph
+
+    character = {
+        "id": "char_ckpt", "name": "沈砚", "role": "剑客",
+        "personality": ["寡言"], "speech_style": "短句", "background": "江湖",
+    }
+    state = {"calls": 0}
+
+    async def flaky(_state):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            yield "第一段，"
+            yield "第二段，"
+            raise ConnectionError("模拟断开")
+        for piece in ("续上了：", "我在。"):
+            yield piece
+
+    async def good(_state):
+        for piece in ("续上了：", "我在。"):
+            yield piece
+
+    initial = {
+        "user_id": "u_ckpt", "user_name": "读者", "character": character,
+        "book_title": "测试", "shelf_id": "", "raw_text": "在吗",
+        "image_urls": [], "api_key": "k", "model": "m",
+        "extra_context": "", "persist": False, "session_id": "s_ckpt",
+    }
+    graph = agent_graph.get_turn_graph()
+    config = {
+        "configurable": {"thread_id": "ckpt-test", "llm": flaky, "summarizer": None},
+        "recursion_limit": 100,
+    }
+
+    first: list[dict] = []
+    interrupted = False
+    try:
+        async for mode, chunk in graph.astream(
+            initial, config=config, stream_mode=["custom", "values"]
+        ):
+            if mode == "custom":
+                first.append(chunk)
+    except ConnectionError:
+        interrupted = True
+
+    check("断点：中途断开会被捕到", interrupted, "没抛异常")
+    check("断点：断开前已经流出两段",
+          [c.get("text") for c in first if c.get("type") == "delta"] == ["第一段，", "第二段，"],
+          str([c.get("text") for c in first]))
+
+    snapshot = await graph.aget_state(config)
+    check("断点：停在 generate 节点", snapshot.next == ("generate",), str(snapshot.next))
+    check("断点：状态里留着这一轮的输入",
+          snapshot.values.get("text") == "在吗", str(snapshot.values.get("text")))
+
+    config["configurable"]["llm"] = good
+    resumed: list[dict] = []
+    final: dict = {}
+    async for mode, chunk in graph.astream(
+        None, config=config, stream_mode=["custom", "values"]
+    ):
+        if mode == "custom":
+            resumed.append(chunk)
+        elif isinstance(chunk, dict) and chunk.get("reply"):
+            final = chunk
+
+    check("断点：续跑能跑完",
+          [c.get("text") for c in resumed if c.get("type") == "delta"] == ["续上了：", "我在。"],
+          str([c.get("text") for c in resumed]))
+    check("断点：续跑后拿到最终回复",
+          final.get("reply") == "续上了：我在。", str(final.get("reply")))
+    check("断点：续跑后图已结束",
+          (await graph.aget_state(config)).next == (), str((await graph.aget_state(config)).next))
+
+
 async def langgraph_checks() -> None:
     """直接跑一遍状态图（不经过 HTTP、不连模型）：节点顺序、流式、校验、落库。"""
     from agent import graph as agent_graph
@@ -1970,14 +2046,16 @@ async def langgraph_checks() -> None:
         "extra_context": "",
         "persist": True,
         "session_id": "s_graph",
-        "summarizer": None,
-        "llm": fake_llm,
+    }
+    graph_config = {
+        "configurable": {"thread_id": "test-graph-1", "llm": fake_llm, "summarizer": None},
+        "recursion_limit": 100,
     }
 
     events: list[dict] = []
     final: dict = {}
     async for mode, chunk in agent_graph.get_turn_graph().astream(
-        initial, stream_mode=["custom", "values"]
+        initial, config=graph_config, stream_mode=["custom", "values"]
     ):
         if mode == "custom":
             events.append(chunk)
@@ -2006,7 +2084,9 @@ async def langgraph_checks() -> None:
 
     # persist=False 时不落库（群聊由引擎统一落库时用）
     initial["persist"] = False
-    async for _ in agent_graph.get_turn_graph().astream(initial, stream_mode=["custom"]):
+    async for _ in agent_graph.get_turn_graph().astream(
+        initial, config=graph_config, stream_mode=["custom"]
+    ):
         pass
     check("LangGraph：persist=False 不写库",
           len(dbmod.list_chat_turns(shelf["id"], limit=10)) == 2,
@@ -2282,6 +2362,86 @@ async def group_awake_checks() -> None:
         members, text="@全体成员 开会", mentions=["all"], rng=rng
     )
     check("群聊唤醒：@全体成员 全员应答", len(everyone) == 2, str([s.name for s in everyone]))
+
+async def group_parallel_checks() -> None:
+    """Send 并行：多人同时生成，事件交错但各自独立，落库一条不少。"""
+    import asyncio as _asyncio
+    import random as _random
+    import time as _time
+
+    from agent import group_graph
+
+    dbmod.init_db()
+    shelf = _test_shelf("parallel")
+    book = library.create_book(
+        title="并行书", source_name="par.txt", source_type="txt",
+        text=SAMPLE, shelf_id=shelf["id"],
+    )
+    dbmod.insert_character(book_id=book["id"], name="沈砚", personality=["热情"], source="novel")
+    dbmod.insert_character(book_id=book["id"], name="苏晚", personality=["温柔"], source="novel")
+    members = dbmod.ensure_shelf_members(shelf["id"])
+
+    timeline: list[tuple[str, str]] = []
+
+    async def generate(member, transcript):
+        timeline.append(("start", member["name"]))
+        await _asyncio.sleep(0.12)          # 模拟模型延迟
+        timeline.append(("end", member["name"]))
+        yield f"我是{member['name']}。"
+
+    events: list[dict] = []
+
+    async def run() -> float:
+        started = _time.time()
+        async for event in group_graph.get_group_graph().astream(
+            {
+                "shelf_id": shelf["id"],
+                "user_id": "u_parallel",
+                "text": "你们都在吗",
+                "members": members,
+                "image_urls": [],
+                "options": {
+                    "max_speakers": 2, "max_rounds": 1, "threshold": 0.0,
+                    "all_threshold": 0.0, "cooldown_seconds": 0, "always_reply": True,
+                },
+                "dialogue_plan": None,
+                "rng": _random.Random(3),
+                "generate": generate,
+            },
+            stream_mode="custom",
+            config={"recursion_limit": 100},
+        ):
+            events.append(event)
+        return _time.time() - started
+
+    elapsed = await run()
+
+    starts = [name for kind, name in timeline if kind == "start"]
+    check("并行：两个人都被派出去", len(starts) == 2, str(timeline))
+    # 并行证据：第二个人开始之前，第一个人还没结束
+    if len(timeline) >= 2:
+        check("并行：真并发（第二人开始早于第一人结束）",
+              timeline[1][0] == "start", str(timeline))
+    else:
+        check("并行：真并发（第二人开始早于第一人结束）", False, str(timeline))
+
+    check("并行：耗时明显短于串行",
+          elapsed < 0.12 * len(starts), f"{elapsed:.2f}s / {len(starts)} 人")
+
+    ends = [item for item in events if item["type"] == "speaker_end"]
+    check("并行：每人都产出了 speaker_end", len(ends) == 2, str([e["name"] for e in ends]))
+    check("并行：delta 带 character_id 可分流",
+          all("character_id" in item for item in events if item["type"] == "delta"),
+          str(events[:3]))
+
+    turns = dbmod.list_chat_turns(shelf["id"], limit=20)
+    check("并行：落库一条不少",
+          len([item for item in turns if item["role"] == "assistant"]) == 2,
+          str(len(turns)))
+
+    dbmod.delete_book(book["id"])
+    dbmod.delete_shelf(shelf["id"])
+
 
 async def group_graph_checks() -> None:
     """群聊工作流本身：图结构、事件契约、多轮链式、落库。"""
@@ -4125,6 +4285,15 @@ async def http_checks() -> None:
                         if payload_text and payload_text != "[DONE]":
                             events.append(__import__("json").loads(payload_text))
 
+        check("HTTP：第一件事是声明本轮 turn_id（断流续跑用）",
+              bool(events) and events[0].get("type") == "turn"
+              and bool(events[0].get("thread_id")),
+              str(events[:1]))
+        check("HTTP：turn 事件带 resume 标记",
+              bool(events) and events[0].get("type") == "turn"
+              and "resume" in events[0],
+              str(events[:1]))
+
         merged_text = "".join(e.get("text", "") for e in events if e.get("type") == "delta")
         check("HTTP：流式文本完整", merged_text == "「沈砚」抬眼看你，把剑放在桌上。", merged_text)
         check("HTTP：有 done 事件", bool(events) and events[-1].get("type") == "done")
@@ -4641,11 +4810,13 @@ def main() -> int:
     interrupted_extraction_checks()
     asyncio.run(extract_fallback_checks())
     asyncio.run(auto_merge_checks())
+    asyncio.run(checkpoint_checks())
     asyncio.run(langgraph_checks())
     asyncio.run(dialogue_judge_checks())
     asyncio.run(dialogue_checks())
     asyncio.run(housekeeping_checks())
     asyncio.run(group_awake_checks())
+    asyncio.run(group_parallel_checks())
     asyncio.run(group_graph_checks())
     asyncio.run(group_turn_checks())
     asyncio.run(group_presence_checks())

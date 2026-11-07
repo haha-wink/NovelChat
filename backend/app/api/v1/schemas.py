@@ -56,6 +56,10 @@ class ChatRequest(BaseModel):
     character_ids: Optional[List[str]] = None
     prompt: str = ""
     images_base64: Optional[List[str]] = None
+    #: 这一轮的唯一编号。断流后拿同一个 id + resume=True 可以接着生成。
+    turn_id: Optional[str] = None
+    #: True = 从 turn_id 对应的断点继续，而不是开新的一轮
+    resume: bool = False
     #: 兼容字段：仅当 ALLOW_CLIENT_API_KEY=true 时生效
     api_key: Optional[str] = None
 

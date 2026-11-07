@@ -319,13 +319,36 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                 "extra_context": "",
                 "persist": True,
                 "session_id": agno_session,
-                "summarizer": memory_summarizer(),
-                "llm": run_agent,
             }
 
+            # 一轮一个 thread_id：断流后用同一个 id + resume 就能从断点续上
+            thread_id = (req.turn_id or "").strip() or uuid.uuid4().hex
+            yield sse({"type": "turn", "thread_id": thread_id, "resume": bool(req.resume)})
+
+            config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    # 生成函数与摘要器走 config：state 要能被 checkpointer 序列化
+                    "llm": run_agent,
+                    "summarizer": memory_summarizer(),
+                },
+                "recursion_limit": 100,
+            }
+
+            graph = agent_graph.get_turn_graph()
+            # resume=True 且确实有没跑完的断点时，传 None 从断点继续
+            pending = None
+            if req.resume:
+                try:
+                    snapshot = await graph.aget_state(config)
+                    pending = snapshot.next
+                except Exception:  # noqa: BLE001
+                    logger.exception("读取断点失败（当作新的一轮）")
+            payload = None if (req.resume and pending) else initial
+
             final: dict = {}
-            async for mode, chunk in agent_graph.get_turn_graph().astream(
-                initial, stream_mode=["custom", "values"]
+            async for mode, chunk in graph.astream(
+                payload, config=config, stream_mode=["custom", "values"]
             ):
                 if mode == "custom":
                     # 节点自己写出来的 SSE 事件（delta / final）

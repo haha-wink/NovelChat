@@ -133,6 +133,13 @@ const currentMessages = computed(() => {
   return conversations[id]?.messages || []
 })
 
+//: 当前会话对象（含 turnId / canResume，断流续跑要用）
+const currentConversation = computed(() => {
+  const id = activeCharacter.value?.id
+  if (!id) return null
+  return conversations[id] || null
+})
+
 // ---------------- 请求封装 ----------------
 async function loadHealth() {
   try {
@@ -778,7 +785,7 @@ async function sendMessage() {
 
     conversation.messages.push({ role: 'assistant', content: '' })
     const index = conversation.messages.length - 1
-    await readStream(response, conversation.messages, index)
+    await readStream(response, conversation.messages, index, conversation)
     if (!conversation.messages[index].content) {
       conversation.messages[index].content = '（没有收到内容，再试一次？）'
     }
@@ -789,22 +796,62 @@ async function sendMessage() {
   }
 }
 
-function fetchChat(token, characterId, prompt, images) {
+/** 断流后从断点继续生成（不重复提问，也不重复落库）。 */
+async function resumeChat() {
+  const character = activeCharacter.value
+  if (!character) return
+  const conversation = conversations[character.id]
+  if (!conversation || !conversation.turnId) return
+  if (isLoading.value) return
+
+  // 把上一轮没写完的助手气泡清空，接着往里写
+  const last = conversation.messages[conversation.messages.length - 1]
+  if (last && last.role === 'assistant') last.content = ''
+  else conversation.messages.push({ role: 'assistant', content: '' })
+
+  const index = conversation.messages.length - 1
+  isLoading.value = true
+  try {
+    const token = await ensureToken(character.id)
+    const response = await fetchChat(token, character.id, '', [], {
+      turnId: conversation.turnId,
+      resume: true
+    })
+    await readStream(response, conversation.messages, index, conversation)
+    if (!conversation.messages[index].content) {
+      conversation.messages[index].content = '（没有收到内容，再试一次？）'
+    }
+  } catch (failure) {
+    conversation.messages[index].content = `❌ ${failure.message}`
+  } finally {
+    isLoading.value = false
+  }
+}
+
+function fetchChat(token, characterId, prompt, images, options = {}) {
+  const body = {
+    token,
+    character_id: characterId,
+    prompt,
+    images_base64: images.length > 0 ? images : null
+  }
+  // 断点续跑：同一个 turn_id + resume=true，后端从断点接着生成
+  if (options.turnId) body.turn_id = options.turnId
+  if (options.resume) body.resume = true
   return fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      token,
-      character_id: characterId,
-      prompt,
-      images_base64: images.length > 0 ? images : null
-    })
+    body: JSON.stringify(body)
   })
 }
 
-async function readStream(response, messages, index) {
+async function readStream(response, messages, index, conversation = null) {
   await readSSEStream(response, (event) => {
-    if (event.type === 'delta' && event.text) {
+    if (event.type === 'turn' && conversation) {
+      // 后端给这一轮分配的编号：断流后拿它续跑
+      conversation.turnId = event.thread_id
+      conversation.canResume = false
+    } else if (event.type === 'delta' && event.text) {
       messages[index].content += event.text
       scrollToBottom()
     } else if (event.type === 'final' && typeof event.text === 'string') {
@@ -816,6 +863,7 @@ async function readStream(response, messages, index) {
       scrollToBottom()
     } else if (event.type === 'error') {
       messages[index].content += `\n\n[系统错误: ${event.message}]`
+      if (conversation && conversation.turnId) conversation.canResume = true
     }
   })
 }
@@ -1226,6 +1274,7 @@ const state = {
   merge,
   verifying,
   currentMessages,
+  currentConversation,
   loadHealth,
   loadBooks,
   booksOfShelf,
@@ -1268,6 +1317,7 @@ const state = {
   scrollToBottom,
   sendMessage,
   fetchChat,
+  resumeChat,
   readStream,
   handleGroupKeydown,
   scrollGroupBottom,

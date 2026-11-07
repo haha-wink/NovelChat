@@ -44,6 +44,7 @@ import functools
 import logging
 from typing import Any, Callable, Optional, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
@@ -76,10 +77,6 @@ class TurnState(TypedDict, total=False):
     persist: bool
     #: Agno 的会话 id（落库用）
     session_id: str
-    #: 蒸馏摘要器（可选，没有就用本地压缩）
-    summarizer: Any
-    #: 生成函数（依赖注入）
-    llm: LLMCallable
 
     # ---- 中间结果（节点写） ----
     text: str
@@ -189,11 +186,15 @@ async def plan_node(state: TurnState) -> dict:
     }
 
 
-async def generate_node(state: TurnState) -> dict:
-    """⑥ 生成回复：调用注入的 llm，逐段写进自定义流。"""
-    llm: Optional[LLMCallable] = state.get("llm")
+async def generate_node(state: TurnState, config: RunnableConfig) -> dict:
+    """⑥ 生成回复：调用注入的 llm，逐段写进自定义流。
+
+    ``llm`` 走 ``config["configurable"]`` 而不是 state——checkpointer 只序列化 state，
+    而函数不可序列化。顺带的好处是：断流后 resume 只要给同一份 config 就行。
+    """
+    llm: Optional[LLMCallable] = (config.get("configurable") or {}).get("llm")
     if llm is None:
-        raise RuntimeError("TurnState 缺少 llm：需要注入生成函数")
+        raise RuntimeError("缺少生成函数：config.configurable.llm 没有注入")
 
     writer = get_stream_writer()
     pieces: list[str] = []
@@ -231,7 +232,7 @@ def verify_node(state: TurnState) -> dict:
     return {"reply": text, "notes": verdict.notes}
 
 
-async def persist_node(state: TurnState) -> dict:
+async def persist_node(state: TurnState, config: RunnableConfig) -> dict:
     """⑧ 记忆写入：两条流水 + （必要时）蒸馏成长期记忆。"""
     if not state.get("persist", True):
         return {}
@@ -283,7 +284,7 @@ async def persist_node(state: TurnState) -> dict:
                 chat_memory.maybe_distill,
                 shelf_id,
                 str(character.get("id") or ""),
-                summarizer=state.get("summarizer"),
+                summarizer=(config.get("configurable") or {}).get("summarizer"),
                 user_id=state.get("user_id") or "",
                 character_name=str(character.get("name") or ""),
             )
@@ -298,8 +299,12 @@ async def persist_node(state: TurnState) -> dict:
 # 组装
 # ---------------------------------------------------------------------------
 
-def build_turn_graph():
-    """编译一轮对话的状态图（进程内复用，编译一次即可）。"""
+def build_turn_graph(checkpointer=None):
+    """编译一轮对话的状态图（进程内复用，编译一次即可）。
+
+    ``checkpointer``：给每个 thread 存一份状态快照。作用只有一个——
+    **流式生成到一半连接断了，能用同一个 thread_id 从断点续上**，不用从头再问一遍。
+    """
     graph = StateGraph(TurnState)
     graph.add_node("preprocess", preprocess_node)
     graph.add_node("classify", classify_node)
@@ -320,17 +325,31 @@ def build_turn_graph():
     graph.add_edge("verify", "persist")
     graph.add_edge("persist", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 #: 进程内单例（编译有开销，但图是无状态的，可安全复用）
 _TURN_GRAPH = None
 
+#: 断点续跑用的状态快照。放内存：进程重启就没了——
+#: 够覆盖"网络抖一下/切换页面"这类中断，重启恢复需要持久化后端（见文档）。
+_CHECKPOINTER = None
+
+
+def get_checkpointer():
+    """按需创建 checkpointer（内存版）。"""
+    global _CHECKPOINTER
+    if _CHECKPOINTER is None:
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        _CHECKPOINTER = InMemorySaver()
+    return _CHECKPOINTER
+
 
 def get_turn_graph():
     global _TURN_GRAPH
     if _TURN_GRAPH is None:
-        _TURN_GRAPH = build_turn_graph()
+        _TURN_GRAPH = build_turn_graph(get_checkpointer())
     return _TURN_GRAPH
 
 
