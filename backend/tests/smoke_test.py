@@ -2258,6 +2258,99 @@ async def group_awake_checks() -> None:
     )
     check("群聊唤醒：@全体成员 全员应答", len(everyone) == 2, str([s.name for s in everyone]))
 
+async def group_graph_checks() -> None:
+    """群聊工作流本身：图结构、事件契约、多轮链式、落库。"""
+    import random as _random
+
+    from agent import group_graph
+
+    info = group_graph.describe()
+    check("群聊图：已编译", bool(info["compiled"]), str(info))
+    check("群聊图：四个节点",
+          info["nodes"] == ["prepare", "pick", "speak", "finish"], str(info["nodes"]))
+
+    dbmod.init_db()
+    shelf = _test_shelf("ggraph")
+    book = library.create_book(
+        title="群聊图测试书", source_name="gg.txt", source_type="txt",
+        text=SAMPLE, shelf_id=shelf["id"],
+    )
+    dbmod.insert_character(
+        book_id=book["id"], name="沈砚", personality=["热情", "话多"], source="novel",
+    )
+    dbmod.insert_character(
+        book_id=book["id"], name="苏晚", personality=["温柔"], source="novel",
+    )
+    members = dbmod.ensure_shelf_members(shelf["id"])
+
+    calls: list[str] = []
+    replies = {"沈砚": ["@苏晚 你来。"], "苏晚": ["嗯，我在。"]}
+
+    async def generate(member, transcript):
+        calls.append(member["name"])
+        # transcript 里应该有用户那句
+        assert transcript and transcript[0]["speaker"] == "用户", str(transcript[:1])
+        for piece in replies.get(member["name"], ["嗯。"]):
+            yield piece
+
+    events: list[dict] = []
+    async for event in group_chat.run_turn(
+        shelf_id=shelf["id"],
+        user_id="u_ggraph",
+        text="@沈砚 在吗",
+        generate=generate,
+        members=members,
+        rng=_random.Random(7),
+    ):
+        events.append(event)
+
+    kinds = [item["type"] for item in events]
+    check("群聊图：先回 user 事件", kinds[0] == "user", str(kinds[:3]))
+    check("群聊图：有 round_start", "round_start" in kinds, str(kinds))
+    check("群聊图：speaker_start/end 成对",
+          kinds.count("speaker_start") == kinds.count("speaker_end") >= 1, str(kinds))
+    check("群聊图：最后是 done", kinds[-1] == "done", str(kinds[-2:]))
+
+    ends = [item for item in events if item["type"] == "speaker_end"]
+    check("群聊图：speaker_end 带最终文本",
+          bool(ends) and ends[0]["text"] == "@苏晚 你来。", str(ends[:1]))
+
+    # @ 链式：沈砚 @ 了苏晚 -> 第二轮苏晚必答
+    check("群聊图：被 @ 的人下一轮接上", "苏晚" in calls, str(calls))
+    done = events[-1]
+    check("群聊图：done 汇总了发言人与轮数",
+          done.get("rounds", 0) >= 1 and "沈砚" in (done.get("speakers") or []), str(done))
+
+    turns = dbmod.list_chat_turns(shelf["id"], limit=20)
+    assistant = [item for item in turns if item["role"] == "assistant"]
+    check("群聊图：每条发言都落了库", len(assistant) == len(calls), f"{len(assistant)}/{len(calls)}")
+    check("群聊图：落库带轮次", all(item["round_no"] >= 1 for item in assistant),
+          str([item["round_no"] for item in assistant]))
+
+    # 没人说话时也要正常收尾（不卡住）
+    async def silent(member, transcript):
+        return
+        yield  # pragma: no cover
+
+    silent_events = [
+        item async for item in group_chat.run_turn(
+            shelf_id=shelf["id"],
+            user_id="u_ggraph",
+            text="嗯",
+            generate=silent,
+            members=[],
+            rng=_random.Random(8),
+        )
+    ]
+    check("群聊图：空书架给提示并收尾",
+          any(item["type"] == "system" for item in silent_events)
+          and silent_events[-1]["type"] == "done",
+          str([item["type"] for item in silent_events]))
+
+    dbmod.delete_book(book["id"])
+    dbmod.delete_shelf(shelf["id"])
+
+
 async def group_turn_checks() -> None:
     """跑完整回合：用假生成器，不碰模型。"""
     dbmod.init_db()
@@ -4528,6 +4621,7 @@ def main() -> int:
     asyncio.run(dialogue_checks())
     asyncio.run(housekeeping_checks())
     asyncio.run(group_awake_checks())
+    asyncio.run(group_graph_checks())
     asyncio.run(group_turn_checks())
     asyncio.run(group_presence_checks())
     asyncio.run(history_and_shelf_checks())

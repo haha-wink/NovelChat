@@ -159,10 +159,61 @@ LangGraph：persist=False 不写库          ✓
 
 ---
 
-## 8. 还没迁过来的
+## 8. 群聊也迁过来了
 
-群聊（`agent/group.py`）仍是原来的 `run_turn` 循环：先选谁说话，再逐个生成。
-它已经复用了同一套 `dialogue.plan` + `dialogue.verify`，但还没走这张图。
+`agent/group_graph.py`，四个节点：
 
-要迁的话，每个发言人的一次生成就是一次 `graph.astream(... persist=False ...)`，
-外面再套一层"选人 + 轮次"的图（LangGraph 支持子图）。这是下一步可做的工作。
+```
+START → prepare ─┬─(有人)──────────→ pick ─┬─(有人)→ speak ─┬─(本批还有)→ speak
+                 │                         └─(没人)→ finish  ├─(被@了)→ pick
+                 └─(空书架)→ finish ←───────────────────────┴─(结束)→ END
+```
+
+| 节点 | 职责 |
+|---|---|
+| `prepare` | 成员加载、@ 解析、**@全体唤醒**、用户那句落库 |
+| `pick` | 每轮选人（规则仍由 `group.select_speakers` 决定） |
+| `speak` | 一个人：生成 → 去旁白 → 校验 → 落库 → 贴纸 → @ 链式 |
+| `finish` | 汇总（`done` 事件带 rounds / speakers） |
+
+`run_turn` 的签名和事件流**没变**（`user` / `round_start` / `speaker_start` /
+`delta` / `speaker_end` / `done`），所以前端和既有测试一行没改——
+变的是内部：现在它只是"填 state → 跑图 → 转事件"。
+
+顺带修了一个静默 bug：`GROUP_ALWAYS_REPLY` 以前只进了 options 但从没传给
+`select_speakers`，等于关不掉兜底；现在接上了。
+
+**循环怎么不走爆**：图里有回边（speak → speak / speak → pick），
+调用时用 `config={"recursion_limit": 100}`，够 3 轮 × 3 人跑完。
+
+验证（`group_graph_checks`，11 项）：
+
+```
+群聊图：已编译                        ✓
+群聊图：四个节点                      ✓
+群聊图：先回 user 事件                ✓
+群聊图：有 round_start                ✓
+群聊图：speaker_start/end 成对        ✓
+群聊图：最后是 done                   ✓
+群聊图：speaker_end 带最终文本         ✓
+群聊图：被 @ 的人下一轮接上            ✓
+群聊图：done 汇总了发言人与轮数        ✓
+群聊图：每条发言都落了库               ✓
+群聊图：落库带轮次                    ✓
+群聊图：空书架给提示并收尾             ✓
+```
+
+---
+
+## 9. 两张图的分工
+
+| | 单聊 `agent/graph.py` | 群聊 `agent/group_graph.py` |
+|---|---|---|
+| 规模 | 8 节点线性 | 4 节点带循环 |
+| 一轮 | 一个角色说一次 | 多个角色 × 多轮 |
+| 状态 | `TurnState` | `GroupState` |
+| 生成函数 | `llm`（注入） | `generate(member, transcript)`（注入） |
+| 落库 | `persist` 节点 | `prepare`（用户）+ `speak`（每条发言） |
+
+两张图的节点函数是**同一个风格**：阻塞操作走 `asyncio.to_thread`，
+流式输出走 `get_stream_writer()`，校验都调 `dialogue.verify`。

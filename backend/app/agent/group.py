@@ -363,11 +363,20 @@ async def run_turn(
 ) -> AsyncIterator[dict]:
     """跑完一整个回合，逐条产出事件。
 
+    编排已经交给 LangGraph（见 ``agent/group_graph.py``）：
+
+        prepare → pick ─→ speak ─→ ... → finish
+
+    这里只负责把参数塞进 state、把图吐出来的事件转出去。
+    返回的事件顺序与旧实现一致（user / round_start / speaker_start / delta / speaker_end / done）。
+
     ``generate(member, transcript)`` 由调用方提供：它负责构建 Agent 并流式产出文本片段。
     ``transcript`` 是本回合**已说过的话**（含用户那句），让后说话的人能接上。
     ``rng`` 可注入，测试时用固定种子保证可复现。
     """
     from core.config import get_settings
+
+    from agent import group_graph
 
     settings = get_settings()
     options = {
@@ -379,188 +388,21 @@ async def run_turn(
         "always_reply": settings.group_always_reply,
     }
     options.update(tweaks or {})
-    rng = rng or random.Random()
 
-    if members is None:
-        members = db.ensure_shelf_members(shelf_id)
-    if not members:
-        yield {"type": "system", "text": "这个书架里还没有角色，先把书加进来吧"}
-        yield {"type": "done", "rounds": 0, "speakers": []}
-        return
+    initial = {
+        "shelf_id": shelf_id,
+        "user_id": user_id,
+        "text": text,
+        "session_id": session_id,
+        "members": members,
+        "image_urls": list(image_urls or []),
+        "options": options,
+        "dialogue_plan": dialogue_plan,
+        "rng": rng or random.Random(),
+        "generate": generate,
+    }
 
-    names = {str(m.get("name") or "") for m in members}
-    mentions = parse_mentions(text, names)
-
-    # @全体成员 = 把所有人叫上线（离线 -> 在线），再让所有在线成员都回一句。
-    # 这一步必须在选角之前，否则离线的人根本没资格被选中。
-    if MENTION_ALL in mentions:
-        woken = db.set_all_members_online(shelf_id)
-        if woken:
-            members = db.ensure_shelf_members(shelf_id)
-            logger.info("被 @全体成员 叫上线：%d 人", woken)
-
-    db.add_chat_turn(
-        shelf_id=shelf_id,
-        user_id=user_id,
-        role="user",
-        content=text,
-        mentions=mentions,
-        images=list(image_urls or []),
-        intent=(dialogue_plan.signals.intent if dialogue_plan else ""),
-        emotion=(dialogue_plan.signals.emotion if dialogue_plan else ""),
-    )
-    yield {"type": "user", "text": text, "mentions": mentions}
-
-    transcript: list[dict] = [{"speaker": "用户", "text": text}]
-    spoken: list[str] = []
-    last_speaker_id: Optional[str] = None
-    pending_forced: list[str] = []
-    round_no = 0
-
-    while round_no < int(options["max_rounds"]):
-        round_no += 1
-        speakers = select_speakers(
-            members,
-            text=text,
-            mentions=mentions if round_no == 1 else [],
-            last_speaker_id=last_speaker_id,
-            max_speakers=int(options["max_speakers"]),
-            threshold=float(options["threshold"]),
-            all_threshold=float(options["all_threshold"]),
-            cooldown_seconds=int(options["cooldown_seconds"]),
-            explicit_names=pending_forced,
-            rng=rng,
-        )
-        pending_forced = []
-        if not speakers:
-            round_no -= 1
-            break
-
-        yield {"type": "round_start", "round": round_no}
-
-        for speaker in speakers:
-            member = next(
-                (m for m in members if str(m.get("character_id")) == speaker.character_id),
-                None,
-            )
-            if member is None:
-                continue
-
-            yield {
-                "type": "speaker_start",
-                "character_id": speaker.character_id,
-                "name": speaker.name,
-                "avatar": member.get("avatar") or "🎭",
-                "avatar_url": member.get("avatar_url"),
-                "round": round_no,
-                "forced": speaker.forced,
-                "reason": speaker.reason,
-            }
-
-            pieces: list[str] = []
-            try:
-                async for piece in generate(member, transcript):
-                    if not piece:
-                        continue
-                    pieces.append(piece)
-                    yield {
-                        "type": "delta",
-                        "character_id": speaker.character_id,
-                        "text": piece,
-                    }
-            except Exception as exc:  # noqa: BLE001 - 一个人失败不该炸整个群
-                logger.exception("群聊生成失败：%s", speaker.name)
-                yield {
-                    "type": "error",
-                    "character_id": speaker.character_id,
-                    "message": f"{speaker.name} 没能说话：{exc}",
-                }
-
-            # 去掉动作/神态旁白（模型偶尔还是会写）——只影响最终文本，
-            # 前端在 speaker_end 时用这个文本覆盖流式内容。
-            reply = reply_mod.strip_stage_directions("".join(pieces).strip())
-            if not reply:
-                continue
-
-            # 【后置校验】安全兜底 / 去说教 / 危机补充。
-            # 前端在 speaker_end 会用这里的最终文本覆盖流式内容，所以流不受影响。
-            if dialogue_plan is not None:
-                verdict = dialogue.verify(reply, dialogue_plan)
-                if verdict.notes:
-                    agent_log.log(
-                        "reply_verified",
-                        owner_type="character",
-                        owner_id=speaker.character_id,
-                        shelf_id=shelf_id,
-                        severity="debug",
-                        payload={"notes": verdict.notes, "scope": "group"},
-                    )
-                if verdict.text:
-                    reply = verdict.text
-
-            # 情绪推进：群聊里每个人的心情也被用户这句话影响（规则引擎，不发模型请求）
-            mood_changed = False
-            try:
-                state_after = await asyncio.to_thread(
-                    affect.observe_user_message,
-                    character=member,
-                    user_id=user_id,
-                    text=text,
-                    session_id=session_id,
-                )
-                mood_changed = bool(
-                    state_after.get("previous_emotion")
-                    and state_after["previous_emotion"] != state_after.get("emotion")
-                )
-            except Exception:  # noqa: BLE001 - 情绪失败不能影响发言
-                logger.exception("群聊情绪更新失败（已忽略）")
-
-            reply_mentions = parse_mentions(reply, names)
-            db.add_chat_turn(
-                shelf_id=shelf_id,
-                user_id=user_id,
-                role="assistant",
-                character_id=speaker.character_id,
-                speaker_name=speaker.name,
-                content=reply,
-                mentions=reply_mentions,
-                round_no=round_no,
-                session_id=session_id,
-            )
-            db.record_member_spoke(shelf_id, speaker.character_id)
-
-            transcript.append({"speaker": speaker.name, "text": reply})
-            spoken.append(speaker.name)
-            last_speaker_id = speaker.character_id
-
-            sticker = expression.maybe_sticker(
-                {
-                    "emotion": speaker.emotion or "平静",
-                    "valence": speaker.valence or 0.0,
-                    "arousal": speaker.arousal or 0.35,
-                },
-                mood_changed=mood_changed,
-                asked_about_mood=expression.asks_about_mood(text),
-                rng=rng,
-            )
-            yield {
-                "type": "speaker_end",
-                "character_id": speaker.character_id,
-                "name": speaker.name,
-                "text": reply,
-                "mentions": reply_mentions,
-                "round": round_no,
-                "sticker": sticker,
-            }
-
-            # 角色 @ 了别人 -> 下一轮必答
-            for name in reply_mentions:
-                if name != MENTION_ALL and name not in spoken and name not in pending_forced:
-                    pending_forced.append(name)
-
-            await asyncio.sleep(0)  # 让出控制权，保证流式体验
-
-        if not pending_forced:
-            break
-
-    yield {"type": "done", "rounds": round_no, "speakers": spoken}
+    async for event in group_graph.get_group_graph().astream(
+        initial, stream_mode="custom", config={"recursion_limit": 100}
+    ):
+        yield event
