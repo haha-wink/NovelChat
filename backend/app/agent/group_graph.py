@@ -61,6 +61,8 @@ class GroupState(TypedDict, total=False):
     image_urls: list[str]
     options: dict
     dialogue_plan: Any
+    #: 本轮用户发言的判断结果（情绪/强度/意图/危机），选人靠它
+    signals: Any
     rng: Any
     generate: Any          # (member, transcript) -> AsyncIterator[str]
 
@@ -142,48 +144,95 @@ async def prepare_node(state: GroupState) -> dict:
 
 
 async def pick_node(state: GroupState) -> dict:
-    """选人：这一轮谁说话。规则本身仍由 group.select_speakers 决定。"""
+    """选人：按「用户这句话需要什么样的人」来选，而不是「谁话多」。
+
+    第一轮走完整的需求分析（情绪 / 强度 / 意图 -> 人数 + 性格适配）；
+    后续轮次是被 @ 出来的追问，只让被点到的人接。
+    """
     from agent import group as group_mod
+    from services import dispatch
 
     options = state.get("options") or {}
     round_no = int(state.get("round_no") or 0) + 1
     members = state.get("members") or []
+    signals = state.get("signals")
+    text = state.get("text") or ""
+    pending = [
+        name for name in (state.get("pending_forced") or [])
+        if name not in (state.get("spoken") or [])
+    ]
 
-    speakers = group_mod.select_speakers(
+    # 第二轮起：只让被 @ 的人接，不再引入新人
+    if round_no > 1 and pending:
+        by_name = {str(m.get("name") or ""): m for m in members}
+        queue = [
+            {
+                "character_id": str(by_name[name].get("character_id") or ""),
+                "name": name,
+                "score": 1.0,
+                "forced": True,
+                "reason": "被角色 @ 追问",
+                "emotion": str(by_name[name].get("emotion") or "平静"),
+                "valence": float(by_name[name].get("valence") or 0.0),
+                "arousal": float(by_name[name].get("arousal") or 0.35),
+            }
+            for name in pending
+            if name in by_name
+        ]
+        if not queue:
+            return {"finished": True, "queue": [], "round_no": round_no - 1}
+        _emit({"type": "round_start", "round": round_no})
+        return {"queue": queue, "round_no": round_no, "pending_forced": [], "finished": False}
+
+    emotion = getattr(signals, "emotion", "平静") if signals else "平静"
+    intent = getattr(signals, "intent", "chat") if signals else "chat"
+    intensity = float(getattr(signals, "intensity", 0.0) if signals else 0.0)
+    crisis = bool(getattr(signals, "crisis", False) if signals else False)
+    mentions = state.get("mentions") or []
+
+    decision = dispatch.select(
         members,
-        text=state.get("text") or "",
-        mentions=(state.get("mentions") or []) if round_no == 1 else [],
+        text=text,
+        emotion=emotion,
+        intent=intent,
+        intensity=intensity,
+        crisis=crisis,
+        mentions=mentions,
+        explicit_names=pending,
+        all_called=group_mod.MENTION_ALL in mentions,
         last_speaker_id=state.get("last_speaker_id") or None,
-        max_speakers=int(options.get("max_speakers", 3)),
-        threshold=float(options.get("threshold", 0.3)),
-        all_threshold=float(options.get("all_threshold", 0.18)),
-        cooldown_seconds=int(options.get("cooldown_seconds", 0)),
-        explicit_names=[
-            name for name in (state.get("pending_forced") or [])
-            if name not in (state.get("spoken") or [])
-        ],
-        always_reply=bool(options.get("always_reply", True)),
+        cooldown_seconds=int(options.get("cooldown_seconds", 45)),
         rng=state.get("rng"),
+        relevance=lambda member: group_mod._relevance(member, text),
     )
 
-    if not speakers:
+    if not decision.picks:
         return {"finished": True, "queue": [], "round_no": round_no - 1}
 
     _emit({"type": "round_start", "round": round_no})
     queue = [
         {
-            "character_id": item.character_id,
-            "name": item.name,
-            "score": item.score,
-            "forced": item.forced,
-            "reason": item.reason,
-            "emotion": item.emotion,
-            "valence": item.valence,
-            "arousal": item.arousal,
+            "character_id": pick.character_id,
+            "name": pick.name,
+            "score": pick.score,
+            "forced": pick.forced,
+            "reason": pick.reason,
+            "emotion": pick.emotion,
+            "valence": pick.valence,
+            "arousal": pick.arousal,
+            "fit": pick.fit,
         }
-        for item in speakers
+        for pick in decision.picks
     ]
-    return {"queue": queue, "round_no": round_no, "finished": False}
+    _emit({
+        "type": "dispatch",
+        "emotion": decision.emotion,
+        "intent": decision.intent,
+        "intensity": decision.intensity,
+        "target": decision.target,
+        "picked": [pick.name for pick in decision.picks],
+    })
+    return {"queue": queue, "round_no": round_no, "pending_forced": [], "finished": False}
 
 
 async def speak_node(state: GroupState) -> dict:
@@ -211,6 +260,7 @@ async def speak_node(state: GroupState) -> dict:
         "round": state.get("round_no") or 1,
         "forced": speaker.get("forced", False),
         "reason": speaker.get("reason", ""),
+        "fit": speaker.get("fit"),
     })
 
     transcript = list(state.get("transcript") or [])

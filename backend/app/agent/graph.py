@@ -87,6 +87,8 @@ class TurnState(TypedDict, total=False):
     memory_block: str
     state_block: str
     context_block: str
+    #: 这一轮技能（业务层）产出的素材块
+    skill_block: str
     reply: str
     notes: list[str]
 
@@ -185,6 +187,38 @@ async def plan_node(state: TurnState) -> dict:
         "state_block": state_block,
         "context_block": "\n\n".join(parts),
     }
+
+
+async def skill_node(state: TurnState) -> dict:
+    """⑤.5 技能层：按本轮判断挑一个业务技能，把素材拼进上下文。
+
+    走的是工具层三层里的第三层（``services/skills.py``）：
+    Skill 决定调哪些工具，工具是同步纯函数，**零额外模型调用**。
+    """
+    from services import skills
+
+    signals = state.get("signals")
+    payload = {}
+    if signals is not None:
+        payload = {
+            "emotion": getattr(signals, "emotion", "平静"),
+            "intent": getattr(signals, "intent", "chat"),
+            "intensity": getattr(signals, "intensity", 0.0),
+            "crisis": getattr(signals, "crisis", False),
+        }
+
+    try:
+        result = skills.run_for(payload)
+    except Exception:  # noqa: BLE001 - 技能失败不能影响聊天
+        logger.exception("技能执行失败（已忽略）")
+        result = None
+
+    block = result.as_block() if result is not None else ""
+    context = state.get("context_block") or ""
+    if block:
+        context = f"{context}\n\n{block}" if context else block
+        logger.debug("本轮技能：%s（%d 条素材）", result.skill, len(result.materials))
+    return {"skill_block": block, "context_block": context}
 
 
 async def generate_node(state: TurnState, config: RunnableConfig) -> dict:
@@ -312,6 +346,7 @@ def build_turn_graph(checkpointer=None):
     graph.add_node("observe", observe_node)
     graph.add_node("recall", recall_node)
     graph.add_node("plan", plan_node)
+    graph.add_node("skill", skill_node)
     graph.add_node("generate", generate_node)
     graph.add_node("verify", verify_node)
     graph.add_node("persist", persist_node)
@@ -321,7 +356,8 @@ def build_turn_graph(checkpointer=None):
     graph.add_edge("classify", "observe")
     graph.add_edge("observe", "recall")
     graph.add_edge("recall", "plan")
-    graph.add_edge("plan", "generate")
+    graph.add_edge("plan", "skill")
+    graph.add_edge("skill", "generate")
     graph.add_edge("generate", "verify")
     graph.add_edge("verify", "persist")
     graph.add_edge("persist", END)
@@ -476,7 +512,7 @@ def describe() -> dict:
         "engine": "langgraph",
         "nodes": [
             "preprocess", "classify", "observe", "recall",
-            "plan", "generate", "verify", "persist",
+            "plan", "skill", "generate", "verify", "persist",
         ],
         "compiled": graph is not None,
     }

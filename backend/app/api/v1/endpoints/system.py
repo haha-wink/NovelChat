@@ -11,10 +11,26 @@ _STICKER_NAME = re.compile(r"^[0-9a-f]{1,8}(-[0-9a-f]{1,8})*$")
 
 
 
+def tools_describe() -> dict:
+    """工具层清单（协议层 + 框架层）。"""
+    from agent.tools import langgraph_tools
+
+    return langgraph_tools.describe()
+
+
+def skills_describe() -> dict:
+    """业务技能清单。"""
+    from services import skills
+
+    return skills.describe()
+
+
 @router.get("/health")
 async def health() -> dict:
     from agent import graph as agent_graph
     from agent import group_graph as agent_group_graph
+    from agent.tools import langgraph_tools
+    from services import skills
     from services import emotion_model
     from services import name_engine
 
@@ -24,6 +40,9 @@ async def health() -> dict:
         # 对话工作流跑在哪张图上（节点顺序一目了然）
         "workflow": agent_graph.describe(),
         "group_workflow": agent_group_graph.describe(),
+        # 工具三层：协议层清单 + 业务技能
+        "tools": tools_describe(),
+        "skills": skills_describe(),
         "api_key_configured": bool(settings.deepseek_api_key.strip()),
         "model": settings.deepseek_model,
         "extraction_model": settings.extraction_model_name,

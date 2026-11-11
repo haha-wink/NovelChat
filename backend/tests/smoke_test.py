@@ -1921,6 +1921,190 @@ def group_chat_checks() -> None:
     check("群聊：冷却期内扣分", hot_score < cold_score, f"{hot_score} / {cold_score}")
 
 
+def _fake_member(name, personality, *, character_id=None, extraversion=0.5):
+    return {
+        "character_id": character_id or f"char_{name}",
+        "name": name,
+        "personality": personality,
+        "role": "",
+        "speech_style": "",
+        "extraversion": extraversion,
+        "arousal": 0.35,
+        "status": "online",
+        "state": "idle",
+    }
+
+
+def dispatch_checks() -> None:
+    """需求分析 -> 人数 -> 按性格适配选人。"""
+    import random as _random
+
+    from services import dispatch, persona
+
+    # ---- 性格画像 ----
+    warm = _fake_member("阿暖", ["温柔", "体贴", "耐心"])
+    sharp = _fake_member("阿烈", ["暴躁", "易怒", "毒舌"])
+    calm = _fake_member("阿静", ["冷静", "理性", "沉稳"])
+
+    check("性格：温柔的人 warmth 高",
+          persona.analyze_temperament(warm).warmth > 0.6,
+          str(persona.analyze_temperament(warm).as_dict()))
+    check("性格：暴躁的人 sharpness 高",
+          persona.analyze_temperament(sharp).sharpness > 0.5,
+          str(persona.analyze_temperament(sharp).as_dict()))
+    check("性格：难过时温柔的人适配度高于暴躁的人",
+          persona.fit_for(warm, emotion="难过") > persona.fit_for(sharp, emotion="难过"),
+          f"{persona.fit_for(warm, emotion='难过')} vs {persona.fit_for(sharp, emotion='难过')}")
+    check("性格：危机时暴躁的人被压低",
+          persona.fit_for(sharp, emotion="难过", crisis=True) < 0.3,
+          str(persona.fit_for(sharp, emotion="难过", crisis=True)))
+
+    # ---- 人数 ----
+    cases = [
+        (dict(emotion="难过", intent="crisis", intensity=0.9, crisis=True), 2),
+        (dict(emotion="难过", intent="vent", intensity=0.0), 2),
+        (dict(emotion="难过", intent="vent", intensity=0.5), 4),
+        (dict(emotion="难过", intent="vent", intensity=1.0), 6),
+        (dict(emotion="开心", intent="chat", intensity=0.0), 1),
+        (dict(emotion="疲惫", intent="seek_help", intensity=0.5), 4),
+    ]
+    for kwargs, expect in cases:
+        got = dispatch.target_count(**kwargs)
+        check(f"人数：{kwargs['intent']}/{kwargs['intensity']} -> {expect}",
+              got == expect, str(got))
+
+    check("人数：@全体 不超过 10",
+          dispatch.target_count(emotion="平静", intent="chat", intensity=0,
+                                all_called=True, usable=42) == 10,
+          str(dispatch.target_count(emotion="平静", intent="chat", intensity=0,
+                                    all_called=True, usable=42)))
+    check("人数：永远不少于 1",
+          dispatch.target_count(emotion="平静", intent="chat", intensity=0) >= 1)
+
+    # ---- 选人 ----
+    members = [warm, sharp, calm] + [
+        _fake_member(f"路人{i}", []) for i in range(5)
+    ]
+    sad = dispatch.select(
+        members, text="我好难过", emotion="难过", intent="vent", intensity=0.8,
+        rng=_random.Random(1),
+    )
+    check("选人：难受时选 5 人", len(sad.picks) == 5, str(len(sad.picks)))
+    check("选人：温柔的人排在前二",
+          sad.picks[0].name == "阿暖" or sad.picks[1].name == "阿暖",
+          str([p.name for p in sad.picks]))
+    _names = [p.name for p in sad.picks]
+    check("选人：暴躁的人排不进前二（大概率直接被淘汰）",
+          "阿烈" not in _names[:2], str(_names))
+
+    crisis = dispatch.select(
+        members, text="我不想活了", emotion="难过", intent="crisis",
+        intensity=0.9, crisis=True, rng=_random.Random(1),
+    )
+    check("选人：危机只来 2 人", len(crisis.picks) == 2, str(len(crisis.picks)))
+    check("选人：危机时暴躁的人不在场",
+          "阿烈" not in [p.name for p in crisis.picks],
+          str([p.name for p in crisis.picks]))
+
+    forced = dispatch.select(
+        members, text="@阿烈 你来", emotion="开心", intent="chat", intensity=0.2,
+        explicit_names=["阿烈"], rng=_random.Random(1),
+    )
+    check("选人：被 @ 的人必到且排第一",
+          forced.picks and forced.picks[0].name == "阿烈" and forced.picks[0].forced,
+          str([p.name for p in forced.picks]))
+
+    all_call = dispatch.select(
+        members, text="@全体成员 出来", emotion="平静", intent="chat", intensity=0.0,
+        all_called=True, rng=_random.Random(1),
+    )
+    check("选人：@全体 最多 10 人（不会把全群叫出来）",
+          len(all_call.picks) <= dispatch.MAX_SPEAKERS, str(len(all_call.picks)))
+    check("选人：@全体 时全员都来（本例只有 8 人）",
+          len(all_call.picks) == 8, str(len(all_call.picks)))
+
+    empty = dispatch.select([], text="喂", emotion="平静", intent="chat", intensity=0)
+    check("选人：没有成员时返回空", empty.picks == [], str(empty.picks))
+
+
+def skill_checks() -> None:
+    """工具三层：协议层 / 框架层 / 业务技能。"""
+    from core import tool_protocol
+    from services import skills
+
+    names = tool_protocol.names()
+    check("工具①：注册了四个工具", set(names) == {
+        "breathing_guide", "comfort_phrase", "small_step", "crisis_helpline"}, str(names))
+
+    schema = tool_protocol.openai_schema(["comfort_phrase"])[0]
+    check("工具①：能产出 function calling 声明",
+          schema["type"] == "function"
+          and schema["function"]["parameters"]["required"] == ["emotion"],
+          str(schema)[:120])
+
+    ok = tool_protocol.execute("comfort_phrase", {"emotion": "疲惫"})
+    check("工具①：正常执行返回 ok", ok["ok"] and "累" in ok["text"], str(ok))
+
+    miss = tool_protocol.execute("comfort_phrase", {})
+    check("工具①：缺参数返回 ok=False 而不是抛异常",
+          miss["ok"] is False and "缺少参数" in miss["error"], str(miss))
+
+    bad = tool_protocol.execute("不存在的工具", {})
+    check("工具①：未知工具返回 ok=False", bad["ok"] is False, str(bad))
+
+    def boom(_args):
+        raise RuntimeError("炸了")
+
+    tool_protocol.register(tool_protocol.ToolSpec(
+        name="_test_boom", description="测试用", parameters={}, handler=boom))
+    crashed = tool_protocol.execute("_test_boom", {})
+    check("工具①：工具内部报错也不抛出来",
+          crashed["ok"] is False and "炸了" in crashed["error"], str(crashed))
+    tool_protocol.unregister("_test_boom")   # 别污染注册表
+
+    from agent.tools import langgraph_tools
+
+    structured = langgraph_tools.to_langgraph_tools()
+    structured_names = {tool.name for tool in structured}
+    check("工具②：转成 LangChain StructuredTool",
+          {"breathing_guide", "comfort_phrase", "crisis_helpline", "small_step"}
+          <= structured_names, str(sorted(structured_names)))
+    node = langgraph_tools.build_tool_node()
+    check("工具②：能构造 LangGraph 的 ToolNode", type(node).__name__ == "ToolNode")
+
+    calls = langgraph_tools.invoke_tool_calls(
+        [{"name": "small_step", "args": {"topic": "换工作"}, "id": "c1"}])
+    check("工具②：按 tool_calls 形状执行",
+          calls and calls[0]["content"]["ok"], str(calls[:1]))
+
+    # ---- 技能层 ----
+    vent = skills.run_for({"intent": "vent", "emotion": "疲惫", "crisis": False})
+    check("工具③：倾诉走 comfort 技能",
+          vent is not None and vent.skill == "comfort" and len(vent.materials) == 2,
+          str(vent.skill if vent else None))
+
+    crisis = skills.run_for({"intent": "crisis", "emotion": "难过", "crisis": True})
+    check("工具③：危机走 steady 技能",
+          crisis is not None and crisis.skill == "steady",
+          str(crisis.skill if crisis else None))
+    check("工具③：危机素材含现实求助",
+          crisis is not None and any("热线" in m or "信得过" in m for m in crisis.materials),
+          str(crisis.materials if crisis else []))
+
+    help_skill = skills.run_for({"intent": "seek_help", "emotion": "焦虑", "crisis": False})
+    check("工具③：求助走 suggest 技能",
+          help_skill is not None and help_skill.skill == "suggest",
+          str(help_skill.skill if help_skill else None))
+
+    chat = skills.run_for({"intent": "chat", "emotion": "开心", "crisis": False})
+    check("工具③：闲聊不调用任何技能", chat is None, str(chat))
+
+    block = vent.as_block()
+    check("工具③：素材块格式正确",
+          block.startswith("【可用素材") and block.count("- ") == len(vent.materials),
+          block[:40])
+
+
 async def sqlite_checkpoint_checks() -> None:
     """断点存 SQLite：后端重启后还能续跑；过期断点会被清掉。"""
     import tempfile
@@ -2091,10 +2275,10 @@ async def langgraph_checks() -> None:
 
     info = agent_graph.describe()
     check("LangGraph：图已编译", bool(info["compiled"]), str(info))
-    check("LangGraph：八个节点齐全", len(info["nodes"]) == 8, str(info["nodes"]))
+    check("LangGraph：九个节点齐全", len(info["nodes"]) == 9, str(info["nodes"]))
     check("LangGraph：节点顺序固定",
           info["nodes"] == ["preprocess", "classify", "observe", "recall",
-                            "plan", "generate", "verify", "persist"],
+                            "plan", "skill", "generate", "verify", "persist"],
           str(info["nodes"]))
 
     test_lib = dbmod.create_library("自检图库", "临时")
@@ -2162,6 +2346,12 @@ async def langgraph_checks() -> None:
           str(getattr(final.get("signals"), "emotion", None)))
     check("LangGraph：plan 产出了 SOP 块",
           "【应对策略】" in (final.get("context_block") or ""), (final.get("context_block") or "")[:40])
+    check("LangGraph：skill 节点产出了素材块",
+          "【可用素材" in (final.get("skill_block") or ""),
+          (final.get("skill_block") or "")[:60])
+    check("LangGraph：素材拼进了上下文",
+          "【可用素材" in (final.get("context_block") or ""),
+          (final.get("context_block") or "")[-80:])
 
     turns = dbmod.list_chat_turns(shelf["id"], limit=10)
     check("LangGraph：persist 写了 user + assistant 两条",
@@ -2469,6 +2659,11 @@ async def group_parallel_checks() -> None:
     dbmod.insert_character(book_id=book["id"], name="苏晚", personality=["温柔"], source="novel")
     members = dbmod.ensure_shelf_members(shelf["id"])
 
+    from services import dialogue as _dialogue
+
+    signals = _dialogue.TurnSignals(
+        text="我今天真的很难受", emotion="难过", intensity=0.8, intent="vent"
+    )
     timeline: list[tuple[str, str]] = []
 
     async def generate(member, transcript):
@@ -2493,6 +2688,7 @@ async def group_parallel_checks() -> None:
                     "all_threshold": 0.0, "cooldown_seconds": 0, "always_reply": True,
                 },
                 "dialogue_plan": None,
+                "signals": signals,
                 "rng": _random.Random(3),
                 "generate": generate,
             },
@@ -4898,6 +5094,8 @@ def main() -> int:
     interrupted_extraction_checks()
     asyncio.run(extract_fallback_checks())
     asyncio.run(auto_merge_checks())
+    dispatch_checks()
+    skill_checks()
     asyncio.run(sqlite_checkpoint_checks())
     asyncio.run(checkpoint_checks())
     asyncio.run(langgraph_checks())

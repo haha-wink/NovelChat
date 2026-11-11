@@ -147,6 +147,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 text=prompt or "［图片］",
                 image_urls=image_urls,
                 dialogue_plan=turn_plan,
+                signals=signals,
                 generate=generate,
                 session_id=f"group:{session.user_id}:{shelf_id}",
             ):

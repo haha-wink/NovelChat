@@ -358,6 +358,7 @@ async def run_turn(
     members: Optional[list[dict]] = None,
     image_urls: Optional[list[str]] = None,
     dialogue_plan=None,
+    signals=None,
     tweaks: Optional[dict] = None,
     rng: Optional[random.Random] = None,
 ) -> AsyncIterator[dict]:
@@ -398,6 +399,7 @@ async def run_turn(
         "image_urls": list(image_urls or []),
         "options": options,
         "dialogue_plan": dialogue_plan,
+        "signals": signals,
         "rng": rng or random.Random(),
         "generate": generate,
     }
