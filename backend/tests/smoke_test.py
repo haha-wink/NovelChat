@@ -2225,6 +2225,95 @@ def temperament_checks() -> None:
     dbmod.delete_shelf(shelf["id"])
 
 
+def awaiting_checks() -> None:
+    """谁在等你回答：识别问题、匹配回答、选人加权。"""
+    import random as _random
+
+    from services import dispatch
+
+    turns = [
+        {"role": "user", "content": "今天好难受，我感冒了"},
+        {"role": "assistant", "speaker_name": "陈雯雯", "character_id": "c_chen",
+         "content": "这确实挺难受的。回去先躺一会儿吧，还有哪里不舒服么？"},
+        {"role": "assistant", "speaker_name": "犬山贺", "character_id": "c_quan",
+         "content": "带病还要提着东西走那么远，任谁都会觉得乏。回去后有没有人替您分担一下？"},
+        {"role": "assistant", "speaker_name": "源稚生", "character_id": "c_gen",
+         "content": "确实够受的。现在有没有发烧？"},
+    ]
+
+    found = dispatch.find_awaiting(turns, text="没有发烧")
+    check("等回答：识别出三个提问者", len(found) == 3, str([f["name"] for f in found]))
+    check("等回答：按与这句话的相关度排序",
+          found[0]["name"] == "源稚生" and found[0]["match"] > 0.8,
+          str([(f["name"], f["match"]) for f in found]))
+
+    found2 = dispatch.find_awaiting(turns, text="也没人给我分担")
+    check("等回答：换一个问题换一个人",
+          found2[0]["name"] == "犬山贺" and found2[0]["match"] > 0.5,
+          str([(f["name"], f["match"]) for f in found2]))
+
+    # 陈述句不算提问
+    plain = [{"role": "assistant", "speaker_name": "叶胜", "character_id": "c_ye",
+              "content": "没发烧就好，多喝点热水。"}]
+    check("等回答：陈述句不算在等回答", dispatch.find_awaiting(plain, text="嗯") == [],
+          str(dispatch.find_awaiting(plain, text="嗯")))
+
+    # 隔一轮也能找到（用户先被别人搭了句话）
+    two_rounds = turns + [
+        {"role": "user", "content": "没有发烧"},
+        {"role": "assistant", "speaker_name": "叶胜", "character_id": "c_ye",
+         "content": "那就好。"},
+    ]
+    deeper = dispatch.find_awaiting(two_rounds, text="也没人给我分担")
+    check("等回答：能回溯到上一轮的问题",
+          bool(deeper) and deeper[0]["name"] == "犬山贺", str([f["name"] for f in deeper]))
+
+    # 选人：提问者排第一
+    members = [
+        _shadow_member("陈雯雯", ["温柔", "体贴"], "c_chen"),
+        _shadow_member("犬山贺", [], "c_quan"),
+        _shadow_member("源稚生", ["冷静", "严肃"], "c_gen"),
+        _shadow_member("加图索", ["话多"], "c_jia"),
+    ]
+    decision = dispatch.select(
+        members, text="没有发烧", emotion="平静", intent="chat", intensity=0.0,
+        awaiting=found, rng=_random.Random(1),
+    )
+    check("等回答：提问者被选中且排第一",
+          decision.picks and decision.picks[0].name == "源稚生"
+          and "在等你回答" in decision.picks[0].reason,
+          str([(p.name, p.reason) for p in decision.picks]))
+    check("等回答：会多带一个人搭腔（目标 >= 2）",
+          len(decision.picks) >= 2, str(len(decision.picks)))
+    check("等回答：没等回答时人数回到 1",
+          dispatch.target_count(emotion="平静", intent="chat", intensity=0.0) == 1)
+
+    # 含糊回答要按当前这句话重新匹配，而不是沿用上一句的匹配结果
+    vague_awaiting = dispatch.find_awaiting(turns, text="嗯")
+    vague = dispatch.select(
+        members, text="嗯", emotion="平静", intent="chat", intensity=0.0,
+        awaiting=vague_awaiting, rng=_random.Random(1),
+    )
+    check("等回答：回答很含糊时按常规选人（不硬猜）",
+          not any("在等你回答" in p.reason for p in vague.picks),
+          str([(p.name, p.reason) for p in vague.picks]))
+
+
+def _shadow_member(name, personality, character_id):
+    """测试用的假成员（不进库）。"""
+    return {
+        "character_id": character_id,
+        "name": name,
+        "personality": personality,
+        "role": "",
+        "speech_style": "",
+        "extraversion": 0.5,
+        "arousal": 0.35,
+        "status": "online",
+        "state": "idle",
+    }
+
+
 async def sqlite_checkpoint_checks() -> None:
     """断点存 SQLite：后端重启后还能续跑；过期断点会被清掉。"""
     import tempfile
@@ -5216,6 +5305,7 @@ def main() -> int:
     asyncio.run(auto_merge_checks())
     dispatch_checks()
     skill_checks()
+    awaiting_checks()
     time_tool_checks()
     temperament_checks()
     asyncio.run(sqlite_checkpoint_checks())

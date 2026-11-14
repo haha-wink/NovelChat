@@ -74,6 +74,10 @@ PENALTY_REPEAT = 0.15
 #: 被显式 @ 时的加分，保证排在前面
 FORCED_BONUS = 1.0
 
+#: 「上一轮他问了你问题」的加分。群聊最伤的问题就是用户回答 A 的提问、
+#: 接话的却是 C——这个分寸来自"记得谁在等回答"。
+AWAITING_BONUS = 0.35
+
 
 @dataclass
 class Pick:
@@ -100,6 +104,8 @@ class Decision:
     crisis: bool
     target: int
     picks: list[Pick] = field(default_factory=list)
+    #: 上一轮问过问题的角色（谁在等用户回答）
+    awaiting: list[dict] = field(default_factory=list)
     note: str = ""
 
     def names(self) -> list[str]:
@@ -119,6 +125,7 @@ def target_count(
     all_called: bool = False,
     explicit: int = 0,
     usable: int = 0,
+    awaiting: bool = False,
 ) -> int:
     """这句话该来几个人。返回 1~10。"""
     if all_called:
@@ -140,9 +147,101 @@ def target_count(
     if explicit:
         count = max(count, explicit)
 
+    # 有人在等你回答：至少两个人在场，一个接话、一个搭腔，
+    # 不然就会变回"一对一问答"，没有群聊的感觉
+    if awaiting:
+        count = max(count, 2)
+
     if usable:
         count = min(count, usable)
     return max(MIN_SPEAKERS, min(MAX_SPEAKERS, count))
+
+
+# ---------------------------------------------------------------------------
+# 谁在等你回答
+# ---------------------------------------------------------------------------
+
+#: 问句收尾词
+_QUESTION_TAILS = ("吗", "呢", "么", "嘛")
+#: 判断感情色彩时忽略的字符
+_IGNORE_CHARS = set("的了是在有和与就都也还很太没不我你他她它们这那个吗呢吧啊呀哦嗯？?，,。.！!、…~ ")
+
+
+def _looks_like_question(text: str) -> bool:
+    body = (text or "").strip()
+    if not body:
+        return False
+    if "？" in body or "?" in body:
+        return True
+    return body.rstrip("。！!…~ ").endswith(_QUESTION_TAILS)
+
+
+def _overlap(text: str, question: str) -> float:
+    """两个短句的字面重合度（中文没有空格，按字符集合算）。
+
+    用**包含度**而不是 Jaccard：回答通常很短（"没有发烧"），
+    问题很长（"现在有没有发烧？"），Jaccard 会被长度稀释到 0.07，
+    而按较短的一方归一能到 1.0——这正是我们要的信号。
+    """
+    left = {ch for ch in str(text or "") if ch not in _IGNORE_CHARS}
+    right = {ch for ch in str(question or "") if ch not in _IGNORE_CHARS}
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def find_awaiting(
+    turns: list[dict], *, text: str = "", limit: int = 6
+) -> list[dict]:
+    """从最近的流水里找出「上一轮问过用户问题」的角色。
+
+    只看**最后一段连续的角色发言**（遇到用户消息就停），
+    因为那一轮才是用户正在回答的对象。返回按"与这句话的相关度"降序。
+    """
+    # 从最新往回扫，遇到用户消息算一轮；最多看两轮
+    # （用户可能隔了一轮才回答，比如别人先搭了句话）
+    blocks: list[list[dict]] = []
+    current: list[dict] = []
+    for turn in reversed(turns or []):
+        role = str(turn.get("role") or "")
+        if role == "user":
+            if current:
+                blocks.append(current)
+                current = []
+            if len(blocks) >= 2:
+                break
+            continue
+        if role == "assistant":
+            current.append(turn)
+    if current:
+        blocks.append(current)
+
+    found: list[dict] = []
+    seen: set[str] = set()
+    for depth, block in enumerate(blocks):
+        for turn in block[:limit]:
+            content = str(turn.get("content") or "")
+            if not _looks_like_question(content):
+                continue
+            character_id = str(turn.get("character_id") or "")
+            if not character_id or character_id in seen:
+                continue
+            seen.add(character_id)
+            match = round(_overlap(text, content), 3)
+            found.append(
+                {
+                    "character_id": character_id,
+                    "name": str(turn.get("speaker_name") or ""),
+                    #: 越靠后越旧：0 = 上一轮，1 = 上上轮
+                    "depth": depth,
+                    "question": content,
+                    "match": match,
+                }
+            )
+
+    # 先看像不像在回答，再看新旧
+    found.sort(key=lambda item: (item["match"], -item["depth"]), reverse=True)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +268,24 @@ def _usable(members: list[dict]) -> list[dict]:
     ]
 
 
+def _pick_awaiting(awaiting: list[dict]) -> Optional[dict]:
+    """从「上一轮提问的角色」里挑出最可能在等回答的那一个。
+
+    * 字面重合度高（用户明显在回答某个具体问题）-> 就是他
+    * 全都很低但上一轮只有一个提问者（用户回了个「嗯」）-> 也只能是他
+    * 一轮里好几个人都问了、用户又答得含糊 -> 不猜，按常规选人
+    """
+    if not awaiting:
+        return None
+    best = awaiting[0]
+    if float(best.get("match") or 0.0) >= 0.2:
+        return best
+    latest = [item for item in awaiting if int(item.get("depth") or 0) == 0]
+    if len(latest) == 1:
+        return latest[0]
+    return None
+
+
 def select(
     members: list[dict],
     *,
@@ -185,6 +302,7 @@ def select(
     now: Optional[datetime] = None,
     rng: Optional[random.Random] = None,
     relevance=None,
+    awaiting: Optional[list[dict]] = None,
 ) -> Decision:
     """按需求分析结果选人。
 
@@ -204,6 +322,16 @@ def select(
         decision.note = "没有可发言的成员"
         return decision
 
+    # 只给"最匹配的那个提问者"加权：一轮里可能好几个人都问了问题，
+    # 全加等于没加（适配度最高的会抢走），必须挑一个。
+    awaiting = list(awaiting or [])
+    target_awaiting = _pick_awaiting(awaiting)
+    awaiting_boost = {}
+    if target_awaiting is not None:
+        character_id = str(target_awaiting.get("character_id") or "")
+        match = float(target_awaiting.get("match") or 0.0)
+        awaiting_boost[character_id] = round(AWAITING_BONUS * (0.5 + match), 3)
+
     target = target_count(
         emotion=emotion,
         intent=intent,
@@ -212,6 +340,7 @@ def select(
         all_called=all_called,
         explicit=len(explicit_names),
         usable=len(usable),
+        awaiting=target_awaiting is not None,
     )
     decision.target = target
 
@@ -268,6 +397,11 @@ def select(
         )
         reasons = [f"适配{fit:.2f}"]
 
+        # 上一轮他问过你问题 -> 这句大概率是在回他，优先让他接
+        if character_id in awaiting_boost:
+            score += awaiting_boost[character_id]
+            reasons.append("在等你回答")
+
         if rel >= 0.7:
             reasons.append("被点名")
         gap = _seconds_since(member.get("last_spoke_at"), now)
@@ -315,6 +449,7 @@ def select(
 
     limit = ALL_CALL_CEILING if all_called else MAX_SPEAKERS
     decision.picks = chosen[:limit]
+    decision.awaiting = awaiting
     decision.note = f"按「{emotion}」适配度选 {len(decision.picks)} 人"
     return decision
 
@@ -331,4 +466,5 @@ def describe(decision: Decision) -> dict:
             {"name": pick.name, "score": pick.score, "fit": pick.fit, "reason": pick.reason}
             for pick in decision.picks
         ],
+        "awaiting": [item.get("name") for item in decision.awaiting],
     }

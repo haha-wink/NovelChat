@@ -106,12 +106,20 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
         )
         # 附加群聊上下文：后说话的人要接得上前面的话
         lines = [f"{t['speaker']}：{t['text']}" for t in transcript[-8:]]
+        hint = str(member.get("_hint") or "")
         agent.additional_context = (
             (agent.additional_context or "")
             + "\n\n【群聊上下文，最近几条】\n"
             + "\n".join(lines)
-            + f"\n\n你在群聊里，用「{member['name']}」的身份说话：**只说 1 句，最多 2 句短话**；"
-            "不要写动作、神态、心理描写，不要复述别人说过的话。"
+            + (f"\n\n【你在等这个回答】\n{hint}" if hint else "")
+            + f"\n\n你在群聊里，用「{member['name']}」的身份说话。群聊规则：\n"
+            "- 群里不止你一个人。可以顺着别人刚说的话接一句，也可以只对用户说。\n"
+            "- 别人已经说过的建议或安慰（比如「多喝热水」）**不要再重复**："
+            "要么补一个更具体的，要么直接接对方的话。\n"
+            "- 如果用户刚回答的是你问过的问题，先接住这个回答，不要重新问一遍。\n"
+            "- 像真群聊那样：可以很短（「嗯」「确实」），可以只搭一句，"
+            "不用每个人都安慰、都总结。\n"
+            "- 不要写动作、神态、心理描写。"
             # 用户这句话的情绪/意图，对群里每个角色都成立
             + "\n\n"
             + turn_plan.context_block()

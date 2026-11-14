@@ -190,6 +190,14 @@ async def pick_node(state: GroupState) -> dict:
     crisis = bool(getattr(signals, "crisis", False) if signals else False)
     mentions = state.get("mentions") or []
 
+    # 谁在等你回答：只看最后一段连续的角色发言
+    awaiting: list[dict] = []
+    try:
+        recent = db.list_chat_turns(state.get("shelf_id") or "", limit=12)
+        awaiting = dispatch.find_awaiting(recent, text=text)
+    except Exception:  # noqa: BLE001 - 读不到历史就按常规选人
+        logger.exception("查找待回答的问题失败（已忽略）")
+
     decision = dispatch.select(
         members,
         text=text,
@@ -204,12 +212,14 @@ async def pick_node(state: GroupState) -> dict:
         cooldown_seconds=int(options.get("cooldown_seconds", 45)),
         rng=state.get("rng"),
         relevance=lambda member: group_mod._relevance(member, text),
+        awaiting=awaiting,
     )
 
     if not decision.picks:
         return {"finished": True, "queue": [], "round_no": round_no - 1}
 
     _emit({"type": "round_start", "round": round_no})
+    awaiting_map = {item["character_id"]: item for item in awaiting}
     queue = [
         {
             "character_id": pick.character_id,
@@ -221,6 +231,9 @@ async def pick_node(state: GroupState) -> dict:
             "valence": pick.valence,
             "arousal": pick.arousal,
             "fit": pick.fit,
+            #: 他上一轮问过的问题（在等他回答时才有）
+            "asked": (awaiting_map.get(pick.character_id) or {}).get("question", ""),
+            "asked_match": (awaiting_map.get(pick.character_id) or {}).get("match", 0.0),
         }
         for pick in decision.picks
     ]
@@ -231,6 +244,7 @@ async def pick_node(state: GroupState) -> dict:
         "intensity": decision.intensity,
         "target": decision.target,
         "picked": [pick.name for pick in decision.picks],
+        "awaiting": [item.get("name") for item in awaiting],
     })
 
     # 【时间工具】该不该打招呼 / 劝人休息：由随机一个发言人带出来
@@ -315,10 +329,21 @@ async def speak_node(state: GroupState) -> dict:
     })
 
     transcript = list(state.get("transcript") or [])
+    # 这个角色上一轮问过问题、而这句像是在回答他 -> 先把"回答"交回给他
+    asked = str(speaker.get("asked") or "")
+    hint = ""
+    if asked and float(speaker.get("asked_match") or 0) > 0:
+        hint = (
+            f"你上一轮问过对方：「{asked}」\n"
+            f"对方刚刚回的是：「{state.get('text') or ''}」\n"
+            "先接住这个回答（确认、放心、或继续问一句），不要重新问一遍同一个问题。"
+        )
+    member_view = {**member, "_hint": hint} if hint else member
+
     pieces: list[str] = []
     generate = state.get("generate")
     try:
-        async for piece in generate(member, transcript):
+        async for piece in generate(member_view, transcript):
             if not piece:
                 continue
             pieces.append(piece)
