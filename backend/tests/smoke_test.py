@@ -2108,6 +2108,106 @@ def skill_checks() -> None:
           block[:40])
 
 
+def clear_conversation_checks() -> None:
+    """清空对话的两种语义：蒸馏保留记忆 / 连记忆一起删。"""
+    from services import agent_memory, chat_memory
+
+    dbmod.init_db()
+
+    def build(tag):
+        lib = dbmod.create_library(f"{tag}库", "临时")
+        shelf = dbmod.create_shelf(lib["id"], f"{tag}架")
+        book = library.create_book(
+            title=f"{tag}书", source_name="c.txt", source_type="txt",
+            text="x", shelf_id=shelf["id"],
+        )
+        dbmod.insert_character(book_id=book["id"], name="甲", personality=["温柔"], source="novel")
+        dbmod.insert_character(book_id=book["id"], name="乙", personality=["冷静"], source="novel")
+        return lib, shelf, book, dbmod.ensure_shelf_members(shelf["id"])
+
+    def talk(shelf, members, user_id):
+        dbmod.add_chat_turn(shelf_id=shelf["id"], user_id=user_id, role="user",
+                            content="我最近分手了，很难受")
+        for member in members[:2]:
+            dbmod.add_chat_turn(
+                shelf_id=shelf["id"], user_id=user_id, role="assistant",
+                content="先吃点东西吧。", character_id=member["character_id"],
+                speaker_name=member["name"],
+            )
+        dbmod.add_chat_turn(shelf_id=shelf["id"], user_id=user_id, role="user",
+                            content="谢谢你")
+
+    # ---- A. distill ----
+    lib_a, shelf_a, book_a, members_a = build("清空蒸馏")
+    talk(shelf_a, members_a, "u_clear_a")
+    result_a = chat_memory.clear_conversation(shelf_a["id"], user_id="u_clear_a", mode="distill")
+    facts_a = agent_memory.items(members_a[0]["character_id"], kind="fact")
+    check("清空：distill 模式删光了流水", dbmod.count_chat_turns(shelf_a["id"]) == 0,
+          str(dbmod.count_chat_turns(shelf_a["id"])))
+    check("清空：distill 模式给每个说话的角色都写了记忆",
+          result_a.get("distilled") == 2, str(result_a))
+    check("清空：长期记忆真的落库了", len(facts_a) >= 1, str(len(facts_a)))
+    check("清空：记忆内容含对话要点",
+          bool(facts_a) and "分手" in str(facts_a[-1].get("content", "")),
+          str(facts_a[-1].get("content", ""))[:60] if facts_a else "空")
+
+    # ---- B. purge ----
+    lib_b, shelf_b, book_b, members_b = build("清空记忆")
+    talk(shelf_b, members_b, "u_clear_b")
+    chat_memory.clear_conversation(shelf_b["id"], user_id="u_clear_b", mode="distill")
+    before_b = len(agent_memory.items(members_b[0]["character_id"], kind="fact"))
+    talk(shelf_b, members_b, "u_clear_b")
+    result_b = chat_memory.clear_conversation(shelf_b["id"], user_id="u_clear_b", mode="purge")
+    after_b = len(agent_memory.items(members_b[0]["character_id"], kind="fact"))
+    check("清空：purge 前确实有记忆", before_b >= 1, str(before_b))
+    check("清空：purge 把对话记忆删干净", after_b == 0, str(after_b))
+    check("清空：purge 也删掉了流水", dbmod.count_chat_turns(shelf_b["id"]) == 0)
+    check("清空：purge 报告删了几条记忆", result_b.get("memory_removed", 0) >= 1,
+          str(result_b))
+
+    # ---- C. 不再有固定阈值 ----
+    from core.config import get_settings
+
+    check("清空：自动蒸馏阈值已取消（默认 0）",
+          int(get_settings().chat_distill_threshold) == 0,
+          str(get_settings().chat_distill_threshold))
+    check("清空：maybe_distill 在阈值 0 时不再自动跑",
+          chat_memory.maybe_distill(shelf_b["id"], members_b[0]["character_id"]) is None)
+
+    for shelf, book in ((shelf_a, book_a), (shelf_b, book_b)):
+        dbmod.delete_book(book["id"])
+        dbmod.delete_shelf(shelf["id"])
+
+
+def cleanup_test_libraries() -> int:
+    """删掉自检留下的临时书库（失败也不影响结果）。"""
+    removed = 0
+    patterns = (
+        "清空蒸馏库", "清空记忆库", "自检图库", "性格自检库", "性格测试库",
+        "并行测试库", "自检书库", "日志自检库", "问候自检库", "去重自检库",
+        "去重测试库", "整段测试库", "复现库", "蒸馏库", "清空库",
+    )
+    try:
+        for lib in dbmod.list_libraries():
+            if not lib["title"].startswith(patterns):
+                continue
+            for shelf in dbmod.list_shelves(lib["id"]):
+                for book in dbmod.list_books(shelf_id=shelf["id"]):
+                    dbmod.delete_book(book["id"])
+                try:
+                    dbmod.delete_shelf(shelf["id"])
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                dbmod.delete_library(lib["id"])
+                removed += 1
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return removed
+
+
 def time_tool_checks() -> None:
     """时间工具：时段、时间问候、劳累问候。"""
     from datetime import datetime, timedelta
@@ -5529,6 +5629,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    clear_conversation_checks()
     time_tool_checks()
     temperament_checks()
     asyncio.run(sqlite_checkpoint_checks())
@@ -5570,6 +5671,12 @@ def main() -> int:
         if not ok and detail:
             line += f"  <- {detail}"
         print(line)
+
+    # 自检会建临时书库（自检图库/性格自检库…），跑完自己收拾，
+    # 否则跑几十次以后书库里全是垃圾
+    cleaned = cleanup_test_libraries()
+    if cleaned:
+        print(f"（已清理 {cleaned} 个临时书库）")
 
     print()
     print(f"共 {len(results)} 项，失败 {len(failed)} 项")

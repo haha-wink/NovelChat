@@ -291,27 +291,35 @@ async def delete_shelf(shelf_id: str, cascade: bool = True) -> dict:
     return {"deleted": ok, "books_deleted": deleted_books, "shelf_id": shelf_id}
 
 
+def _summarizer_for_clear():
+    """清空时做蒸馏的摘要器；不可用就返回 None（回退本地压缩）。"""
+    try:
+        return memory_summarizer()
+    except Exception:  # noqa: BLE001 - 摘要不可用不该阻断清空
+        return None
+
+
 @router.delete("/shelves/{shelf_id}/history")
-async def clear_shelf_history(shelf_id: str, request: Request, token: str = "") -> dict:
+async def clear_shelf_history(
+    shelf_id: str, request: Request, token: str = "", mode: str = "distill"
+) -> dict:
     """清空我在这个书架里的群聊历史。
 
-    只删聊天流水，**不动长期记忆**——否则角色会"失忆"。
+    * ``mode=distill``（默认）：先把这段对话蒸馏成长期记忆，再删流水——
+      角色会记住"和这个用户聊过什么"，但界面上干净了。
+    * ``mode=purge``：连记忆一起删（这段对话蒸馏出的 fact），彻底重来。
     """
     session = resolve_session(token, request)
-    removed = await anyio.to_thread.run_sync(
+    result = await anyio.to_thread.run_sync(
         functools.partial(
-            db.clear_history, shelf_id, user_id=session.user_id
+            chat_memory.clear_conversation,
+            shelf_id,
+            user_id=session.user_id,
+            summarizer=_summarizer_for_clear(),
+            mode=mode,
         )
     )
-    # 清空是破坏性操作，必须留痕；否则"聊天记录怎么没了"根本无从追查
-    if removed:
-        agent_log.log(
-            "chat_history_cleared",
-            owner_type="manager",
-            shelf_id=shelf_id,
-            payload={"scope": "shelf", "removed": removed},
-        )
-    return {"ok": True, "removed": removed}
+    return result
 
 
 @router.get("/shelves/{shelf_id}/history")

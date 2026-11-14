@@ -59,7 +59,12 @@
           <button class="ghost" :disabled="verifying || !activeBook" @click="verifyBook">
             {{ verifying ? '审核中…' : '🛡 AI 审核' }}
           </button>
-          <button class="ghost danger" @click="clearGroupHistory">清空对话</button>
+          <button class="ghost" @click="clearGroupHistory('distill')" title="对话先蒸馏成长期记忆再清空">
+            清空对话
+          </button>
+          <button class="ghost danger" @click="clearGroupHistory('purge')" title="对话和记忆一起删除">
+            清空对话和记忆
+          </button>
         </div>
       </section>
 

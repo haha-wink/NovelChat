@@ -514,3 +514,14 @@ button.small { padding: 5px 10px; font-size: 12px; }
   font-style: italic;
   opacity: 0.8;
 }
+
+/* 破坏性操作按钮（清空对话和记忆）：平时中性，hover 才变红 */
+.ghost.danger {
+  color: #b4453c;
+  border-color: rgba(180, 69, 60, 0.35);
+}
+
+.ghost.danger:hover {
+  background: rgba(180, 69, 60, 0.08);
+  border-color: rgba(180, 69, 60, 0.6);
+}

@@ -16,6 +16,22 @@
             <p class="sub">{{ activeCharacter?.role || '—' }} · 《{{ activeBook?.title }}》</p>
           </div>
         </div>
+        <button
+          class="ghost"
+          :disabled="isLoading"
+          title="对话先蒸馏成长期记忆再清空"
+          @click="clearCharacterHistory(activeCharacter.id, 'distill')"
+        >
+          清空对话
+        </button>
+        <button
+          class="ghost danger"
+          :disabled="isLoading"
+          title="对话和记忆一起删除"
+          @click="clearCharacterHistory(activeCharacter.id, 'purge')"
+        >
+          清空对话和记忆
+        </button>
         <button class="ghost" :disabled="isLoading" @click="newChat">新对话</button>
       </div>
 
@@ -245,6 +261,7 @@ const {
   loadGroupHistory,
   turnToGroupMessage,
   clearGroupHistory,
+  clearCharacterHistory,
   openGroupInfo,
   loadMergeCandidates,
   resolveMerge,

@@ -9,34 +9,34 @@ router = APIRouter()
 
 @router.delete("/characters/{character_id}/history")
 async def clear_character_history(
-    character_id: str, request: Request, token: str = ""
+    character_id: str, request: Request, token: str = "", mode: str = "distill"
 ) -> dict:
-    """清空我与这个角色的单聊历史（同样不动长期记忆）。"""
+    """清空我与这个角色的单聊历史。
+
+    * ``mode=distill``（默认）：先把这段对话蒸馏成长期记忆，再删流水。
+    * ``mode=purge``：连记忆一起删。
+    """
     character = await anyio.to_thread.run_sync(require_character, character_id)
     session = resolve_session(token, request)
     book = await anyio.to_thread.run_sync(db.get_book, character["book_id"]) or {}
     shelf_id = str(book.get("shelf_id") or "")
-    removed = await anyio.to_thread.run_sync(
+
+    summarizer = None
+    try:
+        summarizer = memory_summarizer()
+    except Exception:  # noqa: BLE001
+        pass
+
+    return await anyio.to_thread.run_sync(
         functools.partial(
-            db.clear_history,
+            chat_memory.clear_conversation,
             shelf_id,
             user_id=session.user_id,
             character_id=character_id,
+            summarizer=summarizer,
+            mode=mode,
         )
     )
-    if removed:
-        agent_log.log(
-            "chat_history_cleared",
-            owner_type="manager",
-            shelf_id=shelf_id,
-            owner_id=character_id,
-            payload={
-                "scope": "character",
-                "removed": removed,
-                "character": character.get("name") or "",
-            },
-        )
-    return {"ok": True, "removed": removed}
 
 
 @router.get("/characters/{character_id}/history")

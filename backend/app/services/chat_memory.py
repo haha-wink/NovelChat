@@ -204,6 +204,128 @@ def distill(
     }
 
 
+def clear_conversation(
+    shelf_id: str,
+    *,
+    user_id: str,
+    character_id: Optional[str] = None,
+    summarizer=None,
+    mode: str = "distill",
+) -> dict:
+    """清空对话。两种语义：
+
+    * ``distill``（默认）：先把这段对话压成长期记忆写进角色记忆，再删流水。
+      这是"聊完一次就让它记住"的主路径——角色从此知道用户的喜好和状态。
+    * ``purge``：连记忆一起删掉（连同这段对话蒸馏出的 fact），彻底重来。
+
+    群聊时一次摘要、写给**所有说过话的角色**：LLM 只调一次，
+    每个人都记得"我和用户聊过这些"。
+    """
+    from core.config import get_settings
+
+    settings = get_settings()
+    turns = pending_turns(shelf_id, user_id=user_id)
+    if character_id:
+        turns = [turn for turn in turns if str(turn.get("character_id") or "") == character_id]
+    if not turns:
+        return {"ok": True, "mode": mode, "removed": 0, "distilled": 0,
+                "reason": "没有可清空的对话"}
+
+    # 谁说过话 -> 谁该记住
+    speakers: list[str] = []
+    for turn in turns:
+        cid = str(turn.get("character_id") or "")
+        if cid and cid not in speakers:
+            speakers.append(cid)
+    if character_id and character_id not in speakers:
+        speakers.insert(0, character_id)
+
+    result: dict = {"ok": True, "mode": mode, "turns": len(turns)}
+
+    # ---- 1. 蒸馏（只调一次摘要模型）----
+    if mode == "distill" and speakers:
+        transcript = "\n".join(
+            f"{turn.get('speaker_name') or ('我' if turn.get('role') == 'user' else '对方')}："
+            f"{turn.get('content') or ''}"
+            for turn in turns
+        )[:6000]
+
+        summary = None
+        if summarizer is not None:
+            try:
+                summary = summarizer(transcript)
+            except Exception:  # noqa: BLE001 - 摘要失败不能丢对话
+                logger.exception("清空时蒸馏失败，回退本地压缩")
+
+        text = (
+            " ".join((summary or "").split())[:MAX_SUMMARY_CHARS]
+            if summary else _local_summary(turns)
+        )
+        mood = _mood_digest(turns)
+        if mood:
+            text = f"{text}\n[本轮情绪] {mood}"
+
+        for cid in speakers:
+            try:
+                agent_memory.remember(
+                    cid,
+                    [text],
+                    kind="fact",
+                    scene=DIALOGUE_SCENE,
+                    importance=0.8,
+                    reason=f"清空对话时蒸馏（{len(turns)} 条）",
+                )
+            except Exception:  # noqa: BLE001 - 单个角色写入失败不影响其他
+                logger.exception("写入角色记忆失败：%s", cid)
+        result["distilled"] = len(speakers)
+        result["used_llm"] = bool(summary)
+        result["memory"] = text[:120]
+
+        for cid in speakers:
+            try:
+                from services import rag
+
+                rag.index_character(cid)
+            except Exception:  # noqa: BLE001
+                logger.exception("蒸馏后重建索引失败：%s", cid)
+
+    # ---- 2. purge：把这段对话留下的 fact 一并删掉 ----
+    if mode == "purge":
+        removed_memory = 0
+        for cid in speakers:
+            try:
+                removed_memory += db.delete_memory_items(character_id=cid, kind="fact")
+            except Exception:  # noqa: BLE001
+                logger.exception("删除角色记忆失败：%s", cid)
+        result["memory_removed"] = removed_memory
+        for cid in speakers:
+            try:
+                from services import rag
+
+                rag.index_character(cid)
+            except Exception:  # noqa: BLE001
+                logger.exception("删除记忆后重建索引失败：%s", cid)
+
+    # ---- 3. 删流水（原文同时是聊天记录，清空就该消失）----
+    db.mark_turns_distilled([turn["id"] for turn in turns])
+    result["removed"] = db.delete_chat_turns([turn["id"] for turn in turns])
+
+    agent_log.log(
+        "chat_history_cleared",
+        owner_type="manager",
+        shelf_id=shelf_id,
+        owner_id=character_id or "",
+        payload={
+            "scope": "character" if character_id else "shelf",
+            "mode": mode,
+            "turns": len(turns),
+            "speakers": len(speakers),
+            "memory_removed": result.get("memory_removed", 0),
+        },
+    )
+    return result
+
+
 def maybe_distill(
     shelf_id: str,
     character_id: str,
@@ -212,7 +334,11 @@ def maybe_distill(
     user_id: Optional[str] = None,
     character_name: str = "",
 ) -> Optional[dict]:
-    """条数超阈值才蒸馏；否则返回 None（每轮调用都很便宜）。"""
+    """条数超阈值才蒸馏；默认阈值为 0（关闭）。
+
+    现在记忆改由用户显式"清空对话"时蒸馏（``clear_conversation``），
+    不再按固定条数自动触发——这样既能保证记忆完整，又不会每轮都多花一次摘要调用。
+    """
     from core.config import get_settings
 
     threshold = int(get_settings().chat_distill_threshold)

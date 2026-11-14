@@ -44,21 +44,26 @@ memory_chunks  ← 220 字一片、40 字重叠（rag.py:49-50），512 维
 
 这是**记忆层的主体**：234 条 excerpt，全部来自小说原文。
 
-### ② 对话蒸馏 → 事实记忆（fact）
+### ② 清空对话 → 事实记忆（fact）
+
+**触发方式变了**：不再按固定条数（原阈值 40）自动蒸馏，改为用户点「清空对话」时蒸馏。
 
 ```
-agent/graph.py:372  chat_memory.maybe_distill(...)   ← 只在**单聊**的 persist 节点调用
+DELETE /api/shelves/{id}/history?mode=distill      （群聊）
+DELETE /api/characters/{id}/history?mode=distill   （单聊）
         ↓
-services/chat_memory.py:221  count = db.count_chat_turns(..., pending_only=True)
-services/chat_memory.py:222  if count <= 40: return None      ← 阈值
-services/chat_memory.py:225  distill(keep_recent=20)
+services/chat_memory.py  clear_conversation(mode="distill")
         ↓
-services/chat_memory.py:167  agent_memory.remember(kind="fact", scene="对话")
-        ↓
-db.mark_turns_distilled(...)   ← 只打标记，不删原文
+① 全文压成一段摘要（LLM 调用一次，失败回退本地压缩）
+② 写给**所有说过话的角色**（一次摘要，N 次写入，不再调模型）
+   agent_memory.remember(kind="fact", scene="对话", importance=0.8)
+③ rag.index_character(...)   ← 立刻可被检索
+④ db.delete_chat_turns(...)  ← 删流水
 ```
 
-**这就是问题所在**：`maybe_distill` 的调用点只有单聊图，群聊图（`agent/group_graph.py`）里一次都没有。
+`mode=purge` 则不同：**不蒸馏**，直接删流水 + 删这段对话留下的 `fact` 记忆。
+
+`maybe_distill`（旧的自动触发）保留但默认关闭：`chat_distill_threshold = 0`。
 
 ### ③ 角色合并 / 重建摘要 → summary
 
@@ -158,15 +163,20 @@ score < 0.18 丢弃          ← MIN_SCORE
 
 ## 5. 问题清单
 
-### P0-1 群聊永不蒸馏
+### ~~P0-1 群聊永不蒸馏~~（已改设计）
 
-`shelf_c228c21f63274a33` 有 **65 条**流水（阈值 40），`distilled` 全部为 0。
+原实现里 `maybe_distill` 只在单聊 persist 节点调用，群聊图一次都没有，
+65 条流水超过阈值 40 也从不蒸馏。
 
-原因：`maybe_distill` 只在 `agent/graph.py:372`（单聊 persist 节点）调用，
-`group_graph.py` 里没有任何 `distill` / `chat_memory` 调用。
+**现在的做法**：取消固定阈值（`chat_distill_threshold = 0`），
+蒸馏改由用户显式触发：
 
-**后果**：群聊是主场景，但它聊过的一切都不进长期记忆。
-七天后虽然 `cleanup_window` 也没被调用（见 P3），但记忆仍然是空的。
+| 按钮 | 行为 |
+|---|---|
+| 清空对话 | 先蒸馏成长期记忆（写给所有说过话的角色），再删流水 |
+| 清空对话和记忆 | 不蒸馏，直接删流水 + 删这段对话的 `fact` 记忆 |
+
+群聊和单聊都走同一个 `clear_conversation()`，所以群聊终于也会积累对话记忆了。
 
 ### P0-2 「对话记忆」只有 1 条
 
@@ -211,3 +221,27 @@ score < 0.18 丢弃          ← MIN_SCORE
 ---
 
 相关文档：[`docs/langgraph-workflow.md`](langgraph-workflow.md)、[`docs/tool-layer.md`](tool-layer.md)、[`docs/project-layers.md`](project-layers.md)
+
+---
+
+## 7. 清空对话的两条路径（2026-11 改）
+
+```
+用户点「清空对话」
+   ├─ mode=distill（默认）
+   │    对话 → 摘要（1 次 LLM）→ 写进每个发言角色的 fact 记忆
+   │         → 重建向量索引 → 删流水
+   │    结果：界面干净，角色记得你
+   │
+   └─ 「清空对话和记忆」 mode=purge
+        对话 → 直接删流水
+             → 删这些角色身上这段对话蒸馏出的 fact
+             → 重建向量索引
+        结果：彻底重来，角色忘记这段时间
+```
+
+**为什么蒸馏只调一次模型**：群聊可能 4 个人说话，如果每人调一次摘要就是 4 倍成本。
+现在是一段摘要、写给 N 个角色（`agent_memory.remember` 只写库，不调模型）。
+
+**为什么 purge 只删 fact**：`excerpt`（原著片段）和 `summary`（角色简介）
+不是这段对话产生的，删掉会让角色连原著设定都不记得了。

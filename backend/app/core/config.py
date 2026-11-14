@@ -172,7 +172,8 @@ class Settings(BaseSettings):
 
     # ---------- 对话蒸馏（短期 -> 长期记忆）----------
     #: 未蒸馏的对话条数超过它就自动蒸馏；0 = 关闭自动蒸馏
-    chat_distill_threshold: int = 40
+    #: 自动蒸馏阈值：0 = 关闭。记忆改由"清空对话"时蒸馏（用户要求不再用固定阈值）
+    chat_distill_threshold: int = 0
     #: 蒸馏后保留最近几天的对话原文
     chat_retention_days: int = 7
 

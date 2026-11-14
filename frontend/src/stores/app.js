@@ -979,28 +979,90 @@ function turnToGroupMessage(turn) {
   }
 }
 
-//: 清空我在这个书架的群聊记录（只删流水，不删角色的长期记忆）
-async function clearGroupHistory() {
-  const tip = [
-    '清空这个群里的聊天记录？',
-    '',
-    '· 只清空你自己的聊天流水（界面上看到的那些）',
-    '· 角色已经记住的长期记忆不受影响',
-    '· 不可恢复'
-  ].join('\n')
+//: 清空群聊对话。
+//: mode='distill'：先蒸馏成长期记忆再删流水（角色会记住聊过什么）
+//: mode='purge'  ：连记忆一起删，彻底重来
+async function clearGroupHistory(mode = 'distill') {
+  const distill = mode !== 'purge'
+  const tip = distill
+    ? [
+        '清空对话（保留记忆）？',
+        '',
+        `· 这 ${group.messages.length} 条对话会先被压缩成长期记忆`,
+        '· 角色会记住你的喜好和状态，但界面上不再显示',
+        '· 记忆写进角色档案，之后聊天会自动用到',
+        '· 不可恢复'
+      ].join('\n')
+    : [
+        '清空对话和记忆？',
+        '',
+        '· 这段对话会被直接删除（不蒸馏）',
+        '· 这段对话蒸馏出的长期记忆一并删除',
+        '· 角色会忘记这段时间聊过的内容',
+        '· 不可恢复'
+      ].join('\n')
   if (!confirm(tip)) return
   try {
     const token = await ensureGroupToken()
     const result = await api(
-      `/api/shelves/${group.shelfId}/history?token=${encodeURIComponent(token)}`,
+      `/api/shelves/${group.shelfId}/history?token=${encodeURIComponent(token)}`
+      + `&mode=${distill ? 'distill' : 'purge'}`,
       { method: 'DELETE' }
     )
     group.messages = []
     closeGroupInfo()
     error.value = ''
-    console.info(`已清空 ${result.removed} 条聊天记录`)
+    if (distill) {
+      console.info(
+        `已清空 ${result.removed} 条对话；已蒸馏 ${result.distilled || 0} 个角色的记忆`
+      )
+    } else {
+      console.info(
+        `已清空 ${result.removed} 条对话，删除 ${result.memory_removed || 0} 条记忆`
+      )
+    }
   } catch (failure) {
     groupInfo.error = failure.message
+  }
+}
+
+//: 清空与某个角色的单聊（同样支持 distill / purge）
+async function clearCharacterHistory(characterId, mode = 'distill') {
+  const distill = mode !== 'purge'
+  const tip = distill
+    ? [
+        '清空这段对话（保留记忆）？',
+        '',
+        '· 对话会先蒸馏成长期记忆，角色仍记得你',
+        '· 界面上不再显示这些消息',
+        '· 不可恢复'
+      ].join('\n')
+    : [
+        '清空对话和记忆？',
+        '',
+        '· 这段对话直接删除（不蒸馏）',
+        '· 蒸馏出的长期记忆一并删除',
+        '· 角色会忘记这段时间',
+        '· 不可恢复'
+      ].join('\n')
+  if (!confirm(tip)) return
+  try {
+    const token = await ensureGroupToken()
+    const result = await api(
+      `/api/characters/${characterId}/history?token=${encodeURIComponent(token)}`
+      + `&mode=${distill ? 'distill' : 'purge'}`,
+      { method: 'DELETE' }
+    )
+    if (currentConversation.value) currentConversation.value.messages = []
+    if (distill) {
+      console.info(`已清空 ${result.removed} 条对话，记忆已保存`)
+    } else {
+      console.info(
+        `已清空 ${result.removed} 条对话，删除 ${result.memory_removed || 0} 条记忆`
+      )
+    }
+  } catch (failure) {
+    error.value = failure.message
   }
 }
 
@@ -1364,6 +1426,7 @@ const state = {
   loadGroupHistory,
   turnToGroupMessage,
   clearGroupHistory,
+  clearCharacterHistory,
   openGroupInfo,
   loadMergeCandidates,
   resolveMerge,
