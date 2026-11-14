@@ -164,7 +164,14 @@ EXTRACTION_SYSTEM = """你是资深文学编辑，负责从小说节选中整理
       "speech_style": "说话风格：用词习惯、句子长短、语气、口头禅",
       "background": "1-2 句身份与来历",
       "relationships": [{"with": "另一个角色名", "relation": "关系，如 师徒/兄妹/未婚夫妻"}],
-      "quotes": ["本节选中该角色的 1-2 句原话，或标志性动作描写"]
+      "quotes": ["本节选中该角色的 1-2 句原话，或标志性动作描写"],
+      "temperament": {
+        "warmth": 0.0,
+        "energy": 0.0,
+        "calmness": 0.0,
+        "sharpness": 0.0,
+        "playfulness": 0.0
+      }
     }
   ]
 }
@@ -173,7 +180,15 @@ EXTRACTION_SYSTEM = """你是资深文学编辑，负责从小说节选中整理
 - 只收录本节选中**确实出场**、且有名字或固定称呼的角色；"路人""店小二"这类临时角色不要。最多 {max_characters} 个。
 - 只依据原文，不要编造。不确定的字段留空字符串或空数组。
 - 描述一律用简体中文；quotes 里的原话保持原文。
-- 确实没有合格角色时返回 {"characters": []}。"""
+- 确实没有合格角色时返回 {"characters": []}。
+
+temperament 是**性格五维**，取值 0~1（0.5 为普通人），按原文判断这个人"能不能接住情绪"：
+- warmth     温柔体贴：会不会耐心听人诉苦、说软话
+- energy     热情活力：话多不多、主动不主动
+- calmness   冷静理性：遇事稳不稳、会不会慌
+- sharpness  锋利尖锐：毒舌、暴躁、爱嘲讽（越高越不适合安慰人）
+- playfulness 俏皮爱玩：会不会开玩笑、接梗
+拿不准就给 0.5，不要五个都给同一个数。"""
 
 
 def build_extraction_messages(

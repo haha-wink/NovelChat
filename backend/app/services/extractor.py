@@ -164,6 +164,7 @@ def merge_characters(records: Sequence[Sequence[dict]]) -> list[dict]:
                     "aliases": [],
                     "role": "",
                     "personality": [],
+                    "temperament": {},
                     "speech_style": "",
                     "background": "",
                     "relationships": [],
@@ -183,6 +184,25 @@ def merge_characters(records: Sequence[Sequence[dict]]) -> list[dict]:
             target["speech_style"] = _prefer_longer(target["speech_style"], raw.get("speech_style"))
             target["background"] = _prefer_longer(target["background"], raw.get("background"))
             _extend_unique(target["personality"], raw.get("personality"), limit=6)
+
+            # 性格五维：模型给了就用（多次出现取平均），没给就留空由 persona 推断
+            raw_temperament = raw.get("temperament")
+            if isinstance(raw_temperament, dict) and raw_temperament:
+                merged_traits = {}
+                for trait in ("warmth", "energy", "calmness", "sharpness", "playfulness"):
+                    values = [target["temperament"].get(trait), raw_temperament.get(trait)]
+                    numbers = []
+                    for value in values:
+                        try:
+                            if value is not None:
+                                numbers.append(float(value))
+                        except (TypeError, ValueError):
+                            continue
+                    if numbers:
+                        merged_traits[trait] = round(sum(numbers) / len(numbers), 3)
+                if merged_traits:
+                    target["temperament"] = merged_traits
+
             _merge_relationships(target["relationships"], raw.get("relationships"))
             _extend_unique(target["quotes"], raw.get("quotes"), limit=4)
 

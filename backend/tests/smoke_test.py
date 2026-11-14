@@ -1973,9 +1973,9 @@ def dispatch_checks() -> None:
         check(f"人数：{kwargs['intent']}/{kwargs['intensity']} -> {expect}",
               got == expect, str(got))
 
-    check("人数：@全体 不超过 10",
+    check("人数：@全体 = 所有可发言的人（用户要求全员回应）",
           dispatch.target_count(emotion="平静", intent="chat", intensity=0,
-                                all_called=True, usable=42) == 10,
+                                all_called=True, usable=42) == 42,
           str(dispatch.target_count(emotion="平静", intent="chat", intensity=0,
                                     all_called=True, usable=42)))
     check("人数：永远不少于 1",
@@ -2018,9 +2018,7 @@ def dispatch_checks() -> None:
         members, text="@全体成员 出来", emotion="平静", intent="chat", intensity=0.0,
         all_called=True, rng=_random.Random(1),
     )
-    check("选人：@全体 最多 10 人（不会把全群叫出来）",
-          len(all_call.picks) <= dispatch.MAX_SPEAKERS, str(len(all_call.picks)))
-    check("选人：@全体 时全员都来（本例只有 8 人）",
+    check("选人：@全体 时全员都来（本例 8 人）",
           len(all_call.picks) == 8, str(len(all_call.picks)))
 
     empty = dispatch.select([], text="喂", emotion="平静", intent="chat", intensity=0)
@@ -2103,6 +2101,128 @@ def skill_checks() -> None:
     check("工具③：素材块格式正确",
           block.startswith("【可用素材") and block.count("- ") == len(vent.materials),
           block[:40])
+
+
+def time_tool_checks() -> None:
+    """时间工具：时段、时间问候、劳累问候。"""
+    from datetime import datetime, timedelta
+
+    from core import tool_protocol
+    from services import time_tools
+
+    check("时间：06:00 是早上", time_tools.period_of(6)[0] == "早上", str(time_tools.period_of(6)))
+    check("时间：12:00 是中午", time_tools.period_of(12)[0] == "中午")
+    check("时间：23:00 是晚上", time_tools.period_of(23)[0] == "晚上")
+    check("时间：03:00 是深夜", time_tools.period_of(3)[0] == "深夜")
+
+    base = datetime(2026, 11, 11, 10, 30)
+
+    first = time_tools.decide(now=base, frequency_data={})
+    check("时间：第一次说话要打招呼", first["need_time_greeting"], str(first))
+
+    same = time_tools.decide(
+        now=base, frequency_data={"last_user_at": (base - timedelta(minutes=20)).isoformat()})
+    check("时间：同处时段不重复打招呼",
+          not same["need_time_greeting"] and not same["text"], str(same))
+
+    cross = time_tools.decide(
+        now=datetime(2026, 11, 11, 12, 10),
+        frequency_data={"last_user_at": datetime(2026, 11, 11, 9, 0).isoformat()},
+    )
+    check("时间：跨时段要打招呼",
+          cross["need_time_greeting"] and "中午" in cross["text"], str(cross))
+
+    long_gap = time_tools.decide(
+        now=base, frequency_data={"last_user_at": (base - timedelta(hours=4)).isoformat()})
+    check("时间：同处时段隔超 3 小时也补一句", long_gap["need_time_greeting"], str(long_gap))
+
+    late = time_tools.decide(
+        now=datetime(2026, 11, 11, 23, 40),
+        frequency_data={"last_user_at": datetime(2026, 11, 11, 23, 20).isoformat()},
+    )
+    check("时间：深夜触发劳累问候",
+          late["need_fatigue_greeting"] and late["late_night"], str(late))
+
+    busy = time_tools.decide(
+        now=base,
+        frequency_data={
+            "last_user_at": (base - timedelta(minutes=40)).isoformat(),
+            "messages_last_hour": 25,
+            "session_minutes": 60,
+        },
+    )
+    check("时间：高频长对话触发劳累问候",
+          busy["need_fatigue_greeting"] and not busy["late_night"], str(busy))
+    check("时间：劳累问候不劝睡、劝休息",
+          "歇会儿" in busy["text"] or "眼睛" in busy["text"], busy["text"])
+
+    calm = time_tools.decide(
+        now=base,
+        frequency_data={
+            "last_user_at": (base - timedelta(minutes=20)).isoformat(),
+            "messages_last_hour": 3,
+            "session_minutes": 20,
+        },
+    )
+    check("时间：正常聊天不问候", not calm["text"], str(calm))
+
+    check("时间：注册成工具", "local_time" in tool_protocol.names()
+          and "greeting_check" in tool_protocol.names(), str(tool_protocol.names()))
+    ran = tool_protocol.execute("local_time", {})
+    check("时间：local_time 能取到本地时间",
+          ran["ok"] and "period" in ran and "weekday" in ran, str(ran)[:80])
+    missing = tool_protocol.execute("greeting_check", {})
+    check("时间：greeting_check 缺 shelf_id 时安全失败",
+          missing["ok"] is False, str(missing))
+
+
+def temperament_checks() -> None:
+    """性格五维：落库、读取优先、回填效果。"""
+    from services import persona
+
+    warm = {"name": "阿暖", "personality": ["温柔", "体贴", "耐心"]}
+    sharp = {"name": "阿烈", "personality": ["暴躁", "毒舌"]}
+
+    traits = persona.snapshot(warm)
+    check("性格：五维都有值", set(traits) == {
+        "warmth", "energy", "calmness", "sharpness", "playfulness"}, str(traits))
+    check("性格：温柔的人 warmth 高", traits["warmth"] > 0.6, str(traits["warmth"]))
+
+    # 存好的值优先于关键词推断
+    stored = {"name": "阿暖", "personality": ["温柔"],
+              "temperament": {"warmth": 0.1, "energy": 0.2, "calmness": 0.3,
+                              "sharpness": 0.4, "playfulness": 0.5}}
+    check("性格：库里存的值优先",
+          persona.analyze_temperament(stored).warmth == 0.1,
+          str(persona.analyze_temperament(stored).warmth))
+
+    check("性格：难过时温柔的人适配度更高",
+          persona.fit_for(warm, emotion="难过") > persona.fit_for(sharp, emotion="难过"),
+          f"{persona.fit_for(warm, emotion='难过')} vs {persona.fit_for(sharp, emotion='难过')}")
+
+    # 落库往返
+    dbmod.init_db()
+    test_lib = dbmod.create_library("性格自检库", "临时")
+    shelf = dbmod.create_shelf(test_lib["id"], "性格自检架")
+    book = library.create_book(
+        title="性格自检书", source_name="t.txt", source_type="txt",
+        text="测试", shelf_id=shelf["id"],
+    )
+    created = library.create_character(
+        book["id"], name="阿暖", personality=["温柔", "体贴", "耐心"])
+    check("性格：新建角色自动带五维", bool(created.get("temperament")), str(created.get("temperament")))
+    check("性格：库里读回来是一样的",
+          dbmod.get_character(created["id"])["temperament"] == created["temperament"])
+
+    # 回填幂等：已有值不覆盖
+    dbmod.update_character(created["id"], temperament={"warmth": 0.9, "energy": 0.1,
+                                                      "calmness": 0.1, "sharpness": 0.1,
+                                                      "playfulness": 0.1})
+    after = dbmod.get_character(created["id"])
+    check("性格：手改的向量能存住", after["temperament"]["warmth"] == 0.9, str(after["temperament"]))
+
+    dbmod.delete_book(book["id"])
+    dbmod.delete_shelf(shelf["id"])
 
 
 async def sqlite_checkpoint_checks() -> None:
@@ -5096,6 +5216,8 @@ def main() -> int:
     asyncio.run(auto_merge_checks())
     dispatch_checks()
     skill_checks()
+    time_tool_checks()
+    temperament_checks()
     asyncio.run(sqlite_checkpoint_checks())
     asyncio.run(checkpoint_checks())
     asyncio.run(langgraph_checks())

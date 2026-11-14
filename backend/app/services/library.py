@@ -583,6 +583,7 @@ def create_character(
     background: str = "",
     avatar: str = "",
     is_user_persona: bool = False,
+    temperament: Optional[dict] = None,
 ) -> dict:
     if not db.get_book(book_id):
         raise KeyError("作品不存在")
@@ -591,7 +592,21 @@ def create_character(
     if not name:
         raise ValueError("角色名不能为空")
 
+    # 性格五维：抽取阶段没给就按关键词算一次，落库后选人直接用
+    if not temperament:
+        from services import persona
+
+        temperament = persona.snapshot(
+            {
+                "personality": personality or [],
+                "role": role,
+                "speech_style": speech_style,
+                "background": background,
+            }
+        )
+
     return db.insert_character(
+        temperament=temperament,
         book_id=book_id,
         name=name[:32],
         role=(role or "").strip()[:60],

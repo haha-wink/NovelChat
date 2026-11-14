@@ -232,7 +232,58 @@ async def pick_node(state: GroupState) -> dict:
         "target": decision.target,
         "picked": [pick.name for pick in decision.picks],
     })
+
+    # 【时间工具】该不该打招呼 / 劝人休息：由随机一个发言人带出来
+    greeting = _prepare_greeting(state, queue)
+    if greeting:
+        _emit({
+            "type": "greeting",
+            "speaker": greeting["speaker"],
+            "text": greeting["text"],
+            "period": greeting.get("period"),
+            "late_night": greeting.get("late_night"),
+            "reason": greeting.get("reason"),
+        })
+
     return {"queue": queue, "round_no": round_no, "pending_forced": [], "finished": False}
+
+
+def _prepare_greeting(state: GroupState, queue: list[dict]) -> dict:
+    """跑 greeting_check 工具，命中就把问候挂到随机一个发言人身上。
+
+    问候语由角色自己的嘴说出来，所以这里只标记 ``queue[i]["greeting"]``，
+    真正的拼接发生在 ``speak_node``。
+    """
+    if not queue:
+        return {}
+    try:
+        from core import tool_protocol
+
+        result = tool_protocol.execute(
+            "greeting_check", {"shelf_id": state.get("shelf_id") or ""}
+        )
+    except Exception:  # noqa: BLE001 - 问候是锦上添花
+        logger.exception("时间问候判断失败（已忽略）")
+        return {}
+
+    if not result.get("ok") or not result.get("text"):
+        return {}
+
+    rng = state.get("rng")
+    index = rng.randrange(len(queue)) if rng is not None else 0
+    queue[index]["greeting"] = result["text"]
+    reasons = []
+    if result.get("need_time_greeting"):
+        reasons.append("跨时段")
+    if result.get("need_fatigue_greeting"):
+        reasons.append("深夜" if result.get("late_night") else "聊太久")
+    return {
+        "speaker": queue[index]["name"],
+        "text": result["text"],
+        "period": result.get("period"),
+        "late_night": result.get("late_night"),
+        "reason": "+".join(reasons) or "问候",
+    }
 
 
 async def speak_node(state: GroupState) -> dict:
@@ -306,6 +357,11 @@ async def speak_node(state: GroupState) -> dict:
             )
         if verdict.text:
             reply = verdict.text
+
+    # 时间问候：由这个人带一句（拼在回复最前面，不额外发一条消息）
+    greeting = str(speaker.get("greeting") or "")
+    if greeting and greeting not in reply:
+        reply = f"{greeting}{reply}"
 
     # 情绪推进：群里每个人的心情也被用户这句话影响（规则引擎，不发模型请求）
     mood_changed = False

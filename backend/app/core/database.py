@@ -238,7 +238,15 @@ MAX_EVENT_PAYLOAD_CHARS = 4000
 #: 初始记忆条目的类型
 MEMORY_KINDS = ("excerpt", "summary", "fact")
 
-JSON_FIELDS = ("aliases", "personality", "relationships", "quotes", "excerpts", "avatar_candidates")
+JSON_FIELDS = (
+    "aliases",
+    "personality",
+    "temperament",
+    "relationships",
+    "quotes",
+    "excerpts",
+    "avatar_candidates",
+)
 
 #: 允许通过 update_character 修改的字段
 EDITABLE_CHARACTER_FIELDS = (
@@ -247,6 +255,7 @@ EDITABLE_CHARACTER_FIELDS = (
     "role",
     "personality",
     "speech_style",
+    "temperament",
     "background",
     "relationships",
     "quotes",
@@ -361,6 +370,12 @@ def init_db() -> None:
                 "UPDATE character_memory_items SET origin_character_id = character_id "
                 "WHERE origin_character_id IS NULL"
             )
+        character_columns = {row[1] for row in conn.execute("PRAGMA table_info(characters)")}
+        if "temperament" not in character_columns:
+            conn.execute(
+                "ALTER TABLE characters ADD COLUMN temperament TEXT NOT NULL DEFAULT '{}'"
+            )
+
         turn_columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_turns)")}
         if "intent" not in turn_columns:
             conn.execute("ALTER TABLE chat_turns ADD COLUMN intent TEXT NOT NULL DEFAULT ''")
@@ -713,6 +728,7 @@ def insert_character(*, book_id: str, **fields: Any) -> dict:
         "role": data["role"] or "",
         "personality": _dumps(data["personality"] or []),
         "speech_style": data["speech_style"] or "",
+        "temperament": _dumps(data.get("temperament") or {}),
         "background": data["background"] or "",
         "relationships": _dumps(data["relationships"] or []),
         "quotes": _dumps(data["quotes"] or []),

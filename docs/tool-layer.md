@@ -96,6 +96,7 @@ def invoke_tool_calls(tool_calls) -> list[dict]  # 按 AIMessage.tool_calls 形�
 | `comfort` | 意图 = 倾诉 | `comfort_phrase` + `breathing_guide` | 一句接住情绪的话 + 呼吸引导 |
 | `steady` | 危机 = true | `crisis_helpline` | 现实求助渠道（热线/身边人） |
 | `suggest` | 意图 = 求助 | `small_step` | 一条今天能做的动作 |
+| （独立工具） | 群聊每轮 | `greeting_check` / `local_time` | 时间问候 / 劳累问候 |
 
 ```python
 result = skills.run_for({"intent": "vent", "emotion": "疲惫", "crisis": False})
@@ -200,3 +201,37 @@ context = state["context_block"] + "\n\n" + block
 ```
 
 **一个文件，三十行。** 这就是分层的收益。
+
+---
+
+## 8. 时间工具（独立于技能，直接挂群里）
+
+两个工具，注册在同一套协议层：
+
+| 工具 | 输入 | 输出 |
+|---|---|---|
+| `local_time` | 无 | 本地时间、时段（早上/上午/中午/下午/傍晚/晚上/深夜）、建议问候语 |
+| `greeting_check` | `shelf_id` | 要不要发时间问候 / 劳累问候 + 现成的话 |
+
+**判断规则**：
+
+* **时间问候**：看"这个时段是不是第一次说话"。上一条用户消息落在**不同**时段
+  （或今天还没说话，或同一时段隔了 3 小时以上）才打招呼。
+  用定时器（每天 8 点发早安）在聊天里很怪——用户下午才来会收到"早上好"。
+* **劳累问候**：深夜（≥23:00 或 <05:00），**或**最近一小时 ≥20 条且本轮已聊 ≥30 分钟。
+  频率从 `chat_turns` 现算，不额外建表。
+
+**问候由谁说**：随机挑一个本轮要发言的角色，把问候语拼在他回复的最前面——
+不额外发一条系统消息，也不指定固定人选。
+
+```
+事件流：user → round_start → dispatch → greeting → speaker_start → delta → speaker_end → done
+                                        ↑
+                        {speaker: "加图索", text: "傍晚了。", reason: "跨时段"}
+```
+
+实测（真实书架）：
+
+```
+加图索: 傍晚了。我是加图索。
+```

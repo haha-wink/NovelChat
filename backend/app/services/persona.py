@@ -39,6 +39,8 @@ TRAIT_WORDS: dict[str, tuple[str, ...]] = {
     "warmth": (
         "温柔", "温和", "善良", "体贴", "耐心", "包容", "细心", "温暖", "柔和",
         "善解人意", "会照顾", "亲切", "关怀", "柔软",
+        # 抽取阶段常见的近义词（补进来能明显提高区分度）
+        "友好", "文静", "恭敬", "重情", "和气", "照顾", "关心", "护着", "温柔体贴",
     ),
     "energy": (
         "热情", "开朗", "活泼", "话多", "健谈", "直爽", "豪爽", "爽朗", "外向",
@@ -128,9 +130,23 @@ def _traits_text(character: dict) -> str:
 def analyze_temperament(character: dict) -> Temperament:
     """从角色档案里读出五维性格。
 
-    命中多少个关键词就加多少，最后截断到 0~1。同一维度最多被 3 个词加权，
-    避免"温柔温柔温柔"这种重复把分数顶满。
+    **优先用库里存好的**（抽取阶段算过一次），没有再按关键词推断——
+    这样人工改过的性格不会被关键词覆盖。
     """
+    stored = character.get("temperament")
+    if isinstance(stored, dict) and stored:
+        try:
+            return Temperament(
+                warmth=float(stored.get("warmth", BASELINE["warmth"])),
+                energy=float(stored.get("energy", BASELINE["energy"])),
+                calmness=float(stored.get("calmness", BASELINE["calmness"])),
+                sharpness=float(stored.get("sharpness", BASELINE["sharpness"])),
+                playfulness=float(stored.get("playfulness", BASELINE["playfulness"])),
+                hits=["(stored)"],
+            )
+        except (TypeError, ValueError):
+            pass
+
     text = _traits_text(character)
     result = Temperament()
     hits: list[str] = []
@@ -177,3 +193,8 @@ def describe(character: dict) -> dict:
         "fit_开心": fit_for(character, emotion="开心"),
         "fit_危机": fit_for(character, emotion="难过", crisis=True),
     }
+
+
+def snapshot(character: dict) -> dict:
+    """算出可以直接落库的五维向量（抽取/回填时用）。"""
+    return analyze_temperament(character).as_dict()

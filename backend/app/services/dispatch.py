@@ -46,19 +46,27 @@ from typing import Optional
 
 from services import persona
 
-#: 人数上限（用户要求：不少于 1，不高于 10）
+#: 普通场景的人数上限（用户要求：不少于 1，不高于 10）
 MAX_SPEAKERS = 10
+
+#: @全体成员 的硬上限：不再限制人数，等于"所有能发言的人"
+#: （早期版本 42 人全来会打爆模型调用，但用户明确要求 @全体 时全员回应，
+#:   所以这里只留一个安全阀，防止未来上千人的书架把后端拖垮）
+ALL_CALL_CEILING = 120
 MIN_SPEAKERS = 1
 
 #: @全体成员 的默认上限：不允许一句 @ 就把 40 多个人全叫出来
 DEFAULT_ALL_CAP = 10
 
 #: 打分权重（适配度为主）
-W_FIT = 0.55
-W_RELEVANCE = 0.20
+#:
+#: 噪声只留 0.04：之前 0.10 会把适配度差 0.01~0.05 的人打乱，
+#: 结果"谁适配"被随机数盖住；现在适配度占 0.60，噪声只负责打破平局。
+W_FIT = 0.60
+W_RELEVANCE = 0.18
 W_ENERGY = 0.10
-W_AROUSAL = 0.05
-W_NOISE = 0.10
+W_AROUSAL = 0.04
+W_NOISE = 0.04
 
 PENALTY_COOLDOWN = 0.20
 PENALTY_REPEAT = 0.15
@@ -114,8 +122,9 @@ def target_count(
 ) -> int:
     """这句话该来几个人。返回 1~10。"""
     if all_called:
-        cap = min(MAX_SPEAKERS, usable or MAX_SPEAKERS)
-        return max(MIN_SPEAKERS, cap)
+        # @全体成员 = 所有可发言的人都要回一句（用户明确要求）
+        everyone = usable or 0
+        return max(MIN_SPEAKERS, min(ALL_CALL_CEILING, everyone))
 
     if crisis:
         count = 2
@@ -304,7 +313,8 @@ def select(
             )
         )
 
-    decision.picks = chosen[:MAX_SPEAKERS]
+    limit = ALL_CALL_CEILING if all_called else MAX_SPEAKERS
+    decision.picks = chosen[:limit]
     decision.note = f"按「{emotion}」适配度选 {len(decision.picks)} 人"
     return decision
 
