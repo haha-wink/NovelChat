@@ -87,6 +87,8 @@ class TurnState(TypedDict, total=False):
     memory_block: str
     state_block: str
     context_block: str
+    #: 意图分析器的拆解结果（要不要记忆/工具）
+    intent_plan: Any
     #: 这一轮技能（业务层）产出的素材块
     skill_block: str
     reply: str
@@ -116,6 +118,36 @@ async def classify_node(state: TurnState) -> dict:
     return {"signals": signals}
 
 
+async def intent_node(state: TurnState) -> dict:
+    """②.5 意图分析器（function call）：要不要翻旧账、要不要动工具。
+
+    走 ``intent_analyze`` 工具，和模型自己调用时是同一份逻辑。
+    支持复合意图：既在倾诉、又在唤起某段记忆。
+    """
+    from core import tool_protocol
+    from services import intent  # noqa: F401 - 导入即把 intent_analyze 注册进工具表
+
+    signals = state.get("signals")
+    payload = {
+        "text": state.get("text") or "",
+        "emotion": getattr(signals, "emotion", "平静") if signals else "平静",
+        "intent": getattr(signals, "intent", "chat") if signals else "chat",
+        "intensity": getattr(signals, "intensity", 0.0) if signals else 0.0,
+        "crisis": getattr(signals, "crisis", False) if signals else False,
+    }
+    try:
+        result = tool_protocol.execute("intent_analyze", payload)
+    except Exception:  # noqa: BLE001 - 分析失败就当没有额外需求
+        logger.exception("意图分析失败（已忽略）")
+        result = {}
+
+    if not result.get("ok"):
+        return {"intent_plan": {"labels": [], "needs_memory": False, "tools": []}}
+
+    logger.debug("意图拆解：%s", result.get("labels"))
+    return {"intent_plan": result}
+
+
 async def observe_node(state: TurnState) -> dict:
     """③ Agent 状态调度：先按用户这句话推进角色情绪，再生成。"""
     character = state.get("character") or {}
@@ -141,13 +173,17 @@ async def recall_node(state: TurnState) -> dict:
     text = state.get("text") or ""
     block = ""
     if text:
+        # 用户在唤起记忆（"我之前跟你说过…"）时多捞几条
+        top_k = int(get_settings().rag_top_k)
+        if (state.get("intent_plan") or {}).get("needs_memory"):
+            top_k *= 2
         try:
             block = await asyncio.to_thread(
                 functools.partial(
                     rag.recall_block,
                     str(character.get("id") or ""),
                     text,
-                    top_k=int(get_settings().rag_top_k),
+                    top_k=top_k,
                 )
             )
         except Exception:  # noqa: BLE001 - 检索失败不能影响回复
@@ -214,6 +250,23 @@ async def skill_node(state: TurnState) -> dict:
         result = None
 
     block = result.as_block() if result is not None else ""
+
+    # 意图分析器推荐的工具（和技能有重叠时去重）
+    intent_tools = list((state.get("intent_plan") or {}).get("tools") or [])
+    if intent_tools:
+        from core import tool_protocol
+
+        extra: list[str] = []
+        for name in intent_tools:
+            output = tool_protocol.execute(name, {"emotion": payload.get("emotion") or "难过",
+                                                  "topic": ""})
+            if output.get("ok") and output.get("text"):
+                text_line = str(output["text"])
+                if text_line not in block:
+                    extra.append(text_line)
+        if extra:
+            block = (block + "\n" if block else "") + "\n".join(f"- {item}" for item in extra)
+
     context = state.get("context_block") or ""
     if block:
         context = f"{context}\n\n{block}" if context else block
@@ -343,6 +396,7 @@ def build_turn_graph(checkpointer=None):
     graph = StateGraph(TurnState)
     graph.add_node("preprocess", preprocess_node)
     graph.add_node("classify", classify_node)
+    graph.add_node("intent", intent_node)
     graph.add_node("observe", observe_node)
     graph.add_node("recall", recall_node)
     graph.add_node("plan", plan_node)
@@ -353,7 +407,8 @@ def build_turn_graph(checkpointer=None):
 
     graph.add_edge(START, "preprocess")
     graph.add_edge("preprocess", "classify")
-    graph.add_edge("classify", "observe")
+    graph.add_edge("classify", "intent")
+    graph.add_edge("intent", "observe")
     graph.add_edge("observe", "recall")
     graph.add_edge("recall", "plan")
     graph.add_edge("plan", "skill")
@@ -511,7 +566,7 @@ def describe() -> dict:
     return {
         "engine": "langgraph",
         "nodes": [
-            "preprocess", "classify", "observe", "recall",
+            "preprocess", "classify", "intent", "observe", "recall",
             "plan", "skill", "generate", "verify", "persist",
         ],
         "compiled": graph is not None,

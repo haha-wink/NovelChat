@@ -49,7 +49,7 @@ function seed(app) {
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
   app.group.messages = [
-    { kind: 'user', content: '给你看张图', images: [tinyPng] },
+    { kind: 'user', content: '给你看张图', images: [tinyPng], at: '2026-11-11T10:30:00+08:00' },
     { kind: 'system', content: '系统提示' },
     {
       kind: 'character', character_id: 'char_1', name: '沈砚', avatar: '🗡️',
@@ -71,7 +71,7 @@ function seed(app) {
   app.conversations[character.id] = {
     token: null,
     messages: [
-      { role: 'user', content: '你好' },
+      { role: 'user', content: '你好', at: '2026-11-11T10:30:00+08:00' },
       { role: 'user', content: '', isImage: true, fileName: 'a.png', images: [tinyPng] },
       { role: 'assistant', content: '嗯。', sticker: { url: 'https://example.com/a.svg', emoji: '😀' } },
       { role: 'system', content: '系统' }

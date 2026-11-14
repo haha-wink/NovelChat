@@ -191,7 +191,11 @@ def _overlap(text: str, question: str) -> float:
 
 
 def find_awaiting(
-    turns: list[dict], *, text: str = "", limit: int = 6
+    turns: list[dict],
+    *,
+    text: str = "",
+    limit: int = 6,
+    semantic=None,
 ) -> list[dict]:
     """从最近的流水里找出「上一轮问过用户问题」的角色。
 
@@ -227,7 +231,18 @@ def find_awaiting(
             if not character_id or character_id in seen:
                 continue
             seen.add(character_id)
-            match = round(_overlap(text, content), 3)
+            literal = _overlap(text, content)
+            match = literal
+            # 字面能对上就不用再算向量；对不上时用语义补一刀
+            # （"我不烧了" vs "有没有发烧" 这种同义改写，字面重合很低）
+            if semantic is not None and literal < 0.6:
+                try:
+                    score = semantic(text, content)
+                    if score is not None:
+                        match = round(max(literal, 0.7 * float(score)), 3)
+                except Exception:  # noqa: BLE001 - 语义算不出来就用字面
+                    logger.exception("语义匹配失败（回退字面）")
+            match = round(match, 3)
             found.append(
                 {
                     "character_id": character_id,
@@ -236,6 +251,7 @@ def find_awaiting(
                     "depth": depth,
                     "question": content,
                     "match": match,
+                    "literal": round(literal, 3),
                 }
             )
 

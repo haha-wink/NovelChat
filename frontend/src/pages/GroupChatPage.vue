@@ -70,6 +70,9 @@
                   <div v-if="message.content" v-html="renderMarkdown(message.content)"></div>
                   <div v-else class="typing"><span></span><span></span><span></span></div>
                 </div>
+                <span v-if="message.at && !message.typing" class="message-time">
+                  {{ formatTime(message.at) }}
+                </span>
                 <img
                   v-if="message.sticker && !message.stickerFailed"
                   class="sticker"

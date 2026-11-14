@@ -14,6 +14,7 @@ _STICKER_NAME = re.compile(r"^[0-9a-f]{1,8}(-[0-9a-f]{1,8})*$")
 def tools_describe() -> dict:
     """工具层清单（协议层 + 框架层）。"""
     from agent.tools import langgraph_tools
+    from services import intent, skills, time_tools  # noqa: F401 - 导入即注册工具
 
     return langgraph_tools.describe()
 

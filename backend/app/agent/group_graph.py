@@ -193,8 +193,11 @@ async def pick_node(state: GroupState) -> dict:
     # 谁在等你回答：只看最后一段连续的角色发言
     awaiting: list[dict] = []
     try:
+        from services import rag
+
         recent = db.list_chat_turns(state.get("shelf_id") or "", limit=12)
-        awaiting = dispatch.find_awaiting(recent, text=text)
+        # 字面能对上就不用向量；对不上时用语义补（"我不烧了" -> "有没有发烧"）
+        awaiting = dispatch.find_awaiting(recent, text=text, semantic=rag.similarity)
     except Exception:  # noqa: BLE001 - 读不到历史就按常规选人
         logger.exception("查找待回答的问题失败（已忽略）")
 

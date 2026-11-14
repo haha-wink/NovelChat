@@ -2031,8 +2031,12 @@ def skill_checks() -> None:
     from services import skills
 
     names = tool_protocol.names()
-    check("工具①：注册了四个工具", set(names) == {
-        "breathing_guide", "comfort_phrase", "small_step", "crisis_helpline"}, str(names))
+    check("工具①：四个技能工具都注册了",
+          {"breathing_guide", "comfort_phrase", "small_step", "crisis_helpline"} <= set(names),
+          str(names))
+    check("工具①：时间工具也注册了",
+          {"local_time", "greeting_check"} <= set(names), str(names))
+    check("工具①：意图分析器也注册了", "intent_analyze" in names, str(names))
 
     schema = tool_protocol.openai_schema(["comfort_phrase"])[0]
     check("工具①：能产出 function calling 声明",
@@ -2223,6 +2227,86 @@ def temperament_checks() -> None:
 
     dbmod.delete_book(book["id"])
     dbmod.delete_shelf(shelf["id"])
+
+
+def intent_checks() -> None:
+    """意图分析器：要不要记忆 / 要不要工具 / 复合意图。"""
+    from core import tool_protocol
+    from services import intent
+
+    compound = intent.analyze(
+        "我很难受，我之前跟你说过我分手了",
+        emotion="难过", intent="vent", intensity=0.7,
+    )
+    check("意图：识别出复合意图",
+          compound.compound and set(compound.labels) >= {"情绪倾诉", "记忆唤起"},
+          str(compound.labels))
+    check("意图：复合时既记情绪也记记忆",
+          compound.needs_memory and "comfort_phrase" in compound.tools,
+          str(compound.as_dict()))
+
+    plain = intent.analyze("今天好累啊", emotion="疲惫", intent="vent", intensity=0.4)
+    check("意图：普通倾诉不触发记忆", not plain.needs_memory, str(plain.labels))
+    check("意图：普通倾诉要安慰工具", "comfort_phrase" in plain.tools, str(plain.tools))
+
+    crisis = intent.analyze("我不想活了", emotion="难过", intent="crisis",
+                            intensity=0.9, crisis=True)
+    check("意图：危机要热线工具", "crisis_helpline" in crisis.tools, str(crisis.tools))
+
+    help_plan = intent.analyze("我该怎么办", emotion="焦虑", intent="seek_help", intensity=0.5)
+    check("意图：求助要小步骤", "small_step" in help_plan.tools, str(help_plan.tools))
+    check("意图：焦虑中强度要呼吸引导",
+          "breathing_guide" in help_plan.tools, str(help_plan.tools))
+
+    chat = intent.analyze("哈哈哈天气不错", emotion="开心", intent="chat", intensity=0.3)
+    check("意图：闲聊不调工具",
+          chat.labels == ["闲聊"] and not chat.tools, str(chat.as_dict()))
+
+    # function call 工具形态
+    check("意图：注册成工具", "intent_analyze" in tool_protocol.names())
+    schema = tool_protocol.openai_schema(["intent_analyze"])[0]
+    check("意图：工具有参数声明",
+          schema["function"]["parameters"]["required"] == ["text"], str(schema)[:100])
+    ran = tool_protocol.execute("intent_analyze", {
+        "text": "我之前说过，你还记得吗", "emotion": "平静", "intent": "chat",
+    })
+    check("意图：工具能返回拆解结果",
+          ran["ok"] and ran["needs_memory"] and "记忆唤起" in ran["labels"], str(ran))
+
+    # 语义匹配：字面重合低时补一刀
+    turns = [
+        {"role": "user", "content": "我感冒了"},
+        {"role": "assistant", "speaker_name": "源稚生", "character_id": "c1",
+         "content": "现在有没有发烧？"},
+        {"role": "assistant", "speaker_name": "陈雯雯", "character_id": "c2",
+         "content": "还有哪里不舒服么？"},
+    ]
+    # 字面完全对不上（"体温正常" 里没有"烧"字）
+    calls: list[int] = []
+
+    def fake_semantic(_a, b):
+        calls.append(1)
+        return 0.9 if "烧" in b else 0.05
+
+    paraphrase = dispatch_find_awaiting(
+        turns, text="体温正常", semantic=fake_semantic)
+    check("语义：字面为零时靠向量救回来",
+          bool(paraphrase) and paraphrase[0]["name"] == "源稚生"
+          and paraphrase[0]["match"] >= 0.6,
+          str([(f["name"], f["match"]) for f in paraphrase]))
+    check("语义：确实调用了向量", bool(calls), str(len(calls)))
+
+    # 字面能对上时不该再算向量（省一次编码）
+    calls.clear()
+    hit = dispatch_find_awaiting(turns, text="没有发烧", semantic=fake_semantic)
+    check("语义：字面命中的那个不浪费向量（只问另一个）",
+          len(calls) == 1 and hit and hit[0]["name"] == "源稚生", str(len(calls)))
+
+
+def dispatch_find_awaiting(turns, *, text, semantic=None):
+    from services import dispatch
+
+    return dispatch.find_awaiting(turns, text=text, semantic=semantic)
 
 
 def awaiting_checks() -> None:
@@ -2484,9 +2568,9 @@ async def langgraph_checks() -> None:
 
     info = agent_graph.describe()
     check("LangGraph：图已编译", bool(info["compiled"]), str(info))
-    check("LangGraph：九个节点齐全", len(info["nodes"]) == 9, str(info["nodes"]))
+    check("LangGraph：十个节点齐全", len(info["nodes"]) == 10, str(info["nodes"]))
     check("LangGraph：节点顺序固定",
-          info["nodes"] == ["preprocess", "classify", "observe", "recall",
+          info["nodes"] == ["preprocess", "classify", "intent", "observe", "recall",
                             "plan", "skill", "generate", "verify", "persist"],
           str(info["nodes"]))
 
@@ -5305,6 +5389,7 @@ def main() -> int:
     asyncio.run(auto_merge_checks())
     dispatch_checks()
     skill_checks()
+    intent_checks()
     awaiting_checks()
     time_tool_checks()
     temperament_checks()

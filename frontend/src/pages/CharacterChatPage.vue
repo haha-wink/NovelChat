@@ -75,6 +75,7 @@
                   </div>
                   <div v-else v-html="renderMarkdown(message.content)"></div>
                 </div>
+                <span v-if="message.at" class="message-time">{{ formatTime(message.at) }}</span>
                 <img
                   v-if="message.sticker && !message.stickerFailed"
                   class="sticker"

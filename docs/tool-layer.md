@@ -235,3 +235,66 @@ context = state["context_block"] + "\n\n" + block
 ```
 加图索: 傍晚了。我是加图索。
 ```
+
+---
+
+## 9. 意图分析器（`intent_analyze`）
+
+一句话可能同时要两样东西：
+
+```
+「我很难受，我之前跟你说过我分手了」
+   ├─ 情绪倾诉   → 先共情（comfort_phrase）
+   └─ 记忆唤起   → 去 RAG 捞"分手"那段（needs_memory）
+```
+
+规则判断（零模型调用），输出：
+
+```json
+{
+  "labels": ["情绪倾诉", "记忆唤起"],
+  "needs_memory": true,
+  "tools": ["comfort_phrase"],
+  "compound": true
+}
+```
+
+**接到图里**：单聊图新增 `intent` 节点（classify 之后）：
+
+```
+preprocess → classify → intent → observe → recall → plan → skill → generate → verify → persist
+                          ↑
+              needs_memory → recall 的 top_k 翻倍
+              tools        → skill 节点一并执行
+```
+
+判定表：
+
+| 信号 | 结论 |
+|---|---|
+| 记忆线索词（之前/上次/我说过/还记得…） | `needs_memory = true` |
+| 危机 | `crisis_helpline` |
+| 倾诉 / 负面情绪 ≥0.3 | `comfort_phrase` |
+| 焦虑且强度 ≥0.5 | `breathing_guide` |
+| 求助 | `small_step` |
+
+---
+
+## 10. 语义补刀（谁在等你回答）
+
+字面匹配有个盲区：同义改写。
+
+```
+"体温正常"  vs  "现在有没有发烧？"   字面 0.00
+                                   语义 0.63  ← 救回来
+```
+
+`dispatch.find_awaiting` 接受 `semantic` 回调（`group_graph` 传的是 `rag.similarity`）：
+
+```python
+if semantic is not None and literal < 0.6:
+    match = max(literal, 0.7 * semantic(text, question))
+```
+
+**只在字面 <0.6 时才编码**，字面能对上就跳过——省掉一次 7ms 的向量计算。
+`rag.similarity` 复用现成的 bge-small-zh，不额外调模型。

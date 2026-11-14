@@ -491,3 +491,18 @@ button.small { padding: 5px 10px; font-size: 12px; }
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* 每条消息下面的时间（像聊天软件那样，只显示到分钟） */
+.message-time {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted, #9aa0a6);
+  opacity: 0.75;
+  user-select: none;
+}
+
+.message-wrapper.user .message-time {
+  text-align: right;
+}

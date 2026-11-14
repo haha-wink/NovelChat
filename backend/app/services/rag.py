@@ -386,6 +386,27 @@ def _query_vector(query: str) -> Optional[list[float]]:
     return vectors[0]
 
 
+def similarity(left: str, right: str) -> Optional[float]:
+    """两句短文本的语义相似度（0~1）。向量后端不可用时返回 None。
+
+    给"用户在回答哪个问题"这类判断用：字面重合会漏掉同义改写
+    （"没有发烧" vs "体温正常"），向量能救回来。
+    """
+    a, b = (left or "").strip(), (right or "").strip()
+    if not a or not b:
+        return None
+    vectors = _embed([a, b])
+    if not vectors or len(vectors) < 2:
+        return None
+    va, vb = vectors[0], vectors[1]
+    dot = sum(x * y for x, y in zip(va, vb))
+    na = sum(x * x for x in va) ** 0.5
+    nb = sum(y * y for y in vb) ** 0.5
+    if not na or not nb:
+        return None
+    return round(max(-1.0, min(1.0, dot / (na * nb))), 3)
+
+
 def search(
     character_id: str,
     query: str,

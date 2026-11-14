@@ -18,5 +18,10 @@ for (const view of ['group', 'chat']) {
     throw new Error(`${view} 视图没有渲染出发送图片的缩略图`)
   }
 }
-console.log('SSR 四视图 + 浮层渲染全部通过（含已发送图片的缩略图）')
+for (const view of ['group', 'chat']) {
+  if (!out[view].includes('message-time')) {
+    throw new Error(`${view} 视图没有渲染出消息时间`)
+  }
+}
+console.log('SSR 四视图 + 浮层渲染全部通过（含已发送图片缩略图与消息时间）')
 

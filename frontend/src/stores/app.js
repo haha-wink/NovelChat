@@ -367,7 +367,8 @@ async function loadChatHistory(character) {
     conversation.messages = (data.turns || []).map((turn) => ({
       role: turn.role === 'user' ? 'user' : 'assistant',
       content: turn.content || '',
-      images: turn.images || []
+      images: turn.images || [],
+      at: turn.created_at || null
     }))
   } catch (failure) {
     // 历史拉不到不该挡着聊天，静默忽略
@@ -756,7 +757,7 @@ async function sendMessage() {
     })
     imagesPayload.push(image.base64)
   })
-  conversation.messages.push({ role: 'user', content: userText })
+  conversation.messages.push({ role: 'user', content: userText, at: new Date().toISOString() })
 
   chatInput.value = ''
   pendingImages.value = []
@@ -783,7 +784,7 @@ async function sendMessage() {
       throw new Error(detail)
     }
 
-    conversation.messages.push({ role: 'assistant', content: '' })
+    conversation.messages.push({ role: 'assistant', content: '', at: new Date().toISOString() })
     const index = conversation.messages.length - 1
     await readStream(response, conversation.messages, index, conversation)
     if (!conversation.messages[index].content) {
@@ -952,7 +953,8 @@ function turnToGroupMessage(turn) {
       kind: 'user',
       content: turn.content || '',
       mentions: turn.mentions || [],
-      images: turn.images || []
+      images: turn.images || [],
+      at: turn.created_at || null
     }
   }
   const member =
@@ -966,7 +968,8 @@ function turnToGroupMessage(turn) {
     avatar_url: member?.avatar_url || '',
     content: turn.content || '',
     mentions: turn.mentions || [],
-    sticker: null
+    sticker: null,
+    at: turn.created_at || null
   }
 }
 
@@ -1119,7 +1122,8 @@ async function sendGroupMessage() {
     kind: 'user',
     content,
     mentions: parseLocalMentions(text),
-    images: images.map((image) => image.base64)
+    images: images.map((image) => image.base64),
+    at: new Date().toISOString()
   })
   group.input = ''
   pendingImages.value = []
@@ -1182,7 +1186,8 @@ async function readGroupStream(response) {
         content: '',
         mentions: [],
         typing: true,
-        forced: Boolean(event.forced)
+        forced: Boolean(event.forced),
+        at: new Date().toISOString()
       })
       active.set(event.character_id, group.messages.length - 1)
       scrollGroupBottom()
