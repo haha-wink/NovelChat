@@ -152,6 +152,9 @@ class Settings(BaseSettings):
     #: 同一角色两次发言的最小间隔（秒），防止话痨垄断
     #: 没人过线时也让意愿最高的人接一句（否则不 @ 就没人理）
     group_always_reply: bool = True
+    #: 群聊内容查重阈值（0~1，越高越宽松）；超过这个相似度的回复会被折叠。
+    #: 实测（bge-small-zh）：同义回复 0.69~0.85，不同内容 0.41~0.64，取中间值 0.65
+    group_duplicate_threshold: float = 0.65
     group_cooldown_seconds: int = 45
 
     # ---------- RAG 记忆检索 ----------

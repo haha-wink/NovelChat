@@ -1176,6 +1176,20 @@ async function readGroupStream(response) {
   const active = new Map()
 
   await readSSEStream(response, (event) => {
+    if (event.type === 'speaker_drop') {
+      // 聚合节点判定这条和别人重复：把气泡收起来，别占屏
+      const index = group.messages.findIndex(
+        (item) => item.kind === 'character' && item.character_id === event.character_id
+          && !item.collapsed && item.content
+      )
+      if (index >= 0) {
+        group.messages[index].collapsed = true
+        group.messages[index].collapsedHint = event.similar_to
+          ? `和${event.similar_to}说的重复了`
+          : '内容重复，已折叠'
+      }
+      return
+    }
     if (event.type === 'speaker_start') {
       group.messages.push({
         kind: 'character',
@@ -1187,6 +1201,7 @@ async function readGroupStream(response) {
         mentions: [],
         typing: true,
         forced: Boolean(event.forced),
+        angle: event.angle || '',
         at: new Date().toISOString()
       })
       active.set(event.character_id, group.messages.length - 1)

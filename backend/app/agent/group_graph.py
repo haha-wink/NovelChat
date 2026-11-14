@@ -81,6 +81,10 @@ class GroupState(TypedDict, total=False):
     current: dict
     #: 本轮的时间问候（prepare 算好，pick 指派给人）
     greeting: dict
+    #: 本轮每条发言（并行写入，聚合节点用来查重）
+    replies: Annotated[list, operator.add]
+    #: 被判定重复而折叠掉的（character_id 列表）
+    dropped: Annotated[list, operator.add]
     finished: bool
 
 
@@ -228,6 +232,21 @@ async def pick_node(state: GroupState) -> dict:
         return {"finished": True, "queue": [], "round_no": round_no - 1}
 
     _emit({"type": "round_start", "round": round_no})
+    # 【预分配分工】每人一个角度，避免四个人说同一句"先吃饭"
+    from services import angles
+
+    assigned = angles.assign(
+        [
+            {"name": pick.name, **factor}
+            for pick, factor in zip(
+                decision.picks,
+                [next((m for m in members if m["name"] == pick.name), {})
+                 for pick in decision.picks],
+            )
+        ],
+        crisis=crisis,
+    )
+
     awaiting_map = {item["character_id"]: item for item in awaiting}
     queue = [
         {
@@ -243,8 +262,12 @@ async def pick_node(state: GroupState) -> dict:
             #: 他上一轮问过的问题（在等他回答时才有）
             "asked": (awaiting_map.get(pick.character_id) or {}).get("question", ""),
             "asked_match": (awaiting_map.get(pick.character_id) or {}).get("match", 0.0),
+            #: 本轮分工（共情 / 方案 / 补充 / 轻松 / 追问）
+            "angle": assigned[index].key,
+            "angle_name": assigned[index].name,
+            "angle_instruction": assigned[index].instruction,
         }
-        for pick in decision.picks
+        for index, pick in enumerate(decision.picks)
     ]
     _emit({
         "type": "dispatch",
@@ -349,6 +372,7 @@ async def speak_node(state: GroupState) -> dict:
         "forced": speaker.get("forced", False),
         "reason": speaker.get("reason", ""),
         "fit": speaker.get("fit"),
+        "angle": speaker.get("angle_name"),
     })
 
     transcript = list(state.get("transcript") or [])
@@ -361,7 +385,14 @@ async def speak_node(state: GroupState) -> dict:
             f"对方刚刚回的是：「{state.get('text') or ''}」\n"
             "先接住这个回答（确认、放心、或继续问一句），不要重新问一遍同一个问题。"
         )
-    member_view = {**member, "_hint": hint} if hint else member
+    member_view = {**member, "_hint": hint}
+    angle = {
+        "key": speaker.get("angle") or "",
+        "name": speaker.get("angle_name") or "",
+        "instruction": speaker.get("angle_instruction") or "",
+    }
+    if angle["name"]:
+        member_view["_angle"] = angle
 
     pieces: list[str] = []
     generate = state.get("generate")
@@ -475,7 +506,84 @@ async def speak_node(state: GroupState) -> dict:
         "spoken": [speaker["name"]],
         "last_speaker_id": speaker["character_id"],
         "pending_forced": forced,
+        # 聚合节点要用：本轮所有回复
+        "replies": [{
+            "character_id": speaker["character_id"],
+            "name": speaker["name"],
+            "text": reply,
+            "angle": angle["name"],
+        }],
     }
+
+
+async def dedupe_node(state: GroupState) -> dict:
+    """聚合：把内容重复的回复折叠掉（并行生成的兜底）。
+
+    分工（angle）已经在提示词里做了第一道防重；这里用向量相似度兜底——
+    万一两个人还是说了同一件事，只保留信息量更大的那条。
+
+    已经被流式推到前端的消息不能"撤回"，所以这里发一个 ``speaker_drop``
+    事件让前端折叠（前端收到后把那条气泡移除）。
+    """
+    from services import rag
+    from core.config import get_settings
+
+    replies = list(state.get("replies") or [])
+    if len(replies) < 2:
+        return {}
+
+    threshold = float(getattr(get_settings(), "group_duplicate_threshold", 0.78))
+    kept: list[dict] = []
+    dropped: list[dict] = []
+
+    for item in replies:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        duplicate_of = None
+        for previous in kept:
+            score = _similarity(text, str(previous.get("text") or ""), rag.similarity)
+            if score is not None and score >= threshold:
+                duplicate_of = previous
+                break
+        if duplicate_of is None:
+            kept.append(item)
+            continue
+        dropped.append({**item, "similar_to": duplicate_of.get("name")})
+
+    if not dropped:
+        return {}
+
+    for item in dropped:
+        _emit({
+            "type": "speaker_drop",
+            "character_id": item.get("character_id"),
+            "name": item.get("name"),
+            "similar_to": item.get("similar_to"),
+            "reason": "content_duplicate",
+        })
+    logger.info(
+        "群聊去重：保留 %d 条，折叠 %d 条（%s）",
+        len(kept), len(dropped), "、".join(str(item.get("name")) for item in dropped),
+    )
+    return {"dropped": [item.get("character_id") for item in dropped]}
+
+
+def _similarity(left: str, right: str, semantic):
+    """先看字面，差得远再算向量（省一次编码）。"""
+    import difflib
+
+    literal = difflib.SequenceMatcher(None, left, right).ratio()
+    if literal >= 0.92:
+        # 几乎一字不差，不用浪费一次编码
+        return literal
+    # 其余一律问向量：**取两者较大值**
+    # （同义改写字面只有 0.13，光看字面会漏；反过来向量偶尔也会漏字面重复）
+    try:
+        score = semantic(left, right)
+    except Exception:  # noqa: BLE001 - 向量算不出来就信字面
+        return literal
+    return max(literal, float(score or 0.0))
 
 
 def fan_out(state: GroupState):
@@ -541,8 +649,10 @@ def build_group_graph():
         "pick", fan_out, {"speak": "speak", "finish": "finish"}
     )
     # 并行的那批都跑完后，统一判断要不要下一轮
-    graph.add_edge("speak", "decide")
+    graph.add_edge("speak", "dedupe")
+    graph.add_edge("dedupe", "decide")
     graph.add_node("decide", decide_node)
+    graph.add_node("dedupe", dedupe_node)
     graph.add_conditional_edges(
         "decide", route_after_speak, {"pick": "pick", "finish": "finish"}
     )
@@ -563,6 +673,6 @@ def get_group_graph():
 def describe() -> dict:
     return {
         "engine": "langgraph",
-        "nodes": ["prepare", "pick", "speak", "finish"],
+        "nodes": ["prepare", "pick", "speak", "dedupe", "finish"],
         "compiled": get_group_graph() is not None,
     }

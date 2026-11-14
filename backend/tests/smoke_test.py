@@ -57,6 +57,7 @@ from services import library
 from services import prompts  # noqa: E402
 from services import cleaner  # noqa: E402
 from services import reply as reply_mod  # noqa: E402
+from services import dialogue  # noqa: E402
 from services import chat_memory
 from services import rag  # noqa: E402
 from core import scene as scene_mod
@@ -2971,6 +2972,88 @@ async def group_awake_checks() -> None:
     )
     check("群聊唤醒：@全体成员 全员应答", len(everyone) == 2, str([s.name for s in everyone]))
 
+async def group_angle_checks() -> None:
+    """并行分工（角度）+ 聚合查重。"""
+    import random as _random
+
+    from agent import group_graph
+    from services import angles
+
+    warm = {"name": "阿暖", "personality": ["温柔", "体贴", "耐心"]}
+    calm = {"name": "阿静", "personality": ["冷静", "理性", "沉稳"]}
+    fun = {"name": "阿乐", "personality": ["活泼", "俏皮", "爱开玩笑"]}
+    plain = {"name": "阿常", "personality": []}
+
+    assigned = angles.assign([warm, calm, fun, plain])
+    keys = [item.key for item in assigned]
+    check("分工：温柔的人先共情", assigned[0].key == "empathy", assigned[0].name)
+    check("分工：冷静的人给方案", assigned[1].key == "plan", assigned[1].name)
+    check("分工：活泼的人活跃气氛", assigned[2].key == "light", assigned[2].name)
+    check("分工：一次里角度不重样", len(set(keys)) == len(keys), str(keys))
+
+    crisis_keys = [item.key for item in angles.assign([warm, calm, fun, plain], crisis=True)]
+    check("分工：危机场景不安排打趣/追问",
+          "light" not in crisis_keys and "ask" not in crisis_keys, str(crisis_keys))
+
+    # ---- 聚合查重 ----
+    dbmod.init_db()
+    dedup_lib = dbmod.create_library("去重自检库", "临时")
+    shelf = dbmod.create_shelf(dedup_lib["id"], "去重自检架")
+    book = library.create_book(
+        title="去重自检书", source_name="d.txt", source_type="txt",
+        text="x", shelf_id=shelf["id"],
+    )
+    for name, traits in (("甲", ["温柔"]), ("乙", ["冷静"]), ("丙", ["活泼"]), ("丁", [])):
+        dbmod.insert_character(book_id=book["id"], name=name,
+                               personality=traits, source="novel")
+    members = dbmod.ensure_shelf_members(shelf["id"])
+
+    replies = {
+        "甲": "先吃饭吧，这个最要紧。吃完了再汇总工作表。",
+        "乙": "先吃饭，空腹做别的也一样做不好。",
+        "丙": "浇花顺手做一下就行，衣服明天也不迟，先把饭吃了。",
+        "丁": "要不先躺十分钟，我在这儿陪你说会儿话。",
+    }
+
+    async def generate(member, transcript):
+        yield replies.get(member["name"], "嗯。")
+
+    signals = dialogue.TurnSignals(
+        text="帮我排个先后", emotion="疲惫", intensity=0.5, intent="seek_help")
+    events: list[dict] = []
+    async for event in group_graph.get_group_graph().astream(
+        {
+            "shelf_id": shelf["id"], "user_id": "u_dedup", "text": "帮我排个先后",
+            "members": members, "image_urls": [],
+            "options": {"max_speakers": 10, "max_rounds": 1, "threshold": 0.0,
+                        "all_threshold": 0.0, "cooldown_seconds": 0, "always_reply": True},
+            "dialogue_plan": dialogue.plan(signals), "signals": signals,
+            "rng": _random.Random(2), "generate": generate,
+        },
+        stream_mode="custom", config={"recursion_limit": 100},
+    ):
+        events.append(event)
+
+    starts = [item for item in events if item["type"] == "speaker_start"]
+    check("分工：每个发言人都带角度", all(item.get("angle") for item in starts),
+          str([(item["name"], item.get("angle")) for item in starts]))
+
+    drops = [item for item in events if item["type"] == "speaker_drop"]
+    check("查重：内容雷同的回复被折叠", bool(drops), str([d["name"] for d in drops]))
+    check("查重：折叠时说明和谁重复", all(d.get("similar_to") for d in drops),
+          str([(d["name"], d.get("similar_to")) for d in drops]))
+    kept = [
+        item["name"] for item in events
+        if item["type"] == "speaker_end" and item["name"] not in {d["name"] for d in drops}
+    ]
+    check("查重：不同角度的回复保留下来", len(kept) >= 1, str(kept))
+    check("查重：不会把所有人都折叠掉", len(kept) >= 1 and len(drops) < len(starts),
+          f"保留 {len(kept)} / 折叠 {len(drops)}")
+
+    dbmod.delete_book(book["id"])
+    dbmod.delete_shelf(shelf["id"])
+
+
 async def group_parallel_checks() -> None:
     """Send 并行：多人同时生成，事件交错但各自独立，落库一条不少。"""
     import asyncio as _asyncio
@@ -3065,8 +3148,9 @@ async def group_graph_checks() -> None:
 
     info = group_graph.describe()
     check("群聊图：已编译", bool(info["compiled"]), str(info))
-    check("群聊图：四个节点",
-          info["nodes"] == ["prepare", "pick", "speak", "finish"], str(info["nodes"]))
+    check("群聊图：五个节点（含聚合查重）",
+          info["nodes"] == ["prepare", "pick", "speak", "dedupe", "finish"],
+          str(info["nodes"]))
 
     dbmod.init_db()
     shelf = _test_shelf("ggraph")
@@ -5444,6 +5528,7 @@ def main() -> int:
     asyncio.run(dialogue_checks())
     asyncio.run(housekeeping_checks())
     asyncio.run(group_awake_checks())
+    asyncio.run(group_angle_checks())
     asyncio.run(group_parallel_checks())
     asyncio.run(group_graph_checks())
     asyncio.run(group_turn_checks())

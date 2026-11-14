@@ -107,11 +107,21 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
         # 附加群聊上下文：后说话的人要接得上前面的话
         lines = [f"{t['speaker']}：{t['text']}" for t in transcript[-8:]]
         hint = str(member.get("_hint") or "")
+        angle = member.get("_angle") or {}
+        angle_block = ""
+        if angle.get("name"):
+            angle_block = (
+                f"\n\n【本轮你的角度：{angle['name']}】\n"
+                f"{angle.get('instruction') or ''}\n"
+                "别人也在回同一句话，各有分工——**不要越界去做别人的部分**，"
+                "也不要重复别人已经说过的内容。"
+            )
         agent.additional_context = (
             (agent.additional_context or "")
             + "\n\n【群聊上下文，最近几条】\n"
             + "\n".join(lines)
             + (f"\n\n【你在等这个回答】\n{hint}" if hint else "")
+            + angle_block
             + f"\n\n你在群聊里，用「{member['name']}」的身份说话。群聊规则：\n"
             "- 群里不止你一个人。可以顺着别人刚说的话接一句，也可以只对用户说。\n"
             "- 别人已经说过的建议或安慰（比如「多喝热水」）**不要再重复**："
