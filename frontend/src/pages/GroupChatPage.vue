@@ -27,7 +27,7 @@
           </div>
 
           <div
-            v-for="(message, index) in group.messages"
+            v-for="(message, index) in visibleGroupMessages"
             :key="index"
             class="message-wrapper"
             :class="message.kind === 'user' ? 'user' : 'assistant'"
@@ -67,13 +67,10 @@
                       />
                     </a>
                   </div>
-                  <div v-if="message.collapsed" class="message-collapsed">
-                    （{{ message.collapsedHint }}）
-                  </div>
-                  <div v-else-if="message.content" v-html="renderMarkdown(message.content)"></div>
+                  <div v-if="message.content" v-html="renderMarkdown(message.content)"></div>
                   <div v-else class="typing"><span></span><span></span><span></span></div>
                 </div>
-                <span v-if="message.at && !message.typing && !message.collapsed" class="message-time">
+                <span v-if="message.at && !message.typing" class="message-time">
                   {{ formatTime(message.at) }}
                 </span>
                 <img
@@ -165,6 +162,7 @@ const {
   editor,
   status,
   group,
+  visibleGroupMessages,
   groupContainer,
   shelves,
   uploadShelfId,

@@ -3127,9 +3127,11 @@ async def group_parallel_checks() -> None:
 
     ends = [item for item in events if item["type"] == "speaker_end"]
     check("并行：每人都产出了 speaker_end", len(ends) == 2, str([e["name"] for e in ends]))
-    check("并行：delta 带 character_id 可分流",
-          all("character_id" in item for item in events if item["type"] == "delta"),
-          str(events[:3]))
+    # 群聊改成整段发送：不再逐段推 delta（否则重复内容会先显示再消失）
+    deltas = [item for item in events if item["type"] == "delta"]
+    check("并行：群聊不逐段推送（等聚合后整段发）", not deltas, str(len(deltas)))
+    check("并行：speaker_end 带完整文本",
+          all(item.get("text") for item in ends), str([e.get("text") for e in ends]))
 
     turns = dbmod.list_chat_turns(shelf["id"], limit=20)
     check("并行：落库一条不少",
@@ -3287,8 +3289,9 @@ async def group_turn_checks() -> None:
     kinds = [e["type"] for e in events]
     check("群聊：回合从用户消息开始", kinds[0] == "user", str(kinds[:3]))
     check("群聊：产生 round_start", "round_start" in kinds, str(kinds))
-    check("群聊：产生 speaker_start/delta/speaker_end",
-          {"speaker_start", "delta", "speaker_end"} <= set(kinds), str(kinds))
+    check("群聊：产生 speaker_start/speaker_end（整段发送，无 delta）",
+          {"speaker_start", "speaker_end"} <= set(kinds) and "delta" not in kinds,
+          str(kinds))
     check("群聊：以 done 结束", kinds[-1] == "done", str(kinds[-3:]))
 
     speakers = [e["name"] for e in events if e["type"] == "speaker_end"]
@@ -5394,8 +5397,8 @@ async def group_chat_sse_checks() -> None:
                 if line.startswith("data:")
             ]
             kinds = [e["type"] for e in events]
-            check("群聊SSE：事件序列完整",
-                  {"user", "round_start", "speaker_start", "delta", "speaker_end", "done"}
+            check("群聊SSE：事件序列完整（整段发送）",
+                  {"user", "round_start", "speaker_start", "speaker_end", "done"}
                   <= set(kinds), str(kinds))
             check("群聊SSE：以 done 收尾", kinds and kinds[-1] == "done", str(kinds[-3:]))
 
@@ -5405,12 +5408,12 @@ async def group_chat_sse_checks() -> None:
                   and {"character_id", "name", "avatar"} <= set(speaker_starts[0]),
                   str(speaker_starts[:1]))
             deltas = [e for e in events if e["type"] == "delta"]
-            check("群聊SSE：delta 带 character_id/text",
-                  bool(deltas) and {"character_id", "text"} <= set(deltas[0]),
-                  str(deltas[:1]))
-            speaker_ids = {e["character_id"] for e in speaker_starts}
-            check("群聊SSE：每条 delta 都能归到某个发言人（前端据此分气泡）",
-                  all(d["character_id"] in speaker_ids for d in deltas), str(deltas[:2]))
+            check("群聊SSE：不逐段推送（等聚合查重后整段发）",
+                  not deltas, str(len(deltas)))
+            ends_now = [e for e in events if e["type"] == "speaker_end"]
+            check("群聊SSE：完整文本在 speaker_end 里一次给出",
+                  bool(ends_now) and all(e.get("text") for e in ends_now),
+                  str([e.get("text", "")[:12] for e in ends_now]))
 
             ends = [e for e in events if e["type"] == "speaker_end"]
             check("群聊SSE：speaker_end 带最终文本与 @",

@@ -397,15 +397,12 @@ async def speak_node(state: GroupState) -> dict:
     pieces: list[str] = []
     generate = state.get("generate")
     try:
+        # 不逐段推给前端：群聊要等聚合查重之后再一次性发出去，
+        # 否则重复内容会先显示、再被折叠，用户会看到闪烁
         async for piece in generate(member_view, transcript):
             if not piece:
                 continue
             pieces.append(piece)
-            _emit({
-                "type": "delta",
-                "character_id": speaker["character_id"],
-                "text": piece,
-            })
     except Exception as exc:  # noqa: BLE001 - 一个人失败不该炸整个群
         logger.exception("群聊生成失败：%s", speaker["name"])
         _emit({

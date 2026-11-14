@@ -133,6 +133,9 @@ const currentMessages = computed(() => {
   return conversations[id]?.messages || []
 })
 
+//: 群聊要显示的消息（被聚合节点判定重复的会 hidden 掉）
+const visibleGroupMessages = computed(() => group.messages.filter((item) => !item.hidden))
+
 //: 当前会话对象（含 turnId / canResume，断流续跑要用）
 const currentConversation = computed(() => {
   const id = activeCharacter.value?.id
@@ -1177,16 +1180,12 @@ async function readGroupStream(response) {
 
   await readSSEStream(response, (event) => {
     if (event.type === 'speaker_drop') {
-      // 聚合节点判定这条和别人重复：把气泡收起来，别占屏
-      const index = group.messages.findIndex(
-        (item) => item.kind === 'character' && item.character_id === event.character_id
-          && !item.collapsed && item.content
-      )
-      if (index >= 0) {
-        group.messages[index].collapsed = true
-        group.messages[index].collapsedHint = event.similar_to
-          ? `和${event.similar_to}说的重复了`
-          : '内容重复，已折叠'
+      // 聚合节点判定这条和别人重复：直接藏起来。
+      // 群聊不流式，此刻它还是个"正在输入"的占位，藏掉不留痕迹。
+      const index = active.get(event.character_id)
+      if (index !== undefined) {
+        group.messages[index].hidden = true
+        active.delete(event.character_id)
       }
       return
     }
@@ -1294,6 +1293,7 @@ const state = {
   merge,
   verifying,
   currentMessages,
+  visibleGroupMessages,
   currentConversation,
   loadHealth,
   loadBooks,
