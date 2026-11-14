@@ -147,6 +147,9 @@ const currentConversation = computed(() => {
 async function loadHealth() {
   try {
     health.value = await api('/api/health')
+    // 把后端版本打到控制台：和 git log 对不上就说明前端是旧缓存
+    const build = health.value?.build || {}
+    console.info(`[NovelChat] 后端 ${build.commit || '?'} / 启动于 ${build.started_at || '?'}`)
   } catch (failure) {
     health.value = { api_key_configured: null }
     error.value = `连不上后端：${failure.message}`

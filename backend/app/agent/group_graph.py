@@ -191,6 +191,21 @@ async def pick_node(state: GroupState) -> dict:
         ]
         if not queue:
             return {"finished": True, "queue": [], "round_no": round_no - 1}
+        # 第二轮也要分工，否则追问轮又会几个人说同一句
+        from services import angles as _angles
+
+        for index, (item, angle) in enumerate(zip(
+            queue,
+            _angles.assign(
+                [next((m for m in members if m["name"] == row["name"]), row) for row in queue],
+                crisis=bool(getattr(signals, "crisis", False)) if signals else False,
+            ),
+        )):
+            queue[index].update({
+                "angle": angle.key,
+                "angle_name": angle.name,
+                "angle_instruction": angle.instruction,
+            })
         _emit({"type": "round_start", "round": round_no})
         return {"queue": queue, "round_no": round_no, "pending_forced": [], "finished": False}
 

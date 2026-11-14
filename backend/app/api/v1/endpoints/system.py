@@ -1,14 +1,49 @@
 """系统：健康检查 / 会话 / 渠道 / 贴纸。"""
 
+from datetime import datetime
+from pathlib import Path
+
 from fastapi import APIRouter
 
 from api.v1.deps import *  # noqa: F401,F403
 
 router = APIRouter()
 
+#: 进程启动时间（健康检查里给前端对版本用）
+_STARTED_AT = datetime.now().isoformat(timespec="seconds")
+
 TWEMOJI_CDN = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/svg/{name}.svg"
 _STICKER_NAME = re.compile(r"^[0-9a-f]{1,8}(-[0-9a-f]{1,8})*$")
 
+
+
+def build_info() -> dict:
+    """这份后端是哪个提交、什么时候起的——排查"改了没生效"用的。
+
+    前端也会显示同样的字段；两边对不上就说明前端是旧缓存。
+    """
+    commit = "unknown"
+    try:
+        head = (Path(__file__).resolve().parents[5] / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            ref = (Path(__file__).resolve().parents[5] / ".git" / head[5:].strip())
+            commit = ref.read_text(encoding="utf-8").strip()[:7]
+        else:
+            commit = head[:7]
+    except Exception:  # noqa: BLE001 - 读不到就算了
+        pass
+    return {
+        "commit": commit,
+        "started_at": _STARTED_AT,
+        "features": ["batch_group", "dedupe", "angles", "greeting", "intent_tool"],
+    }
+
+
+def angles_describe() -> dict:
+    """发言分工清单。"""
+    from services import angles
+
+    return angles.describe()
 
 
 def tools_describe() -> dict:
@@ -31,6 +66,7 @@ async def health() -> dict:
     from agent import graph as agent_graph
     from agent import group_graph as agent_group_graph
     from agent.tools import langgraph_tools
+    from services import angles as _angles
     from services import skills
     from services import emotion_model
     from services import name_engine
@@ -39,8 +75,13 @@ async def health() -> dict:
     return {
         "status": "ok",
         # 对话工作流跑在哪张图上（节点顺序一目了然）
+        "build": build_info(),
         "workflow": agent_graph.describe(),
         "group_workflow": agent_group_graph.describe(),
+        "group_tuning": {
+            "duplicate_threshold": settings.group_duplicate_threshold,
+            "angles": [item["name"] for item in angles_describe()["angles"]],
+        },
         # 工具三层：协议层清单 + 业务技能
         "tools": tools_describe(),
         "skills": skills_describe(),

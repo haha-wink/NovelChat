@@ -3015,7 +3015,11 @@ async def group_angle_checks() -> None:
         "丁": "要不先躺十分钟，我在这儿陪你说会儿话。",
     }
 
+    seen_angles: list[dict] = []
+
     async def generate(member, transcript):
+        # 生成函数能拿到角度，说明分工真的传到提示词组装处了
+        seen_angles.append(member.get("_angle") or {})
         yield replies.get(member["name"], "嗯。")
 
     signals = dialogue.TurnSignals(
@@ -3049,6 +3053,9 @@ async def group_angle_checks() -> None:
     check("查重：不同角度的回复保留下来", len(kept) >= 1, str(kept))
     check("查重：不会把所有人都折叠掉", len(kept) >= 1 and len(drops) < len(starts),
           f"保留 {len(kept)} / 折叠 {len(drops)}")
+    check("分工：角度真的传到了生成函数",
+          bool(seen_angles) and all(item.get("name") for item in seen_angles),
+          str([item.get("name") for item in seen_angles]))
 
     dbmod.delete_book(book["id"])
     dbmod.delete_shelf(shelf["id"])
