@@ -114,7 +114,9 @@ def frequency(shelf_id: str, *, now: Optional[datetime] = None) -> dict:
 
     recent: list[datetime] = []
     last_user_at: Optional[str] = None
-    for turn in turns:
+    # 倒序遍历：要的是**最新**那条用户消息（之前正序取到的是最旧的，
+    # 结果每次都判成"跨时段"，问候语每轮都发一遍）
+    for turn in reversed(turns):
         stamp = turn.get("created_at")
         minutes = _minutes_since(stamp, moment)
         if minutes is None:

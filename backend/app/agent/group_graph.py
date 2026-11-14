@@ -79,6 +79,8 @@ class GroupState(TypedDict, total=False):
     queue: list[dict]
     #: Send 分叉时带下去的"这个人"
     current: dict
+    #: 本轮的时间问候（prepare 算好，pick 指派给人）
+    greeting: dict
     finished: bool
 
 
@@ -114,6 +116,10 @@ async def prepare_node(state: GroupState) -> dict:
             names = [str(m.get("name") or "") for m in members]
             logger.info("被 @全体成员 叫上线：%d 人", woken)
 
+    # 【时间问候】必须在写用户消息之前算：写完就分不清"这条是不是刚发的"，
+    # 会每轮都判成跨时段（用户看到的就是每次回复都带一句"傍晚了。"）
+    greeting = _decide_greeting(shelf_id)
+
     plan = state.get("dialogue_plan")
     db.add_chat_turn(
         shelf_id=shelf_id,
@@ -138,8 +144,8 @@ async def prepare_node(state: GroupState) -> dict:
         "pending_forced": [],
         "round_no": 0,
         "queue": [],
-        "cursor": 0,
         "finished": False,
+        "greeting": greeting,
     }
 
 
@@ -265,6 +271,32 @@ async def pick_node(state: GroupState) -> dict:
     return {"queue": queue, "round_no": round_no, "pending_forced": [], "finished": False}
 
 
+def _decide_greeting(shelf_id: str) -> dict:
+    """跑 greeting_check 工具，拿到"该不该问候"。"""
+    try:
+        from core import tool_protocol
+        from services import time_tools  # noqa: F401 - 导入即注册
+
+        result = tool_protocol.execute("greeting_check", {"shelf_id": shelf_id})
+    except Exception:  # noqa: BLE001 - 问候是锦上添花
+        logger.exception("时间问候判断失败（已忽略）")
+        return {}
+    if not result.get("ok") or not result.get("text"):
+        return {}
+
+    reasons = []
+    if result.get("need_time_greeting"):
+        reasons.append("跨时段")
+    if result.get("need_fatigue_greeting"):
+        reasons.append("深夜" if result.get("late_night") else "聊太久")
+    return {
+        "text": result["text"],
+        "period": result.get("period"),
+        "late_night": result.get("late_night"),
+        "reason": "+".join(reasons) or "问候",
+    }
+
+
 def _prepare_greeting(state: GroupState, queue: list[dict]) -> dict:
     """跑 greeting_check 工具，命中就把问候挂到随机一个发言人身上。
 
@@ -273,33 +305,21 @@ def _prepare_greeting(state: GroupState, queue: list[dict]) -> dict:
     """
     if not queue:
         return {}
-    try:
-        from core import tool_protocol
-
-        result = tool_protocol.execute(
-            "greeting_check", {"shelf_id": state.get("shelf_id") or ""}
-        )
-    except Exception:  # noqa: BLE001 - 问候是锦上添花
-        logger.exception("时间问候判断失败（已忽略）")
+    greeting = state.get("greeting") or {}
+    text = str(greeting.get("text") or "")
+    if not text:
         return {}
 
-    if not result.get("ok") or not result.get("text"):
-        return {}
-
+    # 随机挑一个人把问候带出来（用户要求：不用固定人选）
     rng = state.get("rng")
     index = rng.randrange(len(queue)) if rng is not None else 0
-    queue[index]["greeting"] = result["text"]
-    reasons = []
-    if result.get("need_time_greeting"):
-        reasons.append("跨时段")
-    if result.get("need_fatigue_greeting"):
-        reasons.append("深夜" if result.get("late_night") else "聊太久")
+    queue[index]["greeting"] = text
     return {
         "speaker": queue[index]["name"],
-        "text": result["text"],
-        "period": result.get("period"),
-        "late_night": result.get("late_night"),
-        "reason": "+".join(reasons) or "问候",
+        "text": text,
+        "period": greeting.get("period"),
+        "late_night": greeting.get("late_night"),
+        "reason": greeting.get("reason") or "问候",
     }
 
 

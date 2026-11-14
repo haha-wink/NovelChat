@@ -387,6 +387,30 @@ def select(
         )
         chosen_ids.add(character_id)
 
+    # ①.5 在等你回答的人**必答**，不参与适配度竞争
+    #      （只加权不够：适配度差 0.2 就压过去了，用户会看到"我问的是他，回我的是别人"）
+    if target_awaiting is not None:
+        character_id = str(target_awaiting.get("character_id") or "")
+        member = next(
+            (m for m in usable if str(m.get("character_id") or "") == character_id), None
+        )
+        if member is not None and character_id not in chosen_ids:
+            chosen.insert(
+                0,
+                Pick(
+                    character_id=character_id,
+                    name=str(member.get("name") or target_awaiting.get("name") or ""),
+                    score=FORCED_BONUS,
+                    fit=persona.fit_for(member, emotion=emotion, crisis=crisis),
+                    reason="在等你回答",
+                    forced=True,
+                    emotion=str(member.get("emotion") or "平静"),
+                    valence=float(member.get("valence") or 0.0),
+                    arousal=float(member.get("arousal") or 0.35),
+                ),
+            )
+            chosen_ids.add(character_id)
+
     # ② 其余按「适配度 + 相关性」排序
     scored: list[tuple[float, dict, float, str]] = []
     for member in usable:
@@ -413,10 +437,6 @@ def select(
         )
         reasons = [f"适配{fit:.2f}"]
 
-        # 上一轮他问过你问题 -> 这句大概率是在回他，优先让他接
-        if character_id in awaiting_boost:
-            score += awaiting_boost[character_id]
-            reasons.append("在等你回答")
 
         if rel >= 0.7:
             reasons.append("被点名")

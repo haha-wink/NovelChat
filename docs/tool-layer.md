@@ -224,6 +224,14 @@ context = state["context_block"] + "\n\n" + block
 **问候由谁说**：随机挑一个本轮要发言的角色，把问候语拼在他回复的最前面——
 不额外发一条系统消息，也不指定固定人选。
 
+**两个必须注意的时序问题**（都踩过）：
+
+1. **问候要在写用户消息之前算**。`prepare` 会先把用户那句落库，
+   如果在 `pick` 里再判断"上次说话是什么时候"，读到的是刚写进去的这条——
+   于是每轮都判成跨时段，用户看到的是每次回复都带一句"傍晚了。"
+2. **`frequency()` 要取最新的用户消息**，不是最旧的。正序遍历 + `if last_user_at is None`
+   拿到的是几小时前那条，同样会误判。
+
 ```
 事件流：user → round_start → dispatch → greeting → speaker_start → delta → speaker_end → done
                                         ↑

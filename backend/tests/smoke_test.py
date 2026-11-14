@@ -2170,6 +2170,24 @@ def time_tool_checks() -> None:
     )
     check("时间：正常聊天不问候", not calm["text"], str(calm))
 
+    # 同一时段连续对话：不该每次都打招呼
+    dbmod.init_db()
+    greet_lib = dbmod.create_library("问候自检库", "临时")
+    greet_shelf = dbmod.create_shelf(greet_lib["id"], "问候自检架")
+    for content in ("第一句", "第二句"):
+        dbmod.add_chat_turn(
+            shelf_id=greet_shelf["id"], user_id="u_greet", role="user", content=content)
+    freq = time_tools.frequency(greet_shelf["id"])
+    turns_all = dbmod.list_chat_turns(greet_shelf["id"], limit=10)
+    check("时间：frequency 取的是最新那条用户消息",
+          freq["last_user_at"] == turns_all[-1]["created_at"],
+          f"{freq['last_user_at']} vs {turns_all[-1]['created_at']}")
+
+    same_period = time_tools.decide(frequency_data=freq)
+    check("时间：同一时段连续对话不再重复问候",
+          not same_period["need_time_greeting"], str(same_period))
+    dbmod.delete_shelf(greet_shelf["id"])
+
     check("时间：注册成工具", "local_time" in tool_protocol.names()
           and "greeting_check" in tool_protocol.names(), str(tool_protocol.names()))
     ran = tool_protocol.execute("local_time", {})
@@ -2373,6 +2391,25 @@ def awaiting_checks() -> None:
           dispatch.target_count(emotion="平静", intent="chat", intensity=0.0) == 1)
 
     # 含糊回答要按当前这句话重新匹配，而不是沿用上一句的匹配结果
+    # 适配度差很多时，仍然必须让提问者接话
+    cold = [
+        _shadow_member("陈雯雯", ["温柔", "体贴", "耐心"], "c_chen"),
+        _shadow_member("芬格尔", ["暴躁", "毒舌"], "c_fen"),
+    ]
+    forced_await = [{"character_id": "c_fen", "name": "芬格尔",
+                     "question": "你之前是不是没好好歇着？", "match": 0.5, "depth": 0}]
+    forced_decision = dispatch.select(
+        cold, text="我有好好休息的", emotion="难过", intent="vent", intensity=0.6,
+        awaiting=forced_await, rng=_random.Random(3),
+    )
+    check("等回答：提问者必答，哪怕适配度更低",
+          forced_decision.picks[0].name == "芬格尔"
+          and forced_decision.picks[0].forced,
+          str([(p.name, p.reason) for p in forced_decision.picks]))
+    check("等回答：强制入选的人排在第一位",
+          forced_decision.picks[0].score >= 1.0,
+          str(forced_decision.picks[0].score))
+
     vague_awaiting = dispatch.find_awaiting(turns, text="嗯")
     vague = dispatch.select(
         members, text="嗯", emotion="平静", intent="chat", intensity=0.0,
@@ -3074,8 +3111,9 @@ async def group_graph_checks() -> None:
     check("群聊图：最后是 done", kinds[-1] == "done", str(kinds[-2:]))
 
     ends = [item for item in events if item["type"] == "speaker_end"]
+    # 空书架第一次说话会带时间问候（"傍晚了。"），所以只断言回复本身在末尾
     check("群聊图：speaker_end 带最终文本",
-          bool(ends) and ends[0]["text"] == "@苏晚 你来。", str(ends[:1]))
+          bool(ends) and ends[0]["text"].endswith("@苏晚 你来。"), str(ends[:1]))
 
     # @ 链式：沈砚 @ 了苏晚 -> 第二轮苏晚必答
     check("群聊图：被 @ 的人下一轮接上", "苏晚" in calls, str(calls))
@@ -5364,6 +5402,12 @@ async def group_chat_sse_checks() -> None:
 
 
 def main() -> int:
+    # 检查项里会打印表情（贴纸、情绪），Windows 控制台默认 GBK 会直接崩
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
     document_checks()
     pipeline_checks()
     miner_checks()
