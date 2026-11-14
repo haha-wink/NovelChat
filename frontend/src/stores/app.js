@@ -1178,22 +1178,32 @@ async function sendGroupMessage() {
 }
 
 async function readGroupStream(response) {
-  //: character_id -> 消息下标（同一个人在后续轮次会新建一条消息）
+  //: character_id -> 消息对象本身（不是下标：数组会变长、会被隐藏，
+  //: 存下标会在 speaker_end 删除后让 speaker_drop 找不到人）
   const active = new Map()
 
   await readSSEStream(response, (event) => {
     if (event.type === 'speaker_drop') {
       // 聚合节点判定这条和别人重复：直接藏起来。
-      // 群聊不流式，此刻它还是个"正在输入"的占位，藏掉不留痕迹。
-      const index = active.get(event.character_id)
-      if (index !== undefined) {
-        group.messages[index].hidden = true
-        active.delete(event.character_id)
+      // 此刻它已经 speaker_end 过了（active 里可能已删），所以按 character_id 回查，
+      // 取**最后一条还没隐藏**的该角色消息。
+      let target = active.get(event.character_id)
+      if (!target) {
+        for (let i = group.messages.length - 1; i >= 0; i -= 1) {
+          const item = group.messages[i]
+          if (item.kind === 'character' && item.character_id === event.character_id
+            && !item.hidden) {
+            target = item
+            break
+          }
+        }
       }
+      if (target) target.hidden = true
+      active.delete(event.character_id)
       return
     }
     if (event.type === 'speaker_start') {
-      group.messages.push({
+      const message = reactive({
         kind: 'character',
         character_id: event.character_id,
         name: event.name,
@@ -1206,29 +1216,32 @@ async function readGroupStream(response) {
         angle: event.angle || '',
         at: new Date().toISOString()
       })
-      active.set(event.character_id, group.messages.length - 1)
+      group.messages.push(message)
+      active.set(event.character_id, message)
       scrollGroupBottom()
     } else if (event.type === 'delta') {
-      const index = active.get(event.character_id)
-      if (index !== undefined) {
-        group.messages[index].content += event.text
+      const message = active.get(event.character_id)
+      if (message) {
+        message.content += event.text
         scrollGroupBottom()
       }
     } else if (event.type === 'speaker_end') {
-      const index = active.get(event.character_id)
-      if (index !== undefined) {
-        group.messages[index].typing = false
-        group.messages[index].mentions = event.mentions || []
-        group.messages[index].sticker = event.sticker || null
-        if (event.text) group.messages[index].content = event.text
+      const message = active.get(event.character_id)
+      if (message) {
+        message.typing = false
+        message.mentions = event.mentions || []
+        message.sticker = event.sticker || null
+        if (event.text) message.content = event.text
       }
-      active.delete(event.character_id)
+      // 注意：这里**不能** active.delete —— speaker_drop 还要用
     } else if (event.type === 'system') {
       group.messages.push({ kind: 'system', content: event.text })
       scrollGroupBottom()
     } else if (event.type === 'error') {
       group.messages.push({ kind: 'system', content: `⚠️ ${event.message}` })
       scrollGroupBottom()
+    } else if (event.type === 'done') {
+      active.clear()
     }
   })
 }

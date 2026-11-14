@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check:render": "vite build --ssr tests/render-smoke.js --outDir .ssr-check --logLevel error && node tests/run-render.mjs"
+    "check:render": "vite build --ssr tests/render-smoke.js --outDir .ssr-check --logLevel error && node tests/run-render.mjs",
+    "check:stream": "node tests/group-stream.test.mjs",
+    "check": "node ../scripts/check-frontend.cjs && npm run check:stream && npm run check:render"
   },
   "dependencies": {
     "marked": "^12.0.2",
