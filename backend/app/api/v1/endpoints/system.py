@@ -40,10 +40,10 @@ def build_info() -> dict:
 
 
 def animation_describe() -> dict:
-    from services import animation
+    import skills.work.animation.engine as animation_engine
 
     try:
-        return animation.describe()
+        return animation_engine.describe()
     except Exception:  # noqa: BLE001 - 动画模块出问题不能拖垮 health
         return {"available": False, "error": "动画模块未就绪"}
 
@@ -58,25 +58,25 @@ def angles_describe() -> dict:
 @router.get("/animation/capabilities")
 async def animation_capabilities() -> dict:
     """这台机器能不能渲动画。"""
-    from services import animation
+    import skills.work.animation.engine as animation_engine
 
-    return await anyio.to_thread.run_sync(animation.capabilities)
+    return await anyio.to_thread.run_sync(animation_engine.capabilities)
 
 
 @router.get("/animation")
 async def animation_jobs(limit: int = 20) -> list[dict]:
-    from services import animation
+    import skills.work.animation.engine as animation_engine
 
     return await anyio.to_thread.run_sync(
-        functools.partial(animation.list_jobs, limit=limit)
+        functools.partial(animation_engine.list_jobs, limit=limit)
     )
 
 
 @router.get("/animation/{job_id}")
 async def animation_job(job_id: str) -> dict:
-    from services import animation
+    import skills.work.animation.engine as animation_engine
 
-    job = await anyio.to_thread.run_sync(animation.job_status, job_id)
+    job = await anyio.to_thread.run_sync(animation_engine.job_status, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     return job
@@ -85,22 +85,23 @@ async def animation_job(job_id: str) -> dict:
 @router.post("/animation/{job_id}/confirm")
 async def animation_confirm(job_id: str) -> dict:
     """歌词/MV 类任务：确认分镜后继续渲染。"""
-    from services import animation
+    import skills.work.animation.engine as animation_engine
 
-    return await anyio.to_thread.run_sync(animation.confirm, job_id)
+    return await anyio.to_thread.run_sync(animation_engine.confirm, job_id)
 
 
 def tools_describe() -> dict:
     """工具层清单（协议层 + 框架层）。"""
     from agent.tools import langgraph_tools
-    from services import animation, intent, skills, time_tools  # noqa: F401 - 导入即注册工具
+    import skills  # noqa: F401 - 导入即加载技能与引擎（含 animation 工具）
+    from services import intent, time_tools  # noqa: F401 - 导入即注册工具
 
     return langgraph_tools.describe()
 
 
 def skills_describe() -> dict:
     """业务技能清单。"""
-    from services import skills
+    import skills
 
     return skills.describe()
 
@@ -111,7 +112,7 @@ async def health() -> dict:
     from agent import group_graph as agent_group_graph
     from agent.tools import langgraph_tools
     from services import angles as _angles
-    from services import skills
+    import skills
     from services import emotion_model
     from services import name_engine
 

@@ -33,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from core import database as db
-from core import tool_protocol
+from core.tools import protocol as tool_protocol
 
 logger = logging.getLogger(__name__)
 

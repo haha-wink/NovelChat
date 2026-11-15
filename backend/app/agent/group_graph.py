@@ -83,6 +83,8 @@ class GroupState(TypedDict, total=False):
     greeting: dict
     #: 当前对话 id（一个书架可以有多个对话）
     conversation_id: str
+    #: 本轮模式：chat / work
+    mode: str
     #: 本轮每条发言（并行写入，聚合节点用来查重）
     replies: Annotated[list, operator.add]
     #: 被判定重复而折叠掉的（character_id 列表）
@@ -324,7 +326,7 @@ async def pick_node(state: GroupState) -> dict:
 def _decide_greeting(shelf_id: str) -> dict:
     """跑 greeting_check 工具，拿到"该不该问候"。"""
     try:
-        from core import tool_protocol
+        from core.tools import protocol as tool_protocol
         from services import time_tools  # noqa: F401 - 导入即注册
 
         result = tool_protocol.execute("greeting_check", {"shelf_id": shelf_id})

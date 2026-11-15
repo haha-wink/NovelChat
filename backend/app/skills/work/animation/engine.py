@@ -50,7 +50,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from core import tool_protocol
+from core.tools import protocol as tool_protocol
 from core.config import get_settings
 from core.paths import DATA_DIR, PROJECT_ROOT
 

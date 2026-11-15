@@ -63,6 +63,8 @@ from services import rag  # noqa: E402
 from core import scene as scene_mod
 from services import style as style_mod  # noqa: E402
 from core import text as text_mod  # noqa: E402
+import skills  # noqa: E402
+from skills import registry as skill_registry  # noqa: E402
 import channels  # noqa: E402
 import channels.web as web_module  # noqa: E402
 from services import name_library
@@ -2028,8 +2030,8 @@ def dispatch_checks() -> None:
 
 def skill_checks() -> None:
     """工具三层：协议层 / 框架层 / 业务技能。"""
-    from core import tool_protocol
-    from services import skills
+    from core.tools import protocol as tool_protocol
+    import skills
 
     names = tool_protocol.names()
     check("工具①：四个技能工具都注册了",
@@ -2081,12 +2083,12 @@ def skill_checks() -> None:
           calls and calls[0]["content"]["ok"], str(calls[:1]))
 
     # ---- 技能层 ----
-    vent = skills.run_for({"intent": "vent", "emotion": "疲惫", "crisis": False})
+    vent = skill_registry.run_for({"intent": "vent", "emotion": "疲惫", "crisis": False})
     check("工具③：倾诉走 comfort 技能",
           vent is not None and vent.skill == "comfort" and len(vent.materials) == 2,
           str(vent.skill if vent else None))
 
-    crisis = skills.run_for({"intent": "crisis", "emotion": "难过", "crisis": True})
+    crisis = skill_registry.run_for({"intent": "crisis", "emotion": "难过", "crisis": True})
     check("工具③：危机走 steady 技能",
           crisis is not None and crisis.skill == "steady",
           str(crisis.skill if crisis else None))
@@ -2094,12 +2096,12 @@ def skill_checks() -> None:
           crisis is not None and any("热线" in m or "信得过" in m for m in crisis.materials),
           str(crisis.materials if crisis else []))
 
-    help_skill = skills.run_for({"intent": "seek_help", "emotion": "焦虑", "crisis": False})
+    help_skill = skill_registry.run_for({"intent": "seek_help", "emotion": "焦虑", "crisis": False})
     check("工具③：求助走 suggest 技能",
           help_skill is not None and help_skill.skill == "suggest",
           str(help_skill.skill if help_skill else None))
 
-    chat = skills.run_for({"intent": "chat", "emotion": "开心", "crisis": False})
+    chat = skill_registry.run_for({"intent": "chat", "emotion": "开心", "crisis": False})
     check("工具③：闲聊不调用任何技能", chat is None, str(chat))
 
     block = vent.as_block()
@@ -2113,8 +2115,8 @@ def animation_checks() -> None:
     import pathlib as _pathlib
     import time as _time
 
-    from core import tool_protocol
-    from services import animation, skills
+    from core.tools import protocol as tool_protocol
+    import skills.work.animation.engine as animation
 
     caps = animation.capabilities()
     check("动画：能力探测字段齐全",
@@ -2181,23 +2183,31 @@ def animation_checks() -> None:
         animation.capabilities = original_caps
 
     # --- 第③层：技能选择 ---
-    act = skills.choose({"text": "帮我做一段水彩动画，雨夜的车站",
-                         "intent": "chat", "emotion": "平静", "crisis": False})
-    check("动画：有动作词时选中 animation",
+    act = skill_registry.choose({"text": "帮我做一段水彩动画，雨夜的车站",
+                         "intent": "chat", "emotion": "平静", "crisis": False},
+                        mode="work")
+    check("动画：工作模式下、有动作词时选中 animation",
           act is not None and act.name == "animation", str(act and act.name))
 
-    no_action = skills.choose({"text": "我看视频也难受",
+    chat_mode = skill_registry.choose({"text": "帮我做一段水彩动画，雨夜的车站",
+                                       "intent": "chat", "emotion": "平静"},
+                                      mode="chat")
+    check("模式：聊天模式下不开放工作技能",
+          chat_mode is None or chat_mode.name != "animation",
+          str(chat_mode and chat_mode.name))
+
+    no_action = skill_registry.choose({"text": "我看视频也难受",
                                "intent": "vent", "emotion": "难过", "crisis": False})
     check("动画：只是提到视频不抢情绪安慰",
           no_action is not None and no_action.name == "comfort",
           str(no_action and no_action.name))
 
-    crisis = skills.choose({"text": "帮我做个动画", "intent": "crisis",
+    crisis = skill_registry.choose({"text": "帮我做个动画", "intent": "crisis",
                             "emotion": "难过", "crisis": True})
     check("动画：危机时不抢戏", crisis is not None and crisis.name == "steady",
           str(crisis and crisis.name))
 
-    names = [item["name"] for item in skills.describe()["skills"]]
+    names = [item["name"] for item in skill_registry.describe()["skills"]]
     check("动画：已出现在技能清单里", "animation" in names, str(names))
 
 
@@ -2387,7 +2397,7 @@ def time_tool_checks() -> None:
     """时间工具：时段、时间问候、劳累问候。"""
     from datetime import datetime, timedelta
 
-    from core import tool_protocol
+    from core.tools import protocol as tool_protocol
     from services import time_tools
 
     check("时间：06:00 是早上", time_tools.period_of(6)[0] == "早上", str(time_tools.period_of(6)))
@@ -2525,7 +2535,7 @@ def temperament_checks() -> None:
 
 def intent_checks() -> None:
     """意图分析器：要不要记忆 / 要不要工具 / 复合意图。"""
-    from core import tool_protocol
+    from core.tools import protocol as tool_protocol
     from services import intent
 
     compound = intent.analyze(

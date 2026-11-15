@@ -214,6 +214,16 @@ async def chat_image(folder: str, name: str) -> FileResponse:
     return FileResponse(path)
 
 
+def _resolve_mode(requested: str | None) -> str:
+    """请求里的模式，经过开关和合法性校验。"""
+    settings = get_settings()
+    default = str(settings.default_mode or "chat").strip().lower()
+    if not settings.allow_mode_switch:
+        return default
+    wanted = str(requested or "").strip().lower()
+    return wanted if wanted in ("chat", "work") else default
+
+
 @router.post("/chat")
 async def chat_endpoint(req: ChatRequest, request: Request):
     settings = get_settings()

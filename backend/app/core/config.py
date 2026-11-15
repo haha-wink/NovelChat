@@ -175,6 +175,11 @@ class Settings(BaseSettings):
     #: 自动蒸馏阈值：0 = 关闭。记忆改由"清空对话"时蒸馏（用户要求不再用固定阈值）
     chat_distill_threshold: int = 0
 
+    #: 默认模式：chat（情感聊天）/ work（工作模式，可调专业技能）
+    default_mode: str = "chat"
+    #: 允许前端切换模式（关掉就永远用 default_mode）
+    allow_mode_switch: bool = True
+
     #: 动画技能包的目录（默认 <repo>/_external/ai--main）
     animation_skill_dir: str = ""
     #: auto = 检测 node/ffmpeg/Chrome；fake = 测试用假渲染器

@@ -91,6 +91,8 @@ class TurnState(TypedDict, total=False):
     intent_plan: Any
     #: 这一轮技能（业务层）产出的素材块
     skill_block: str
+    #: 本轮模式：chat / work
+    mode: str
     reply: str
     notes: list[str]
 
@@ -124,7 +126,7 @@ async def intent_node(state: TurnState) -> dict:
     走 ``intent_analyze`` 工具，和模型自己调用时是同一份逻辑。
     支持复合意图：既在倾诉、又在唤起某段记忆。
     """
-    from core import tool_protocol
+    from core.tools import protocol as tool_protocol
     from services import intent  # noqa: F401 - 导入即把 intent_analyze 注册进工具表
 
     signals = state.get("signals")
@@ -231,7 +233,7 @@ async def skill_node(state: TurnState) -> dict:
     走的是工具层三层里的第三层（``services/skills.py``）：
     Skill 决定调哪些工具，工具是同步纯函数，**零额外模型调用**。
     """
-    from services import skills
+    import skills
 
     signals = state.get("signals")
     payload = {}
@@ -245,8 +247,9 @@ async def skill_node(state: TurnState) -> dict:
             "text": state.get("text") or "",
         }
 
+    mode = str(state.get("mode") or "chat")
     try:
-        result = skills.run_for(payload)
+        result = skills.run_for(payload, mode=mode)
     except Exception:  # noqa: BLE001 - 技能失败不能影响聊天
         logger.exception("技能执行失败（已忽略）")
         result = None
@@ -256,7 +259,7 @@ async def skill_node(state: TurnState) -> dict:
     # 意图分析器推荐的工具（和技能有重叠时去重）
     intent_tools = list((state.get("intent_plan") or {}).get("tools") or [])
     if intent_tools:
-        from core import tool_protocol
+        from core.tools import protocol as tool_protocol
 
         extra: list[str] = []
         for name in intent_tools:
@@ -272,7 +275,8 @@ async def skill_node(state: TurnState) -> dict:
     context = state.get("context_block") or ""
     if block:
         context = f"{context}\n\n{block}" if context else block
-        logger.debug("本轮技能：%s（%d 条素材）", result.skill, len(result.materials))
+        logger.debug("本轮技能：%s（%d 条素材，模式 %s）",
+                     result.skill, len(result.materials), mode)
     return {"skill_block": block, "context_block": context}
 
 

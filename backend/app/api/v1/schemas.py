@@ -62,6 +62,8 @@ class ChatRequest(BaseModel):
     resume: bool = False
     #: 群聊会话 id（一个书架可以有多个对话，不传就用最近的）
     conversation_id: Optional[str] = None
+    #: 模式：chat（默认）/ work（工作模式，可调专业技能）
+    mode: Optional[str] = None
     #: 兼容字段：仅当 ALLOW_CLIENT_API_KEY=true 时生效
     api_key: Optional[str] = None
 

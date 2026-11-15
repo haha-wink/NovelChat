@@ -26,11 +26,11 @@ from typing import Any, Optional
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolNode
 
-from core import tool_protocol as protocol
+from core.tools import protocol
 
 # 导入即注册：工具定义在业务层（services/skills.py），
 # 这里保证只要用到 LangGraph 工具，注册表就一定是满的。
-from services import skills  # noqa: F401
+import skills  # noqa: F401 - 导入即加载技能与引擎
 
 logger = logging.getLogger(__name__)
 

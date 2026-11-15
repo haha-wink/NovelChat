@@ -39,7 +39,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from core import tool_protocol
+from core.tools import protocol as tool_protocol
 
 logger = logging.getLogger(__name__)
 
