@@ -2165,6 +2165,33 @@ def clear_conversation_checks() -> None:
     check("清空：purge 报告删了几条记忆", result_b.get("memory_removed", 0) >= 1,
           str(result_b))
 
+    # ---- B2. 蒸馏用的是「用户画像」提示词，不是角色简介 ----
+    from services import summarizer as summarizer_mod
+
+    check("蒸馏提示词：区分了用户画像与角色简介",
+          summarizer_mod.MEMORY_SYSTEM_PROMPT != summarizer_mod.SUMMARY_SYSTEM_PROMPT
+          and "用户画像" in summarizer_mod.MEMORY_SYSTEM_PROMPT,
+          summarizer_mod.MEMORY_SYSTEM_PROMPT[:40])
+    check("蒸馏提示词：明确不写角色做了什么",
+          "不写对话过程" in summarizer_mod.MEMORY_SYSTEM_PROMPT
+          or "不写角色" in summarizer_mod.MEMORY_SYSTEM_PROMPT)
+    check("蒸馏提示词：没有 Key 时返回 None（回退本地压缩）",
+          summarizer_mod.make_llm_summarizer(
+              "", "deepseek-chat", system_prompt=summarizer_mod.MEMORY_SYSTEM_PROMPT
+          ) is None)
+
+    # 假的摘要器返回画像文本，验证它原样进记忆
+    lib_c, shelf_c, book_c, members_c = build("画像自检")
+    talk(shelf_c, members_c, "u_profile_c")
+    chat_memory.clear_conversation(
+        shelf_c["id"], user_id="u_profile_c", mode="distill",
+        summarizer=lambda _t: "· 用户最近分手，情绪低落",
+    )
+    facts_c = agent_memory.items(members_c[0]["character_id"], kind="fact")
+    check("蒸馏：模型输出的画像原样写进记忆",
+          bool(facts_c) and "用户最近分手" in str(facts_c[-1].get("content", "")),
+          str(facts_c[-1].get("content", ""))[:50] if facts_c else "空")
+
     # ---- C. 不再有固定阈值 ----
     from core.config import get_settings
 
@@ -2183,7 +2210,7 @@ def cleanup_test_libraries() -> int:
     """删掉自检留下的临时书库（失败也不影响结果）。"""
     removed = 0
     patterns = (
-        "清空蒸馏库", "清空记忆库", "自检图库", "性格自检库", "性格测试库",
+        "清空蒸馏库", "清空记忆库", "画像自检库", "自检图库", "性格自检库", "性格测试库",
         "并行测试库", "自检书库", "日志自检库", "问候自检库", "去重自检库",
         "去重测试库", "整段测试库", "复现库", "蒸馏库", "清空库",
     )

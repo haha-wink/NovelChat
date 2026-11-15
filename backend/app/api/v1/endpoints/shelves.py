@@ -294,7 +294,7 @@ async def delete_shelf(shelf_id: str, cascade: bool = True) -> dict:
 def _summarizer_for_clear():
     """清空时做蒸馏的摘要器；不可用就返回 None（回退本地压缩）。"""
     try:
-        return memory_summarizer()
+        return chat_summarizer()
     except Exception:  # noqa: BLE001 - 摘要不可用不该阻断清空
         return None
 

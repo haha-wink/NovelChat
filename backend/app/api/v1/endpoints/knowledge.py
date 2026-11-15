@@ -48,7 +48,7 @@ async def distill_character(character_id: str) -> dict:
             chat_memory.distill,
             shelf_id,
             character_id,
-            summarizer=memory_summarizer(),
+            summarizer=chat_summarizer(),
             character_name=character.get("name") or "",
         )
     )

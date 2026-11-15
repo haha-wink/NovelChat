@@ -23,7 +23,7 @@ async def clear_character_history(
 
     summarizer = None
     try:
-        summarizer = memory_summarizer()
+        summarizer = chat_summarizer()
     except Exception:  # noqa: BLE001
         pass
 

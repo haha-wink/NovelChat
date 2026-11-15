@@ -116,6 +116,16 @@ def memory_summarizer():
     )
 
 
+def chat_summarizer():
+    """对话蒸馏用：提取用户画像，而不是复述对话。"""
+    settings = get_settings()
+    return summarizer_module.make_llm_summarizer(
+        settings.api_key_for(None),
+        settings.deepseek_model,
+        system_prompt=summarizer_module.MEMORY_SYSTEM_PROMPT,
+    )
+
+
 def book_payload(book: dict) -> dict:
     payload = dict(book)
     payload["character_count"] = len(db.list_characters(book["id"]))

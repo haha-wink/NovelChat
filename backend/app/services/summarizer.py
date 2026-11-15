@@ -28,8 +28,28 @@ SUMMARY_SYSTEM_PROMPT = """你在整理小说角色的「初始记忆摘要」�
 - 直接输出摘要正文，不要任何前缀或解释。"""
 
 
+#: 对话蒸馏专用：提取**用户**的状态与偏好，不写角色说了什么。
+#: 用角色简介那套 prompt 会把对话复述一遍（"X 劝对方先吃饭"），对"了解用户"没用。
+MEMORY_SYSTEM_PROMPT = """你在整理「用户画像」。输入是一段用户和角色的聊天记录。
+
+只提取**关于用户本人**的信息，按下面四类归并（没有的类别直接跳过，不要编）：
+
+- 状态：情绪、处境、身体状况（例：最近分手，情绪低落；感冒乏力）
+- 事实：工作、生活、计划、身边的人（例：明天要早起上班）
+- 偏好：喜欢什么、讨厌什么、雷点（例：怕晚上一个人待着）
+- 关系：和角色的信任程度、称呼习惯、相处方式
+
+要求：
+- 每条一行，以「· 」开头，最多 5 条；
+- 用第二人称或中性陈述（"用户…"），不要写成"角色劝用户…"；
+- 不写对话过程、不写角色做了什么；
+- 直接输出条目，不要标题、不要解释。"""
+
+
 def make_llm_summarizer(
-    api_key: str, model: str = "deepseek-chat"
+    api_key: str,
+    model: str = "deepseek-chat",
+    system_prompt: str = SUMMARY_SYSTEM_PROMPT,
 ) -> Optional[Callable[[str], str]]:
     """构造一个同步摘要函数；没 Key / 没装 openai 就返回 None（自动走本地压缩）。"""
     if not api_key or not api_key.strip():
@@ -46,7 +66,7 @@ def make_llm_summarizer(
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
             temperature=0.3,
