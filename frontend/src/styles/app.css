@@ -571,9 +571,9 @@ button.small { padding: 5px 10px; font-size: 12px; }
   background: rgba(255, 255, 255, 0.72);
   min-height: 100vh;
   max-height: 100vh;
-  position: sticky;
-  top: 0;
   overflow-y: auto;
+  /* 不用 position:sticky —— 侧栏高度随内容变化时会跟滚动打架 */
+  scrollbar-gutter: stable;
 }
 
 .conv-new {
@@ -729,6 +729,23 @@ button.small { padding: 5px 10px; font-size: 12px; }
   width: 3px;
   background: var(--accent, #4a6fd4);
   box-shadow: 0 0 8px rgba(74, 111, 212, 0.45);
+}
+
+/* 悬停时在聊天区一侧压一条渐变，做出"边界被激活"的感觉；
+   不改变任何尺寸，所以不会抖动 */
+.conv-resizer.active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 14px;
+  background: linear-gradient(
+    to right,
+    rgba(74, 111, 212, 0.16),
+    rgba(74, 111, 212, 0)
+  );
+  pointer-events: none;
 }
 
 /* 悬停时露出的几个小点，提示"这里能拖" */

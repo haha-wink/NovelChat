@@ -1004,6 +1004,12 @@ function startSidebarResize(event) {
   window.addEventListener('mouseup', stop)
 }
 
+/** 侧栏宽度样式值。**只看拖出来的宽度**，悬停不参与——
+ *  悬停参与过一次，结果分界线被推开、鼠标离开、又弹回来，整页抖。 */
+function sidebarWidthPx() {
+  return group.sidebarWidth ? `${group.sidebarWidth}px` : ''
+}
+
 /** 双击分界线：回到自动宽度（和聊天区对齐） */
 function resetSidebarWidth() {
   group.sidebarWidth = 0
@@ -1616,6 +1622,7 @@ const state = {
   currentSidebarWidth,
   startSidebarResize,
   resetSidebarWidth,
+  sidebarWidthPx,
   refreshConversations,
   newConversation,
   switchConversation,

@@ -121,9 +121,15 @@ check("分界线：超宽屏夹到最大值 760", app.currentSidebarWidth() === 
 app.group.sidebarWidth = 320
 check("分界线：拖过之后用拖出来的宽度", app.currentSidebarWidth() === 320,
   String(app.currentSidebarWidth()))
+app.group.sidebarHover = true
+check("分界线：悬停不改变宽度（防抖动）",
+  app.sidebarWidthPx() === '320px', app.sidebarWidthPx())
+app.group.sidebarHover = false
+
 app.resetSidebarWidth()
 check("分界线：双击恢复自动宽度", app.group.sidebarWidth === 0,
   String(app.group.sidebarWidth))
+check("分界线：恢复后不写死宽度", app.sidebarWidthPx() === '', app.sidebarWidthPx())
 
 if (failures.length) {
   console.error(`\n失败 ${failures.length} 项：${failures.join('、')}`)

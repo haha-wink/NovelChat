@@ -238,6 +238,7 @@ const {
   restoreSidebarWidth,
   startSidebarResize,
   resetSidebarWidth,
+  sidebarWidthPx,
   openBook,
   goShelf,
   backToGroup,
@@ -297,25 +298,17 @@ const {
   renderMarkdown,
 } = useApp()
 
-//: 悬停时临时加宽多少（给"能拖"的反馈）
-const HOVER_EXTRA = 56
-
+//: 宽度只由「拖动」决定。
+//: 曾经试过"悬停自动加宽"，但加宽会把分界线推到鼠标左边 ->
+//: mouseleave -> 缩回 -> 分界线又回到鼠标下 -> mouseenter -> 无限震荡。
+//: 悬停只做高亮反馈（纯视觉，不动尺寸），改宽交给拖动。
 const sidebarStyle = computed(() => {
-  const { sidebarWidth, sidebarHover, sidebarDragging } = group
-  const extra = sidebarHover && !sidebarDragging ? HOVER_EXTRA : 0
-  if (sidebarWidth) {
-    return {
-      width: `${sidebarWidth + extra}px`,
-      transition: sidebarDragging ? 'none' : 'width 0.16s ease'
-    }
+  const px = sidebarWidthPx()
+  if (!px) return {}
+  return {
+    width: px,
+    transition: group.sidebarDragging ? 'none' : 'width 0.16s ease'
   }
-  if (extra) {
-    return {
-      width: `calc((100vw - 860px) / 2 + ${extra}px)`,
-      transition: 'width 0.16s ease'
-    }
-  }
-  return {}
 })
 
 onMounted(() => {
