@@ -188,6 +188,15 @@ def run_for(
     return skill.run(context)
 
 
+def _capabilities() -> dict:
+    from skills import capabilities
+
+    try:
+        return capabilities.describe()["available"]
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def describe() -> dict:
     return {
         "modes": [{"key": key, "label": label} for key, label in MODES.items()],
@@ -206,4 +215,5 @@ def describe() -> dict:
         ],
         "disabled": {"chat": unavailable("chat"), "work": unavailable("work")},
         "issues": issues(),
+        "capabilities": _capabilities(),
     }

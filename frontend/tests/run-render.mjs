@@ -18,6 +18,10 @@ for (const view of ['group', 'chat']) {
     throw new Error(`${view} 视图没有渲染出发送图片的缩略图`)
   }
 }
+// 群信息页是独立视图 groupInfo（不是 modals）
+if (!out.groupInfo.includes('skill-row')) {
+  throw new Error('技能体检面板没有渲染出技能行')
+}
 for (const view of ['group', 'chat']) {
   if (!out[view].includes('mode-toggle')) {
     throw new Error(`${view} 视图没有渲染出工作模式开关`)
@@ -28,5 +32,5 @@ for (const view of ['group', 'chat']) {
     throw new Error(`${view} 视图没有渲染出消息时间`)
   }
 }
-console.log('SSR 四视图 + 浮层渲染全部通过（含图片缩略图、消息时间、模式开关）')
+console.log('SSR 四视图 + 浮层渲染全部通过（含图片缩略图、消息时间、模式开关、技能体检）')
 

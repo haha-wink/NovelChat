@@ -68,6 +68,18 @@ function seed(app) {
   }]
   app.mergePanel.learned = 7
 
+  app.skillPanel.loaded = true
+  app.skillPanel.checked = 7
+  app.skillPanel.ok = true
+  app.skillPanel.skills = [
+    { name: 'comfort', description: '接住情绪', modes: ['chat'], available: true, missing: [] },
+    { name: 'animation', description: '做动画', modes: ['work'], available: false,
+      missing: ['ffmpeg', 'chrome'] }
+  ]
+  app.skillPanel.issues = [
+    { severity: 'warning', skill: 'writing', field: 'description', message: '没有写 description' }
+  ]
+
   app.activeCharacter.value = character
   app.conversations[character.id] = {
     token: null,

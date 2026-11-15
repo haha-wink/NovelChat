@@ -114,6 +114,48 @@
           </div>
         </div>
       </section>
+
+      <!-- 技能体检：哪些技能能用、哪些缺依赖、SKILL.md 有没有写错 -->
+      <section class="info-panel">
+        <h4 class="info-sub">
+          技能（{{ skillPanel.skills.length }}）
+          <span class="merge-hint" v-if="skillPanel.loaded">
+            {{ skillPanel.ok ? '配置正常' : '有配置问题' }}
+          </span>
+          <button class="ghost small" :disabled="skillPanel.loading" @click="loadSkillHealth">
+            {{ skillPanel.loading ? '检查中…' : '体检' }}
+          </button>
+        </h4>
+
+        <p v-if="!skillPanel.loaded && !skillPanel.loading" class="empty-mini">
+          点「体检」看看当前有哪些技能可用、哪些因为缺依赖被关掉了。
+        </p>
+        <p v-else-if="skillPanel.error" class="error">{{ skillPanel.error }}</p>
+
+        <template v-else-if="skillPanel.loaded">
+          <p v-if="skillPanel.issues.length" class="skill-issues">
+            <span v-for="(issue, index) in skillPanel.issues" :key="index" class="skill-issue">
+              {{ issue.severity === 'error' ? '✗' : '!' }}
+              [{{ issue.skill }}] {{ issue.field }}：{{ issue.message }}
+            </span>
+          </p>
+
+          <div v-for="skill in skillPanel.skills" :key="skill.name" class="skill-row">
+            <div class="skill-main">
+              <strong>{{ skill.name }}</strong>
+              <span class="skill-modes">
+                <span v-for="mode in skill.modes" :key="mode" class="skill-mode">{{ mode }}</span>
+              </span>
+            </div>
+            <div class="skill-desc">{{ skill.description }}</div>
+            <div class="skill-state" :class="skill.available ? 'ok' : 'missing'">
+              {{ skill.available ? '✓ 可用' : '✗ 缺少 ' + (skill.missing || []).join('、') }}
+            </div>
+          </div>
+
+          <p v-if="!skillPanel.skills.length" class="empty-mini">还没有加载到技能。</p>
+        </template>
+      </section>
     </main>
 </template>
 
@@ -208,6 +250,8 @@ const {
   turnToGroupMessage,
   clearGroupHistory,
   openGroupInfo,
+  skillPanel,
+  loadSkillHealth,
   loadMergeCandidates,
   resolveMerge,
   closeGroupInfo,

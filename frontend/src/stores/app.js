@@ -1050,6 +1050,53 @@ function resetSidebarWidth() {
   }
 }
 
+// ---------------- 技能体检 ----------------
+
+const skillPanel = reactive({
+  loading: false,
+  error: '',
+  //: 技能清单：[{name, description, modes, requires, available, missing}]
+  skills: [],
+  //: 缺依赖被禁用的（按模式分组）
+  disabled: { chat: [], work: [] },
+  //: 校验问题：[{severity, skill, field, message}]
+  issues: [],
+  //: 能力探测：{node: true, ffmpeg: false, ...}
+  capabilities: {},
+  checked: 0,
+  ok: true,
+  loaded: false
+})
+
+async function loadSkillHealth() {
+  skillPanel.loading = true
+  skillPanel.error = ''
+  try {
+    const [healthData, report] = await Promise.all([
+      api('/api/health'),
+      api('/api/skills/validate').catch(() => null)
+    ])
+    const skills = healthData?.skills || {}
+    skillPanel.skills = skills.skills || []
+    skillPanel.disabled = skills.disabled || { chat: [], work: [] }
+    skillPanel.issues = skills.issues || []
+    skillPanel.capabilities = healthData?.skills?.capabilities || {}
+    if (report) {
+      skillPanel.checked = report.checked || 0
+      skillPanel.ok = report.ok !== false
+      // 校验报告比加载时的问题更全（会把 warning 也带上）
+      if (report.errors?.length || report.warnings?.length) {
+        skillPanel.issues = [...(report.errors || []), ...(report.warnings || [])]
+      }
+    }
+    skillPanel.loaded = true
+  } catch (failure) {
+    skillPanel.error = failure.message
+  } finally {
+    skillPanel.loading = false
+  }
+}
+
 // ---------------- 对话列表（一个书架多个对话） ----------------
 
 /** 拉会话列表；一个都没有就自动开一个 */
@@ -1650,6 +1697,8 @@ const state = {
   clearGroupHistory,
   clearCharacterHistory,
   ensureConversation,
+  skillPanel,
+  loadSkillHealth,
   restoreSidebarWidth,
   mode,
   modeLabel,
