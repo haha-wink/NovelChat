@@ -84,6 +84,13 @@ for (const file of vueFiles) {
   for (const match of source.matchAll(/\b(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)/g)) {
     locals.add(match[1])
   }
+  // 组件 props 也是模板里能直接用的名字：defineProps({ jobId: ... })
+  for (const match of source.matchAll(/defineProps\(\s*\{([\s\S]*?)\}\s*\)/g)) {
+    for (const key of match[1].matchAll(/([A-Za-z_$][\w$]*)\s*:/g)) locals.add(key[1])
+  }
+  for (const match of source.matchAll(/defineProps\(\s*\[([\s\S]*?)\]\s*\)/g)) {
+    for (const key of match[1].matchAll(/([A-Za-z_$][\w$]*)/g)) locals.add(key[1])
+  }
 
   const aliases = new Set()
   for (const match of template.matchAll(/v-for="\s*\(?([^)]*?)\)?\s+in\s/g)) {

@@ -905,6 +905,15 @@ async function readStream(response, messages, index, conversation = null) {
       // 后端把动作旁白去掉后的最终文本：覆盖刚才流式显示的内容
       messages[index].content = event.text
       scrollToBottom()
+    } else if (event.type === 'skill_job' && event.job_id) {
+      messages.push({
+        kind: 'animation',
+        jobId: event.job_id,
+        prompt: event.prompt || '',
+        skill: event.skill || '',
+        content: ''
+      })
+      scrollToBottom()
     } else if (event.type === 'sticker' && event.codepoint) {
       messages[index].sticker = event
       scrollToBottom()
@@ -1511,6 +1520,18 @@ async function readGroupStream(response) {
   const active = new Map()
 
   await readSSEStream(response, (event) => {
+    if (event.type === 'skill_job' && event.job_id) {
+      // 技能起了后台任务（目前是动画）：插一张卡片，组件自己轮询进度
+      group.messages.push({
+        kind: 'animation',
+        jobId: event.job_id,
+        prompt: event.prompt || '',
+        skill: event.skill || '',
+        content: ''
+      })
+      scrollGroupBottom()
+      return
+    }
     if (event.type === 'speaker_drop') {
       // 聚合节点判定这条和别人重复：直接藏起来。
       // 此刻它已经 speaker_end 过了（active 里可能已删），所以按 character_id 回查，

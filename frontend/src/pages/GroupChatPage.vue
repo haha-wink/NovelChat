@@ -90,6 +90,11 @@
             <template v-if="message.kind === 'system'">
               <div class="system-message">{{ message.content }}</div>
             </template>
+            <template v-else-if="message.kind === 'animation'">
+              <div class="message-content">
+                <AnimationCard :job-id="message.jobId" :prompt="message.prompt" />
+              </div>
+            </template>
             <template v-else>
               <template v-if="message.kind === 'character'">
                 <img
@@ -193,6 +198,7 @@
 <script setup>
 import { computed, onMounted } from 'vue'
 
+import AnimationCard from '../components/AnimationCard.vue'
 import { useApp } from '../stores/app.js'
 
 // 一次拿全部应用状态与动作；模板里直接写名字

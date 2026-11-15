@@ -1,9 +1,12 @@
 """系统：健康检查 / 会话 / 渠道 / 贴纸。"""
 
+import functools
+import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 
 import skills.registry as skills_registry  # noqa: E402
 from api.v1.deps import *  # noqa: F401,F403
@@ -81,6 +84,72 @@ async def animation_jobs(limit: int = 20) -> list[dict]:
 
     return await anyio.to_thread.run_sync(
         functools.partial(animation_engine.list_jobs, limit=limit)
+    )
+
+
+
+
+#: 任务号白名单：防止 ../ 之类的路径穿越
+_JOB_ID = re.compile(r"^anim_[0-9a-f]{6,}$")
+
+
+def _serve_video(path: Path, request: Request, *, download: bool) -> Response:
+    """发视频文件，支持 Range（否则浏览器拖不动进度条）。"""
+    size = path.stat().st_size
+    disposition = "attachment" if download else "inline"
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'{disposition}; filename="{path.name}"',
+        "Cache-Control": "private, max-age=3600",
+    }
+
+    range_header = request.headers.get("range") or ""
+    match = re.match(r"bytes=(\d*)-(\d*)", range_header) if range_header else None
+    if match is None:
+        return FileResponse(path, media_type="video/mp4", headers=headers)
+
+    start = int(match.group(1) or 0)
+    end = int(match.group(2)) if match.group(2) else size - 1
+    end = min(end, size - 1)
+    if start > end or start >= size:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+
+    length = end - start + 1
+
+    def chunks():
+        with open(path, "rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                piece = handle.read(min(65536, remaining))
+                if not piece:
+                    break
+                remaining -= len(piece)
+                yield piece
+
+    headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    headers["Content-Length"] = str(length)
+    return StreamingResponse(chunks(), status_code=206, media_type="video/mp4",
+                             headers=headers)
+
+
+@router.get("/animation/{job_id}/video")
+async def animation_video(job_id: str, request: Request, download: int = 0):
+    """把渲染好的 mp4 发出去（群里说"做好了"，得让用户真能点开）。"""
+    import skills.work.animation.engine as animation_engine
+
+    if not _JOB_ID.match(job_id):
+        raise HTTPException(status_code=400, detail="任务号不合法")
+
+    job = await anyio.to_thread.run_sync(animation_engine.job_status, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="没有这个任务")
+    video = Path(str(job.get("video") or ""))
+    if not video.is_file():
+        raise HTTPException(status_code=404, detail="这个任务还没有成片")
+
+    return await anyio.to_thread.run_sync(
+        functools.partial(_serve_video, video, request, download=bool(download))
     )
 
 

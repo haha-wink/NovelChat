@@ -258,6 +258,19 @@ async def skill_node(state: TurnState) -> dict:
 
     block = result.as_block() if result is not None else ""
 
+    # 技能起了后台任务（比如动画）：立刻推一条事件，前端好放播放器
+    if result is not None:
+        for output in getattr(result, "outputs", []) or []:
+            if isinstance(output, dict) and output.get("ok") and output.get("job_id"):
+                writer = get_stream_writer()
+                writer({
+                    "type": "skill_job",
+                    "skill": result.skill,
+                    "job_id": str(output["job_id"]),
+                    "prompt": str(output.get("prompt") or ""),
+                    "stage": str(output.get("stage") or ""),
+                })
+
     # 意图分析器推荐的工具（和技能有重叠时去重）
     intent_tools = list((state.get("intent_plan") or {}).get("tools") or [])
     if intent_tools:

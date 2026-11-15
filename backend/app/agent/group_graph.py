@@ -142,7 +142,9 @@ async def prepare_node(state: GroupState) -> dict:
 
     # 【技能层】群聊一轮跑一次：命中技能后把素材放进 state，
     # 所有发言人共享（否则工作模式在群里等于没开）
-    skill_block, skill_name = _run_skill(state, shelf_id)
+    skill_block, skill_name, skill_jobs = _run_skill(state, shelf_id)
+    for job in skill_jobs:
+        _emit({"type": "skill_job", "skill": skill_name, **job})
 
     plan = state.get("dialogue_plan")
     db.add_chat_turn(
@@ -333,13 +335,26 @@ async def pick_node(state: GroupState) -> dict:
     return {"queue": queue, "round_no": round_no, "pending_forced": [], "finished": False}
 
 
-def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str]:
-    """按当前模式跑一次技能层，返回 (素材块, 技能名)。"""
+def _skill_jobs(result) -> list[dict]:
+    """从技能执行结果里挑出"起了任务"的工具输出（目前就是动画）。"""
+    jobs = []
+    for output in getattr(result, "outputs", []) or []:
+        if isinstance(output, dict) and output.get("ok") and output.get("job_id"):
+            jobs.append({
+                "job_id": str(output["job_id"]),
+                "prompt": str(output.get("prompt") or ""),
+                "stage": str(output.get("stage") or ""),
+            })
+    return jobs
+
+
+def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str, list[dict]]:
+    """按当前模式跑一次技能层，返回 (素材块, 技能名, 起了的任务)。"""
     import skills
 
     signals = state.get("signals")
     if signals is None:
-        return "", ""
+        return "", "", []
     payload = {
         "text": state.get("text") or "",
         "emotion": getattr(signals, "emotion", "平静"),
@@ -353,15 +368,15 @@ def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str]:
                                extra={"user_id": state.get("user_id") or ""})
     except Exception:  # noqa: BLE001 - 技能失败不能挡住群聊
         logger.exception("群聊技能执行失败（已忽略）")
-        return "", ""
+        return "", "", []
 
     if result is None:
-        return "", ""
+        return "", "", []
     block = result.as_block()
     if block:
         logger.info("群聊技能：%s（%d 条素材，模式 %s）",
                     result.skill, len(result.materials), mode)
-    return block, result.skill
+    return block, result.skill, _skill_jobs(result)
 
 
 def _decide_greeting(shelf_id: str) -> dict:

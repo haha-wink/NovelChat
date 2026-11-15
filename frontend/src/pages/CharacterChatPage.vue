@@ -69,7 +69,12 @@
             :key="index"
             :class="['message-wrapper', message.role]"
           >
-            <template v-if="message.role !== 'system'">
+            <template v-if="message.kind === 'animation'">
+              <div class="message-content">
+                <AnimationCard :job-id="message.jobId" :prompt="message.prompt" />
+              </div>
+            </template>
+            <template v-else-if="message.role !== 'system'">
               <img
                 v-if="message.role === 'assistant' && activeCharacter?.avatar_url"
                 class="avatar img"
@@ -179,6 +184,7 @@
 </template>
 
 <script setup>
+import AnimationCard from '../components/AnimationCard.vue'
 import { useApp } from '../stores/app.js'
 
 // 一次拿全部应用状态与动作；模板里直接写名字

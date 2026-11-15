@@ -68,6 +68,20 @@ function seed(app) {
   }]
   app.mergePanel.learned = 7
 
+  // 技能起了动画任务：群里应该出现一张卡片
+  app.group.messages.push({
+    kind: 'animation', jobId: 'anim_deadbeef', prompt: '星空下的小人', content: ''
+  })
+  app.group.messages.push({
+    kind: 'character', name: '测试角色', avatar: '🙂', content: '动画已经在做了。'
+  })
+  app.conversations['c1'] = app.conversations['c1'] || { messages: [] }
+  if (app.conversations['c1']) {
+    app.conversations['c1'].messages.push({
+      kind: 'animation', jobId: 'anim_deadbeef', prompt: '星空下的小人', content: ''
+    })
+  }
+
   app.skillPanel.loaded = true
   app.skillPanel.checked = 7
   app.skillPanel.ok = true

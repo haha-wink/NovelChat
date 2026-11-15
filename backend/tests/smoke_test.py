@@ -2110,6 +2110,49 @@ def skill_checks() -> None:
           block[:40])
 
 
+async def video_route_checks() -> None:
+    """成片出口：能播放、能下载、能拖进度条，任务号不能穿越。"""
+    import skills.work.animation.engine as animation_engine
+
+    jobs = animation_engine.list_jobs(limit=30)
+    done = next((job for job in jobs if job.get("video")), None)
+    if done is None:
+        print("  · 跳过成片路由检查（这台机器还没渲染出过成片）")
+        return
+
+    job_id = done["id"]
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/api/animation/{job_id}/video")
+        check("成片：GET video 返回 200", r.status_code == 200, str(r.status_code))
+        check("成片：Content-Type 是 video/mp4",
+              "video/mp4" in r.headers.get("content-type", ""),
+              r.headers.get("content-type", ""))
+        check("成片：声明支持 Range",
+              r.headers.get("accept-ranges") == "bytes",
+              r.headers.get("accept-ranges", ""))
+
+        partial = await client.get(f"/api/animation/{job_id}/video",
+                                   headers={"Range": "bytes=0-1023"})
+        check("成片：Range 请求返回 206", partial.status_code == 206,
+              str(partial.status_code))
+        check("成片：Range 只回 1024 字节", len(partial.content) == 1024,
+              str(len(partial.content)))
+
+        download = await client.get(f"/api/animation/{job_id}/video?download=1")
+        check("成片：download=1 变成附件下载",
+              "attachment" in download.headers.get("content-disposition", ""),
+              download.headers.get("content-disposition", "")[:40])
+
+        missing = await client.get("/api/animation/anim_ffffffffffff/video")
+        check("成片：不存在的任务返回 404", missing.status_code == 404,
+              str(missing.status_code))
+
+        bad = await client.get("/api/animation/..%2F..%2Fmain/video")
+        check("成片：任务号不合法被拒", bad.status_code in (400, 404),
+              str(bad.status_code))
+
+
 def fetch_script_checks() -> None:
     """依赖下载脚本：能定位技能包、能按平台选源（不联网）。"""
     import importlib.util
@@ -6223,6 +6266,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    asyncio.run(video_route_checks())
     fetch_script_checks()
     skill_vendor_checks()
     skill_validate_checks()
