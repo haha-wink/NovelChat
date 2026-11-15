@@ -268,6 +268,10 @@ def _job_env(project: Path) -> dict:
     temp.mkdir(parents=True, exist_ok=True)
 
     env = dict(os.environ)
+    # 渲染脚本会直接 spawn("ffmpeg")，所以把技能包的 bin/ 塞进 PATH。
+    # 这样即使 ffmpeg 没装到系统里，包内那份也能被找到。
+    if BIN_DIR.exists():
+        env["PATH"] = str(BIN_DIR) + os.pathsep + env.get("PATH", "")
     env["npm_config_cache"] = str(cache)
     env["npm_config_logs_dir"] = str(cache / "_logs")
     env["npm_config_update_notifier"] = "false"
