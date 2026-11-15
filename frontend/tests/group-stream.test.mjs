@@ -100,6 +100,31 @@ check('整段：speaker_end 填上了全文',
   String(app.visibleGroupMessages.value[0]?.content))
 check('整段：typing 关掉了', app.visibleGroupMessages.value[0]?.typing === false)
 
+// ---- 会话栏分界线：宽度计算与重置 ----
+globalThis.window = {
+  innerWidth: 1906,
+  addEventListener() {},
+  removeEventListener() {}
+}
+
+check("分界线：自动宽度 = (1906-860)/2", app.currentSidebarWidth() === 523,
+  String(app.currentSidebarWidth()))
+
+globalThis.window.innerWidth = 900
+check("分界线：窄屏夹到最小值 200", app.currentSidebarWidth() === 200,
+  String(app.currentSidebarWidth()))
+
+globalThis.window.innerWidth = 4000
+check("分界线：超宽屏夹到最大值 760", app.currentSidebarWidth() === 760,
+  String(app.currentSidebarWidth()))
+
+app.group.sidebarWidth = 320
+check("分界线：拖过之后用拖出来的宽度", app.currentSidebarWidth() === 320,
+  String(app.currentSidebarWidth()))
+app.resetSidebarWidth()
+check("分界线：双击恢复自动宽度", app.group.sidebarWidth === 0,
+  String(app.group.sidebarWidth))
+
 if (failures.length) {
   console.error(`\n失败 ${failures.length} 项：${failures.join('、')}`)
   process.exit(1)

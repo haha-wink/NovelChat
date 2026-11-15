@@ -91,6 +91,11 @@ const group = reactive({
   conversations: [],
   //: 当前对话 id
   conversationId: '',
+  //: 会话栏宽度：0 = 自动（按窗口算，和聊天区对齐）
+  sidebarWidth: 0,
+  //: 指针是否停在分界线上（悬停时轻微加宽，给"可以拖"的反馈）
+  sidebarHover: false,
+  sidebarDragging: false,
   conversationsLoading: false
 })
 const groupContainer = ref(null)
@@ -944,6 +949,71 @@ async function openGroup() {
   }
 }
 
+// ---------------- 会话栏分界线（拖动改宽度） ----------------
+
+const SIDEBAR_MIN = 200
+const SIDEBAR_MAX = 760
+const SIDEBAR_HOVER_EXTRA = 56
+const SIDEBAR_KEY = 'novelchat.sidebarWidth'
+
+/** 从本地恢复上次拖的宽度 */
+function restoreSidebarWidth() {
+  try {
+    const saved = Number(localStorage.getItem(SIDEBAR_KEY) || 0)
+    if (saved >= SIDEBAR_MIN && saved <= SIDEBAR_MAX) group.sidebarWidth = saved
+  } catch (storageError) {
+    // 隐私模式下忽略
+  }
+}
+
+function currentSidebarWidth() {
+  if (group.sidebarWidth) return group.sidebarWidth
+  // 自动宽度 = (视口 - 聊天区宽) / 2，夹在上下限之间（和 CSS 保持一致）
+  const auto = (window.innerWidth - 860) / 2
+  return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, auto))
+}
+
+/** 按住分界线开始拖 */
+function startSidebarResize(event) {
+  if (event.button !== undefined && event.button !== 0) return
+  event.preventDefault()
+  group.sidebarDragging = true
+  document.body.classList.add('resizing-sidebar')
+  const startX = event.clientX
+  const startWidth = currentSidebarWidth()
+
+  const move = (moveEvent) => {
+    const next = Math.min(
+      SIDEBAR_MAX,
+      Math.max(SIDEBAR_MIN, startWidth + (moveEvent.clientX - startX))
+    )
+    group.sidebarWidth = Math.round(next)
+  }
+  const stop = () => {
+    group.sidebarDragging = false
+    document.body.classList.remove('resizing-sidebar')
+    window.removeEventListener('mousemove', move)
+    window.removeEventListener('mouseup', stop)
+    try {
+      localStorage.setItem(SIDEBAR_KEY, String(group.sidebarWidth))
+    } catch (storageError) {
+      // 忽略
+    }
+  }
+  window.addEventListener('mousemove', move)
+  window.addEventListener('mouseup', stop)
+}
+
+/** 双击分界线：回到自动宽度（和聊天区对齐） */
+function resetSidebarWidth() {
+  group.sidebarWidth = 0
+  try {
+    localStorage.removeItem(SIDEBAR_KEY)
+  } catch (storageError) {
+    // 忽略
+  }
+}
+
 // ---------------- 对话列表（一个书架多个对话） ----------------
 
 /** 拉会话列表；一个都没有就自动开一个 */
@@ -1542,6 +1612,10 @@ const state = {
   clearGroupHistory,
   clearCharacterHistory,
   ensureConversation,
+  restoreSidebarWidth,
+  currentSidebarWidth,
+  startSidebarResize,
+  resetSidebarWidth,
   refreshConversations,
   newConversation,
   switchConversation,

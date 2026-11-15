@@ -699,3 +699,70 @@ button.small { padding: 5px 10px; font-size: 12px; }
     flex-direction: row;
   }
 }
+
+/* ---------- 会话栏分界线：可拖动改宽度 ---------- */
+.conv-resizer {
+  flex: 0 0 10px;
+  width: 10px;
+  cursor: col-resize;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+}
+
+/* 中间那根细线：平时很淡，悬停/拖动时变粗变亮 */
+.conv-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line, rgba(0, 0, 0, 0.08));
+  transition: width 0.15s ease, background 0.15s ease;
+}
+
+.conv-resizer.active::before {
+  width: 3px;
+  background: var(--accent, #4a6fd4);
+  box-shadow: 0 0 8px rgba(74, 111, 212, 0.45);
+}
+
+/* 悬停时露出的几个小点，提示"这里能拖" */
+.conv-resizer-grip {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 26px;
+  border-radius: 2px;
+  background-image: radial-gradient(
+    circle,
+    var(--accent, #4a6fd4) 1px,
+    transparent 1.2px
+  );
+  background-size: 4px 6px;
+  background-repeat: repeat-y;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.conv-resizer.active .conv-resizer-grip {
+  opacity: 0.85;
+}
+
+/* 拖动时整页锁定光标，别让它中途变成文本选择 */
+body.resizing-sidebar {
+  cursor: col-resize;
+  user-select: none;
+}
+
+@media (max-width: 1180px) {
+  /* 窄屏时是上下堆叠，分界线改成横的（省略拖拽，交给默认布局） */
+  .conv-resizer {
+    display: none;
+  }
+}

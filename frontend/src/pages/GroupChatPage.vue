@@ -2,7 +2,7 @@
     <!-- ============ 群聊（一个书架 = 一个群）============ -->
     <main class="page chat-page group-layout">
       <!-- 左侧：对话列表（一个书架可以有多个对话） -->
-      <aside class="conv-sidebar">
+      <aside class="conv-sidebar" :style="sidebarStyle">
         <button class="conv-new" :disabled="group.loading" @click="newConversation">
           ＋ 新建对话
         </button>
@@ -30,6 +30,19 @@
           </li>
         </ul>
       </aside>
+
+      <!-- 可用鼠标拖动的分界线：悬停时变宽一点给你"能拖"的反馈，按住拖改宽度 -->
+      <div
+        class="conv-resizer"
+        :class="{ active: group.sidebarHover || group.sidebarDragging }"
+        title="拖动调整宽度，双击恢复"
+        @mouseenter="group.sidebarHover = true"
+        @mouseleave="group.sidebarHover = false"
+        @mousedown="startSidebarResize"
+        @dblclick="resetSidebarWidth"
+      >
+        <span class="conv-resizer-grip"></span>
+      </div>
 
       <div class="group-main">
       <div class="chat-head">
@@ -167,6 +180,8 @@
 </template>
 
 <script setup>
+import { computed, onMounted } from 'vue'
+
 import { useApp } from '../stores/app.js'
 
 // 一次拿全部应用状态与动作；模板里直接写名字
@@ -220,6 +235,9 @@ const {
   newConversation,
   switchConversation,
   deleteConversation,
+  restoreSidebarWidth,
+  startSidebarResize,
+  resetSidebarWidth,
   openBook,
   goShelf,
   backToGroup,
@@ -278,4 +296,29 @@ const {
   statusText,
   renderMarkdown,
 } = useApp()
+
+//: 悬停时临时加宽多少（给"能拖"的反馈）
+const HOVER_EXTRA = 56
+
+const sidebarStyle = computed(() => {
+  const { sidebarWidth, sidebarHover, sidebarDragging } = group
+  const extra = sidebarHover && !sidebarDragging ? HOVER_EXTRA : 0
+  if (sidebarWidth) {
+    return {
+      width: `${sidebarWidth + extra}px`,
+      transition: sidebarDragging ? 'none' : 'width 0.16s ease'
+    }
+  }
+  if (extra) {
+    return {
+      width: `calc((100vw - 860px) / 2 + ${extra}px)`,
+      transition: 'width 0.16s ease'
+    }
+  }
+  return {}
+})
+
+onMounted(() => {
+  restoreSidebarWidth()
+})
 </script>

@@ -79,6 +79,12 @@ for (const file of vueFiles) {
       if (name) destructured.add(name)
     }
   }
+  // <script setup> 里自己声明的名字也合法（local computed / 处理函数）
+  const locals = new Set()
+  for (const match of source.matchAll(/\b(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)/g)) {
+    locals.add(match[1])
+  }
+
   const aliases = new Set()
   for (const match of template.matchAll(/v-for="\s*\(?([^)]*?)\)?\s+in\s/g)) {
     for (const raw of match[1].split(',')) aliases.add(raw.trim())
@@ -106,7 +112,8 @@ for (const file of vueFiles) {
 
   const missing = []
   for (const name of used) {
-    if (destructured.has(name) || aliases.has(name) || BUILTINS.has(name)) continue
+    if (destructured.has(name) || aliases.has(name) || locals.has(name)
+      || BUILTINS.has(name)) continue
     if (/^[A-Z]/.test(name)) continue // 组件
     if (['in', 'of', 'typeof', 'new', 'return', 'if', 'else'].includes(name)) continue
     missing.push(name)
