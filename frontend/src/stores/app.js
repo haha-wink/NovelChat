@@ -86,7 +86,12 @@ const group = reactive({
   input: '',
   token: '',
   loading: false,
-  error: ''
+  error: '',
+  //: 这个书架里的所有对话（左侧列表）
+  conversations: [],
+  //: 当前对话 id
+  conversationId: '',
+  conversationsLoading: false
 })
 const groupContainer = ref(null)
 
@@ -326,7 +331,7 @@ async function enterGroup(shelfId, title, book = null) {
     // 隐私模式下 localStorage 可能不可用，不影响主流程
   }
   await loadGroupMembers()
-  await loadGroupHistory()
+  await ensureConversation()
 }
 
 // ---------------- 作品 / 角色 ----------------
@@ -939,12 +944,116 @@ async function openGroup() {
   }
 }
 
+// ---------------- 对话列表（一个书架多个对话） ----------------
+
+/** 拉会话列表；一个都没有就自动开一个 */
+async function ensureConversation() {
+  group.conversationsLoading = true
+  try {
+    const token = await ensureGroupToken()
+    let list = await api(
+      `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`
+    )
+    if (!Array.isArray(list)) list = []
+    if (!list.length) {
+      const created = await api(
+        `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`,
+        { method: 'POST' }
+      )
+      list = [created]
+    }
+    group.conversations = list
+    // 保持当前对话；没有就取最近活跃的那个
+    const current = list.find((item) => item.id === group.conversationId)
+    group.conversationId = current ? current.id : list[0].id
+  } catch (failure) {
+    group.error = failure.message
+  } finally {
+    group.conversationsLoading = false
+  }
+  await loadGroupHistory()
+}
+
+/** 只刷新会话列表（标题/条数），不动当前消息 */
+async function refreshConversations() {
+  if (!group.shelfId) return
+  try {
+    const token = await ensureGroupToken()
+    const list = await api(
+      `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`
+    )
+    if (Array.isArray(list)) group.conversations = list
+  } catch (failure) {
+    // 刷新失败不影响聊天
+  }
+}
+
+/** 新建对话并切过去 */
+async function newConversation() {
+  if (!group.shelfId) return
+  try {
+    const token = await ensureGroupToken()
+    const created = await api(
+      `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`,
+      { method: 'POST' }
+    )
+    group.conversations = [created, ...group.conversations]
+    group.conversationId = created.id
+    group.messages = []
+    group.error = ''
+    scrollGroupBottom()
+  } catch (failure) {
+    group.error = failure.message
+  }
+}
+
+/** 切到另一个对话 */
+async function switchConversation(conversationId) {
+  if (!conversationId || conversationId === group.conversationId) return
+  group.conversationId = conversationId
+  group.messages = []
+  await loadGroupHistory()
+}
+
+/** 删掉一个对话 */
+async function deleteConversation(conversationId) {
+  if (!conversationId) return
+  const target = group.conversations.find((item) => item.id === conversationId)
+  const tip = [
+    `删除对话「${target?.title || '这个对话'}」？`,
+    '',
+    '· 这个对话里的聊天记录会一起删除',
+    '· 角色已经记住的长期记忆不受影响',
+    '· 不可恢复'
+  ].join('\n')
+  if (!confirm(tip)) return
+  try {
+    const token = await ensureGroupToken()
+    await api(
+      `/api/conversations/${conversationId}?token=${encodeURIComponent(token)}`,
+      { method: 'DELETE' }
+    )
+    group.conversations = group.conversations.filter((item) => item.id !== conversationId)
+    if (group.conversationId === conversationId) {
+      if (group.conversations.length) {
+        group.conversationId = group.conversations[0].id
+        await loadGroupHistory()
+      } else {
+        await ensureConversation()
+      }
+    }
+  } catch (failure) {
+    group.error = failure.message
+  }
+}
+
 // ---------------- 群聊历史 / 群聊信息 ----------------
 async function loadGroupHistory() {
   if (!group.shelfId) return
   try {
     const token = await ensureGroupToken()
     const query = `?token=${encodeURIComponent(token)}&limit=80`
+      + `&conversation_id=${encodeURIComponent(group.conversationId || '')}`
     const data = await api(`/api/shelves/${group.shelfId}/history${query}`)
     group.messages = (data.turns || []).map(turnToGroupMessage)
     scrollGroupBottom()
@@ -1006,7 +1115,8 @@ async function clearGroupHistory(mode = 'distill') {
     const token = await ensureGroupToken()
     const result = await api(
       `/api/shelves/${group.shelfId}/history?token=${encodeURIComponent(token)}`
-      + `&mode=${distill ? 'distill' : 'purge'}`,
+      + `&mode=${distill ? 'distill' : 'purge'}`
+      + `&conversation_id=${encodeURIComponent(group.conversationId || '')}`,
       { method: 'DELETE' }
     )
     group.messages = []
@@ -1207,7 +1317,9 @@ async function sendGroupMessage() {
         body: JSON.stringify({
           token: authToken,
           prompt: text,
-          images_base64: images.map((image) => image.base64)
+          images_base64: images.map((image) => image.base64),
+          // 发到当前选中的对话里；后端按这个 id 落流水
+          conversation_id: group.conversationId || null
         })
       })
 
@@ -1304,6 +1416,8 @@ async function readGroupStream(response) {
       scrollGroupBottom()
     } else if (event.type === 'done') {
       active.clear()
+      // 首句会把对话自动命名，条数也变了——同步一下左侧列表
+      refreshConversations()
     }
   })
 }
@@ -1427,6 +1541,11 @@ const state = {
   turnToGroupMessage,
   clearGroupHistory,
   clearCharacterHistory,
+  ensureConversation,
+  refreshConversations,
+  newConversation,
+  switchConversation,
+  deleteConversation,
   openGroupInfo,
   loadMergeCandidates,
   resolveMerge,

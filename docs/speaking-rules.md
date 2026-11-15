@@ -351,3 +351,52 @@ group_speak_threshold: float = 0.30  →  0.15
 > 在 33% 的概率下靠噪声过线，于是「谁说话」实际上变成了抽签。**
 >
 > 把阈值调到 0.15、给 `@全体` 加人数上限，这两个改动就能让规则重新符合直觉。
+
+## 9. 多个对话（一个书架可以开很多个）
+
+群聊原来只有一个连续历史，"聊歪了"没法重来。现在每个书架下可以有多个对话：
+
+```
+群聊左侧
+┌──────────────┐
+│ ＋ 新建对话   │
+├──────────────┤
+│ 我最近分手了… │ ← 当前（高亮）
+│ 帮我排个先后… │
+│ 之前的对话    │ ← 老数据自动归到这里
+└──────────────┘
+```
+
+### 数据模型
+
+```sql
+conversations(id, shelf_id, user_id, title, created_at, updated_at)
+chat_turns.conversation_id        -- 新增列，默认 ''
+```
+
+- **标题自动**：第一句用户消息截 24 字（`_conversation_title`），只在标题还是"新对话"时改。
+- **老数据迁移**：`conversation_id=''` 的流水在第一次列出会话时归入「之前的对话」，
+  只做一次，不丢历史。
+- **删对话**：`DELETE /api/conversations/{id}` 连它的流水一起删；
+  角色已记住的长期记忆不受影响（那是另一套）。
+
+### 接口
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/api/shelves/{id}/conversations` | 列会话（最近活跃在前，带条数） |
+| POST | `/api/shelves/{id}/conversations` | 新建 |
+| PATCH | `/api/conversations/{id}` | 改名 |
+| DELETE | `/api/conversations/{id}` | 删（含流水） |
+| GET | `/api/shelves/{id}/history?conversation_id=` | 只取该对话的历史 |
+| DELETE | `/api/shelves/{id}/history?conversation_id=` | 只清该对话（distill/purge 照旧） |
+
+### 前端行为
+
+- 进群 → 列会话 → 没有就自动建一个 → 载入最近活跃的那个
+- 发消息带 `conversation_id`，后端按它落流水
+- 一轮结束（`done`）刷新左侧列表，同步自动生成的标题和条数
+- 切对话 = 换 `conversationId` + 重新载历史，互不串
+
+---
+

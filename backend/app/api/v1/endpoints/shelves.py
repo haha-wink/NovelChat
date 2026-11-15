@@ -301,7 +301,11 @@ def _summarizer_for_clear():
 
 @router.delete("/shelves/{shelf_id}/history")
 async def clear_shelf_history(
-    shelf_id: str, request: Request, token: str = "", mode: str = "distill"
+    shelf_id: str,
+    request: Request,
+    token: str = "",
+    mode: str = "distill",
+    conversation_id: str = "",
 ) -> dict:
     """清空我在这个书架里的群聊历史。
 
@@ -317,20 +321,91 @@ async def clear_shelf_history(
             user_id=session.user_id,
             summarizer=_summarizer_for_clear(),
             mode=mode,
+            conversation_id=conversation_id or None,
         )
     )
     return result
 
 
+@router.get("/shelves/{shelf_id}/conversations")
+async def list_conversations(
+    shelf_id: str, request: Request, token: str = "", limit: int = 100
+) -> list[dict]:
+    """列出我在这个书架的所有对话（最近活跃在前）。"""
+    session = resolve_session(token, request)
+    conversations = await anyio.to_thread.run_sync(
+        functools.partial(db.list_conversations, shelf_id, session.user_id, limit=limit)
+    )
+    if not conversations:
+        # 老数据：这个用户的流水还没有归属任何对话，先归到「之前的对话」再列
+        await anyio.to_thread.run_sync(
+            functools.partial(db.ensure_default_conversation, shelf_id, session.user_id)
+        )
+        conversations = await anyio.to_thread.run_sync(
+            functools.partial(db.list_conversations, shelf_id, session.user_id, limit=limit)
+        )
+    return conversations
+
+
+@router.post("/shelves/{shelf_id}/conversations", status_code=201)
+async def create_conversation(
+    shelf_id: str, request: Request, token: str = "", title: str = ""
+) -> dict:
+    """开一个新对话。"""
+    session = resolve_session(token, request)
+    return await anyio.to_thread.run_sync(
+        functools.partial(
+            db.create_conversation, shelf_id, session.user_id, title=title
+        )
+    )
+
+
+@router.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str, request: Request) -> dict:
+    conversation = await anyio.to_thread.run_sync(db.get_conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return conversation
+
+
+@router.patch("/conversations/{conversation_id}")
+async def rename_conversation(
+    conversation_id: str, request: Request, title: str = ""
+) -> dict:
+    renamed = await anyio.to_thread.run_sync(
+        functools.partial(db.rename_conversation, conversation_id, title)
+    )
+    if not renamed:
+        raise HTTPException(status_code=400, detail="标题不能为空")
+    return renamed
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str, request: Request) -> dict:
+    """删掉一个对话（连同它的流水）。"""
+    removed = await anyio.to_thread.run_sync(db.delete_conversation, conversation_id)
+    return {"ok": True, "removed": removed}
+
+
 @router.get("/shelves/{shelf_id}/history")
 async def shelf_history(
-    shelf_id: str, request: Request, token: str = "", limit: int = 60
+    shelf_id: str,
+    request: Request,
+    token: str = "",
+    limit: int = 60,
+    conversation_id: str = "",
+
 ) -> dict:
     """群聊历史（当前用户在这个书架里说过/听过的最近 N 条）。"""
     session = resolve_session(token, request)
     turns = await anyio.to_thread.run_sync(
         functools.partial(
-            db.list_history, shelf_id, user_id=session.user_id, limit=limit
+            db.list_history,
+        shelf_id,
+        user_id=session.user_id,
+        limit=limit,
+        conversation_id=conversation_id or None,
+
         )
     )
     return {"shelf_id": shelf_id, "turns": turns}

@@ -170,6 +170,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 signals=signals,
                 generate=generate,
                 session_id=f"group:{session.user_id}:{shelf_id}",
+                conversation_id=req.conversation_id or "",
             ):
                 # 引擎事件 -> 渠道无关的出站消息 -> web 载荷。
                 # 这一圈看着绕，但换来的是：接 QQ/微信时引擎与这里一行都不用改。

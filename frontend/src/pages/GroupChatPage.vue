@@ -1,6 +1,37 @@
 <template>
     <!-- ============ 群聊（一个书架 = 一个群）============ -->
-    <main class="page chat-page">
+    <main class="page chat-page group-layout">
+      <!-- 左侧：对话列表（一个书架可以有多个对话） -->
+      <aside class="conv-sidebar">
+        <button class="conv-new" :disabled="group.loading" @click="newConversation">
+          ＋ 新建对话
+        </button>
+        <p v-if="group.conversationsLoading" class="conv-hint">正在加载…</p>
+        <p v-else-if="!group.conversations.length" class="conv-hint">还没有对话</p>
+        <ul v-else class="conv-list">
+          <li
+            v-for="conversation in group.conversations"
+            :key="conversation.id"
+            class="conv-item"
+            :class="{ active: conversation.id === group.conversationId }"
+            @click="switchConversation(conversation.id)"
+          >
+            <div class="conv-title">{{ conversation.title || '新对话' }}</div>
+            <div class="conv-meta">
+              {{ conversation.turn_count || 0 }} 条
+              <button
+                class="conv-del"
+                title="删除这个对话"
+                @click.stop="deleteConversation(conversation.id)"
+              >
+                ×
+              </button>
+            </div>
+          </li>
+        </ul>
+      </aside>
+
+      <div class="group-main">
       <div class="chat-head">
         <button class="ghost" @click="goShelf">← 书架</button>
         <div class="chat-who">
@@ -131,6 +162,7 @@
           群里每位成员都是独立的角色 Agent，有各自的情绪与记忆；不想让谁说话，点上面的成员卡片。
         </p>
       </div>
+      </div>
     </main>
 </template>
 
@@ -185,6 +217,9 @@ const {
   removeShelf,
   openShelfChat,
   enterGroup,
+  newConversation,
+  switchConversation,
+  deleteConversation,
   openBook,
   goShelf,
   backToGroup,

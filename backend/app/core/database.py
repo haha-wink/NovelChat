@@ -226,6 +226,17 @@ CREATE TABLE IF NOT EXISTS chat_turns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_shelf ON chat_turns(shelf_id, created_at);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id          TEXT PRIMARY KEY,
+    shelf_id    TEXT NOT NULL DEFAULT '',
+    user_id     TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conv_shelf ON conversations(shelf_id, user_id, updated_at);
 """
 
 #: 老库迁移时自动创建的书库 / 书架名称
@@ -409,6 +420,15 @@ def init_db() -> None:
             row["name"]
             for row in conn.execute("PRAGMA table_info(chat_turns)").fetchall()
         }
+        if "conversation_id" not in turn_columns:
+            conn.execute(
+                "ALTER TABLE chat_turns ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_turns_conv"
+                " ON chat_turns(conversation_id, created_at)"
+            )
+
         if "distilled" not in turn_columns:
             conn.execute(
                 "ALTER TABLE chat_turns ADD COLUMN distilled INTEGER NOT NULL DEFAULT 0"
@@ -2020,6 +2040,163 @@ def record_member_spoke(shelf_id: str, character_id: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# 会话（一个书架里可以有多个对话）
+# ---------------------------------------------------------------------------
+
+CONVERSATION_TITLE_LIMIT = 24
+
+
+def _conversation_title(text: str) -> str:
+    """用第一句话当标题。"""
+    body = " ".join(str(text or "").split())
+    if not body:
+        return "新对话"
+    return body[:CONVERSATION_TITLE_LIMIT] + ("…" if len(body) > CONVERSATION_TITLE_LIMIT else "")
+
+
+def create_conversation(
+    shelf_id: str, user_id: str, *, title: str = "", conversation_id: Optional[str] = None
+) -> dict:
+    """开一个新对话。title 为空时叫"新对话"，第一句话进来后自动改名。"""
+    now = _now()
+    cid = conversation_id or new_id("conv")
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversations (id, shelf_id, user_id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (cid, shelf_id, user_id, (title or "新对话")[:60], now, now),
+        )
+    return {
+        "id": cid,
+        "shelf_id": shelf_id,
+        "user_id": user_id,
+        "title": (title or "新对话")[:60],
+        "created_at": now,
+        "updated_at": now,
+        "turn_count": 0,
+    }
+
+
+def list_conversations(shelf_id: str, user_id: str, *, limit: int = 100) -> list[dict]:
+    """列出这个用户在该书架的所有对话，最近活跃的在前。"""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.*,
+                   (SELECT COUNT(*) FROM chat_turns t WHERE t.conversation_id = c.id)
+                       AS turn_count,
+                   (SELECT MAX(t.created_at) FROM chat_turns t WHERE t.conversation_id = c.id)
+                       AS last_turn_at
+            FROM conversations c
+            WHERE c.shelf_id = ? AND c.user_id = ?
+            ORDER BY c.updated_at DESC
+            LIMIT ?
+            """,
+            (shelf_id, user_id, int(limit)),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_conversation(conversation_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def touch_conversation(
+    conversation_id: str, *, title: str = "", bump: bool = True
+) -> None:
+    """更新活跃时间；title 非空时顺便改名（第一句话进来时用）。"""
+    if not conversation_id:
+        return
+    now = _now()
+    with connect() as conn:
+        if title:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ?, title = ? WHERE id = ?",
+                (now, title[:60], conversation_id),
+            )
+        elif bump:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (now, conversation_id),
+            )
+
+
+def rename_conversation(conversation_id: str, title: str) -> Optional[dict]:
+    given = " ".join(str(title or "").split())[:60]
+    if not given:
+        return None
+    with connect() as conn:
+        conn.execute(
+            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+            (given, _now(), conversation_id),
+        )
+    return get_conversation(conversation_id)
+
+
+def delete_conversation(conversation_id: str) -> int:
+    """删对话，连同里面的流水一起删。返回删掉的流水条数。"""
+    with connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM chat_turns WHERE conversation_id = ?", (conversation_id,)
+        )
+        removed = cursor.rowcount
+        conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    return removed
+
+
+def ensure_default_conversation(shelf_id: str, user_id: str) -> dict:
+    """老数据没有 conversation_id：给它补一个"之前的对话"，只做一次。"""
+    with connect() as conn:
+        existing = conn.execute(
+            """
+            SELECT * FROM conversations
+            WHERE shelf_id = ? AND user_id = ?
+            ORDER BY updated_at DESC LIMIT 1
+            """,
+            (shelf_id, user_id),
+        ).fetchone()
+        if existing:
+            return dict(existing)
+
+        orphan = conn.execute(
+            """
+            SELECT COUNT(*) FROM chat_turns
+            WHERE shelf_id = ? AND user_id = ? AND conversation_id = ''
+            """,
+            (shelf_id, user_id),
+        ).fetchone()[0]
+
+        now = _now()
+        cid = new_id("conv")
+        title = "之前的对话" if orphan else "新对话"
+        conn.execute(
+            """
+            INSERT INTO conversations (id, shelf_id, user_id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (cid, shelf_id, user_id, title, now, now),
+        )
+        if orphan:
+            conn.execute(
+                """
+                UPDATE chat_turns SET conversation_id = ?
+                WHERE shelf_id = ? AND user_id = ? AND conversation_id = ''
+                """,
+                (cid, shelf_id, user_id),
+            )
+    return {
+        "id": cid, "shelf_id": shelf_id, "user_id": user_id,
+        "title": title, "created_at": now, "updated_at": now, "turn_count": orphan,
+    }
+
+
 def add_chat_turn(
     *,
     shelf_id: str,
@@ -2035,6 +2212,7 @@ def add_chat_turn(
     intent: str = "",
     emotion: str = "",
     round_no: int = 0,
+    conversation_id: str = "",
 ) -> dict:
     turn_id = new_id("turn")
     with connect() as conn:
@@ -2042,8 +2220,9 @@ def add_chat_turn(
             """
             INSERT INTO chat_turns
                 (id, shelf_id, character_id, user_id, session_id, role, speaker_name,
-                 content, images, stickers, mentions, intent, emotion, round_no, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 content, images, stickers, mentions, intent, emotion, round_no,
+                 conversation_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 turn_id,
@@ -2060,10 +2239,19 @@ def add_chat_turn(
                 intent or "",
                 emotion or "",
                 int(round_no),
+                conversation_id or "",
                 _now_ms(),
             ),
         )
         row = conn.execute("SELECT * FROM chat_turns WHERE id = ?", (turn_id,)).fetchone()
+
+        # 第一句用户消息顺便给对话起名（只在还是"新对话"时改）
+        if conversation_id and role == "user" and (content or "").strip():
+            conn.execute(
+                "UPDATE conversations SET title = ?, updated_at = ? "
+                "WHERE id = ? AND title = '新对话'",
+                (_conversation_title(content), _now(), conversation_id),
+            )
     return dict(row)
 
 
@@ -2075,6 +2263,7 @@ def list_chat_turns(
     limit: int = 50,
     ascending: bool = True,
     pending_only: bool = False,
+    conversation_id: Optional[str] = None,
 ) -> list[dict]:
     """列出发言流水。默认**包含已蒸馏的**——那是聊天历史，不该消失。
 
@@ -2088,6 +2277,9 @@ def list_chat_turns(
     if character_id:
         clauses.append("character_id = ?")
         params.append(character_id)
+    if conversation_id:
+        clauses.append("conversation_id = ?")
+        params.append(conversation_id)
     if pending_only:
         clauses.append("distilled = 0")
     order = "ASC" if ascending else "DESC"
@@ -2114,6 +2306,7 @@ def list_history(
     user_id: str,
     character_id: Optional[str] = None,
     limit: int = 60,
+    conversation_id: Optional[str] = None,
 ) -> list[dict]:
     """聊天历史：取**最近** N 条，按时间正序返回（前端直接渲染）。"""
     rows = list_chat_turns(
@@ -2122,6 +2315,7 @@ def list_history(
         character_id=character_id,
         limit=limit,
         ascending=False,
+        conversation_id=conversation_id,
     )
     rows.reverse()
     return rows

@@ -60,6 +60,8 @@ class ChatRequest(BaseModel):
     turn_id: Optional[str] = None
     #: True = 从 turn_id 对应的断点继续，而不是开新的一轮
     resume: bool = False
+    #: 群聊会话 id（一个书架可以有多个对话，不传就用最近的）
+    conversation_id: Optional[str] = None
     #: 兼容字段：仅当 ALLOW_CLIENT_API_KEY=true 时生效
     api_key: Optional[str] = None
 

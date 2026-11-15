@@ -81,6 +81,8 @@ class GroupState(TypedDict, total=False):
     current: dict
     #: 本轮的时间问候（prepare 算好，pick 指派给人）
     greeting: dict
+    #: 当前对话 id（一个书架可以有多个对话）
+    conversation_id: str
     #: 本轮每条发言（并行写入，聚合节点用来查重）
     replies: Annotated[list, operator.add]
     #: 被判定重复而折叠掉的（character_id 列表）
@@ -124,9 +126,18 @@ async def prepare_node(state: GroupState) -> dict:
     # 会每轮都判成跨时段（用户看到的就是每次回复都带一句"傍晚了。"）
     greeting = _decide_greeting(shelf_id)
 
+    # 没有对话就先建一个（老前端不带 conversation_id 时也能用）
+    conversation_id = str(state.get("conversation_id") or "")
+    if not conversation_id:
+        conversation = db.ensure_default_conversation(
+            shelf_id, state.get("user_id") or ""
+        )
+        conversation_id = conversation["id"]
+
     plan = state.get("dialogue_plan")
     db.add_chat_turn(
         shelf_id=shelf_id,
+        conversation_id=conversation_id,
         user_id=state.get("user_id") or "",
         role="user",
         content=text,
@@ -150,6 +161,7 @@ async def prepare_node(state: GroupState) -> dict:
         "queue": [],
         "finished": False,
         "greeting": greeting,
+        "conversation_id": conversation_id,
     }
 
 
@@ -475,6 +487,7 @@ async def speak_node(state: GroupState) -> dict:
     await asyncio.to_thread(
         db.add_chat_turn,
         shelf_id=state.get("shelf_id") or "",
+        conversation_id=str(state.get("conversation_id") or ""),
         user_id=state.get("user_id") or "",
         role="assistant",
         character_id=speaker["character_id"],

@@ -211,6 +211,7 @@ def clear_conversation(
     character_id: Optional[str] = None,
     summarizer=None,
     mode: str = "distill",
+    conversation_id: Optional[str] = None,
 ) -> dict:
     """清空对话。两种语义：
 
@@ -225,6 +226,8 @@ def clear_conversation(
 
     settings = get_settings()
     turns = pending_turns(shelf_id, user_id=user_id)
+    if conversation_id:
+        turns = [turn for turn in turns if str(turn.get("conversation_id") or "") == conversation_id]
     if character_id:
         turns = [turn for turn in turns if str(turn.get("character_id") or "") == character_id]
     if not turns:

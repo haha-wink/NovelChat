@@ -2108,6 +2108,61 @@ def skill_checks() -> None:
           block[:40])
 
 
+def conversation_checks() -> None:
+    """一个书架多个对话：建、列、切、删，互不串。"""
+    dbmod.init_db()
+    lib = dbmod.create_library("会话自检库", "临时")
+    shelf = dbmod.create_shelf(lib["id"], "会话自检架")
+    book = library.create_book(
+        title="会话书", source_name="c.txt", source_type="txt",
+        text="x", shelf_id=shelf["id"],
+    )
+    dbmod.insert_character(book_id=book["id"], name="甲", personality=["温柔"], source="novel")
+
+    uid = "u_conv_check"
+    first = dbmod.create_conversation(shelf["id"], uid)
+    dbmod.add_chat_turn(shelf_id=shelf["id"], user_id=uid, role="user",
+                        content="第一句：我今天很累", conversation_id=first["id"])
+    second = dbmod.create_conversation(shelf["id"], uid)
+    dbmod.add_chat_turn(shelf_id=shelf["id"], user_id=uid, role="user",
+                        content="第二句：换个话题", conversation_id=second["id"])
+
+    listed = dbmod.list_conversations(shelf["id"], uid)
+    check("对话：两个对话都能列出来", len(listed) == 2, str(len(listed)))
+    check("对话：每个对话的条数正确",
+          all(item["turn_count"] == 1 for item in listed), str([i["turn_count"] for i in listed]))
+    check("对话：第一句话自动成了标题",
+          any("第一句" in str(item["title"]) for item in listed),
+          str([item["title"] for item in listed]))
+
+    turn_a = dbmod.list_chat_turns(shelf["id"], user_id=uid, conversation_id=first["id"])
+    turn_b = dbmod.list_chat_turns(shelf["id"], user_id=uid, conversation_id=second["id"])
+    check("对话：切换对话只看到自己的消息",
+          len(turn_a) == 1 and len(turn_b) == 1
+          and "第一句" in turn_a[0]["content"] and "第二句" in turn_b[0]["content"],
+          f"{turn_a[0]['content']} / {turn_b[0]['content']}")
+
+    # 老数据（没有 conversation_id）要能自动归到一个对话
+    dbmod.add_chat_turn(shelf_id=shelf["id"], user_id="u_legacy", role="user",
+                        content="迁就的老数据")
+    legacy = dbmod.ensure_default_conversation(shelf["id"], "u_legacy")
+    check("对话：老数据被归入「之前的对话」",
+          legacy["title"] == "之前的对话" and legacy["turn_count"] == 1,
+          str(legacy))
+
+    # 删除
+    renamed = dbmod.rename_conversation(second["id"], "改过的名字")
+    check("对话：可以改名", renamed and renamed["title"] == "改过的名字", str(renamed))
+    removed = dbmod.delete_conversation(second["id"])
+    check("对话：删除对话会带走它的流水", removed == 1, str(removed))
+    check("对话：删完只剩一个",
+          len(dbmod.list_conversations(shelf["id"], uid)) == 1,
+          str(len(dbmod.list_conversations(shelf["id"], uid))))
+
+    dbmod.delete_book(book["id"])
+    dbmod.delete_shelf(shelf["id"])
+
+
 def clear_conversation_checks() -> None:
     """清空对话的两种语义：蒸馏保留记忆 / 连记忆一起删。"""
     from services import agent_memory, chat_memory
@@ -2210,7 +2265,7 @@ def cleanup_test_libraries() -> int:
     """删掉自检留下的临时书库（失败也不影响结果）。"""
     removed = 0
     patterns = (
-        "清空蒸馏库", "清空记忆库", "画像自检库", "自检图库", "性格自检库", "性格测试库",
+        "清空蒸馏库", "清空记忆库", "画像自检库", "会话自检库", "自检图库", "性格自检库", "性格测试库",
         "并行测试库", "自检书库", "日志自检库", "问候自检库", "去重自检库",
         "去重测试库", "整段测试库", "复现库", "蒸馏库", "清空库",
     )
@@ -5656,6 +5711,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    conversation_checks()
     clear_conversation_checks()
     time_tool_checks()
     temperament_checks()
