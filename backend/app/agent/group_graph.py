@@ -40,8 +40,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from core import database as db
-from services import dialogue, expression
-from services import reply as reply_mod
+from services.dialogue import dialogue, expression
+from services.dialogue import reply as reply_mod
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ async def pick_node(state: GroupState) -> dict:
     后续轮次是被 @ 出来的追问，只让被点到的人接。
     """
     from agent import group as group_mod
-    from services import dispatch
+    from services.dialogue import dispatch
 
     options = state.get("options") or {}
     round_no = int(state.get("round_no") or 0) + 1
@@ -206,7 +206,7 @@ async def pick_node(state: GroupState) -> dict:
         if not queue:
             return {"finished": True, "queue": [], "round_no": round_no - 1}
         # 第二轮也要分工，否则追问轮又会几个人说同一句
-        from services import angles as _angles
+        from services.dialogue import angles as _angles
 
         for index, (item, angle) in enumerate(zip(
             queue,
@@ -232,7 +232,7 @@ async def pick_node(state: GroupState) -> dict:
     # 谁在等你回答：只看最后一段连续的角色发言
     awaiting: list[dict] = []
     try:
-        from services import rag
+        from services.memory import rag
 
         recent = db.list_chat_turns(state.get("shelf_id") or "", limit=12)
         # 字面能对上就不用向量；对不上时用语义补（"我不烧了" -> "有没有发烧"）
@@ -262,7 +262,7 @@ async def pick_node(state: GroupState) -> dict:
 
     _emit({"type": "round_start", "round": round_no})
     # 【预分配分工】每人一个角度，避免四个人说同一句"先吃饭"
-    from services import angles
+    from services.dialogue import angles
 
     assigned = angles.assign(
         [
@@ -327,7 +327,7 @@ def _decide_greeting(shelf_id: str) -> dict:
     """跑 greeting_check 工具，拿到"该不该问候"。"""
     try:
         from core.tools import protocol as tool_protocol
-        from services import time_tools  # noqa: F401 - 导入即注册
+        from services.runtime import time_tools  # noqa: F401 - 导入即注册
 
         result = tool_protocol.execute("greeting_check", {"shelf_id": shelf_id})
     except Exception:  # noqa: BLE001 - 问候是锦上添花
@@ -450,7 +450,7 @@ async def speak_node(state: GroupState) -> dict:
     if plan is not None:
         verdict = dialogue.verify(reply, plan)
         if verdict.notes:
-            from services import agent_log
+            from services.ops import agent_log
 
             agent_log.log(
                 "reply_verified",
@@ -552,7 +552,7 @@ async def dedupe_node(state: GroupState) -> dict:
     已经被流式推到前端的消息不能"撤回"，所以这里发一个 ``speaker_drop``
     事件让前端折叠（前端收到后把那条气泡移除）。
     """
-    from services import rag
+    from services.memory import rag
     from core.config import get_settings
 
     replies = list(state.get("replies") or [])

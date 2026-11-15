@@ -11,7 +11,7 @@ P1 只做**初始记忆**（来自小说原文的片段）。后续 P2 会在这
 
 典型用法::
 
-    from services import agent_memory
+    from services.memory import agent_memory
 
     agent_memory.remember(character_id, ["原文片段…"], source_book_id=book_id)
     agent_memory.items(character_id)                    # 该角色全部初始记忆
@@ -91,7 +91,7 @@ def remember(
         )
         # 新记忆立刻进向量索引，下一轮检索就能捞到（失败只是退化成词法）
         try:
-            from services import rag
+            from services.memory import rag
 
             rag.index_character(character_id)
         except Exception:  # noqa: BLE001

@@ -50,8 +50,10 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from core.config import get_settings
-from services import affect, agent_log, chat_memory, dialogue, rag
-from services import reply as reply_mod
+from services.dialogue import affect, dialogue
+from services.ops import agent_log
+from services.memory import chat_memory, rag
+from services.dialogue import reply as reply_mod
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +129,7 @@ async def intent_node(state: TurnState) -> dict:
     支持复合意图：既在倾诉、又在唤起某段记忆。
     """
     from core.tools import protocol as tool_protocol
-    from services import intent  # noqa: F401 - 导入即把 intent_analyze 注册进工具表
+    from services.dialogue import intent  # noqa: F401 - 导入即把 intent_analyze 注册进工具表
 
     signals = state.get("signals")
     payload = {

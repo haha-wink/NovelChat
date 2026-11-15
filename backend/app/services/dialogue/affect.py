@@ -32,8 +32,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core import database as db
-from services import agent_log
-from services import emotion_model
+from services.ops import agent_log
+from services.dialogue import emotion_model
 
 logger = logging.getLogger(__name__)
 

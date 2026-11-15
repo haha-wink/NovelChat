@@ -13,7 +13,7 @@ import re
 from typing import Any, Awaitable, Callable, Iterable, Optional, Sequence
 
 from core.config import get_settings
-from services.prompts import (
+from services.dialogue.prompts import (
     build_enrichment_messages,
     build_extraction_messages,
     pick_avatar,
@@ -367,7 +367,7 @@ async def enrich_characters(
     2. ``missing`` 里补出来的新角色，名字必须**逐字出现在原文里**且出现 >= min_new_mentions 次；
     3. 最后统一过 :func:`character_miner.validate_characters`（在 library 里调用）。
     """
-    from services.character_miner import clean_alias, is_identity_like
+    from services.catalog.character_miner import clean_alias, is_identity_like
 
     report: dict = {"dropped": [], "renamed": [], "added": [], "enriched": 0, "batches": 0, "errors": []}
     if not mined:

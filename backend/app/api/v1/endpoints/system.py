@@ -50,7 +50,7 @@ def animation_describe() -> dict:
 
 def angles_describe() -> dict:
     """发言分工清单。"""
-    from services import angles
+    from services.dialogue import angles
 
     return angles.describe()
 
@@ -94,7 +94,8 @@ def tools_describe() -> dict:
     """工具层清单（协议层 + 框架层）。"""
     from agent.tools import langgraph_tools
     import skills  # noqa: F401 - 导入即加载技能与引擎（含 animation 工具）
-    from services import intent, time_tools  # noqa: F401 - 导入即注册工具
+    from services.dialogue import intent
+    from services.runtime import time_tools  # noqa: F401 - 导入即注册工具
 
     return langgraph_tools.describe()
 
@@ -111,10 +112,10 @@ async def health() -> dict:
     from agent import graph as agent_graph
     from agent import group_graph as agent_group_graph
     from agent.tools import langgraph_tools
-    from services import angles as _angles
+    from services.dialogue import angles as _angles
     import skills
-    from services import emotion_model
-    from services import name_engine
+    from services.dialogue import emotion_model
+    from services.catalog import name_engine
 
     settings = get_settings()
     return {

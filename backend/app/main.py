@@ -39,7 +39,7 @@ def _warm_emotion_model() -> None:
     情绪判断在**每轮对话**的兜底路径上，冷启动会让第一条消息莫名多等几秒。
     """
     try:
-        from services import emotion_model
+        from services.dialogue import emotion_model
 
         backend = emotion_model.get_backend()
         if backend.name != "onnx":
@@ -62,7 +62,7 @@ def _warm_rag() -> None:
     不预热的话，第一次聊天会莫名多等 7 秒——用户只会觉得"卡了"。
     """
     try:
-        from services import rag
+        from services.memory import rag
 
         started = time.perf_counter()
         status = rag.backend_status()
@@ -89,7 +89,7 @@ def _warm_models() -> None:
     # 向量后端偶发加载失败会被永久缓存，这里补一次重试，避免"悄悄降级"挂一整个进程
     try:
         from core.config import get_settings as _get_settings
-        from services import rag
+        from services.memory import rag
 
         if _get_settings().rag_backend != "lexical" and rag.backend() != "vector":
             logger.warning("RAG 向量后端首次加载失败，重试一次")
@@ -123,7 +123,7 @@ async def lifespan(app: FastAPI):
 
         # 聊天图片按保留期清一次（失败不影响启动）
         try:
-            from services import housekeeping
+            from services.ops import housekeeping
 
             housekeeping.cleanup_chat_images(
                 get_settings().uploads_path / "chat",
@@ -131,7 +131,7 @@ async def lifespan(app: FastAPI):
             )
         except Exception:  # noqa: BLE001
             logger.exception("清理聊天图片失败（已忽略）")
-        from services import agent_log
+        from services.ops import agent_log
 
         for book in interrupted:
             logger.warning("抽取任务被重启中断：%s（%s）", book["title"], book["id"])
@@ -169,7 +169,7 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001
             logger.exception("关闭对话断点失败（已忽略）")
 
-        from services import library
+        from services.catalog import library
 
         for book_id in list(library._tasks):
             library.delete_task(book_id)

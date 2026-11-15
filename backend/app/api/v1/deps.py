@@ -31,28 +31,28 @@ from core import database as db
 from core.config import get_settings
 from core.security import InvalidSessionError, Session, issue_session, verify_session
 from readers.document import SUPPORTED_SUFFIXES, DocumentError, extract_text
-from services import agent_log
-from services import affect
+from services.ops import agent_log
+from services.dialogue import affect
 from agent import character as character_agent
-from services import expression
-from services import extractor
+from services.dialogue import expression
+from services.catalog import extractor
 from agent import group as group_chat
-from services import library
-from services import merge
-from services import shelf
-from services import agent_memory
-from services import chat_memory
-from services import cleaner
-from services import rag
+from services.catalog import library
+from services.catalog import merge
+from services.catalog import shelf
+from services.memory import agent_memory
+from services.memory import chat_memory
+from services.ops import cleaner
+from services.memory import rag
 from core import scene as scene_mod
-from services import reply as reply_mod
+from services.dialogue import reply as reply_mod
 from channels import event_to_outbound
 from channels import registry as channel_registry
 from channels.web import channel as web_channel
-from services import summarizer as summarizer_module
+from services.memory import summarizer as summarizer_module
 from agent.manager import get_agent
-from services.media import ImageValidationError, decode_images
-from services.prompts import build_character_prompt
+from services.ops.media import ImageValidationError, decode_images
+from services.dialogue.prompts import build_character_prompt
 
 # services 层不 import agent 层：由 api 层在导入时把实现接过去
 from agent.extraction import ExtractionAgent  # noqa: E402

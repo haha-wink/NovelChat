@@ -557,7 +557,7 @@ async def llm_judge(
     if not api_key or not model or not text.strip():
         return None
     try:
-        from services import extractor
+        from services.catalog import extractor
 
         return await extractor.call_llm_json(
             [

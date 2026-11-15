@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from services import persona
+from services.dialogue import persona
 
 #: 普通场景的人数上限（用户要求：不少于 1，不高于 10）
 MAX_SPEAKERS = 10

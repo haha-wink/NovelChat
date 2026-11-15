@@ -9,7 +9,7 @@
 
 典型用法::
 
-    from services import agent_log
+    from services.ops import agent_log
 
     trace_id = agent_log.new_trace_id("extract")
     agent_log.log(

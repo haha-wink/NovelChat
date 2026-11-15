@@ -33,8 +33,8 @@ import re
 from typing import Optional
 
 from core import database as db
-from services import agent_log
-from services import agent_memory
+from services.ops import agent_log
+from services.memory import agent_memory
 
 logger = logging.getLogger(__name__)
 
@@ -650,7 +650,7 @@ def llm_verifier(
 
         from openai import OpenAI
 
-        from services.extractor import DEEPSEEK_BASE_URL
+        from services.catalog.extractor import DEEPSEEK_BASE_URL
 
         def describe(character: dict) -> str:
             relations = "、".join(

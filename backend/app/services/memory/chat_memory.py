@@ -26,8 +26,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from core import database as db
-from services import agent_memory
-from services import agent_log
+from services.memory import agent_memory
+from services.ops import agent_log
 from core import scene as scene_mod
 
 logger = logging.getLogger(__name__)
@@ -95,7 +95,7 @@ def _mood_digest(turns: list[dict]) -> str:
     if emotions:
         parts.append("情绪：" + "、".join(f"{name}×{count}" for name, count in emotions.most_common(3)))
     if intents:
-        from services import dialogue
+        from services.dialogue import dialogue
 
         labels = "、".join(
             f"{dialogue.INTENT_LABELS.get(name, name)}×{count}"
@@ -178,7 +178,7 @@ def distill(
 
     # 蒸馏出来的记忆要能立刻被检索到
     try:
-        from services import rag
+        from services.memory import rag
 
         rag.index_character(character_id)
     except Exception:  # noqa: BLE001
@@ -286,7 +286,7 @@ def clear_conversation(
 
         for cid in speakers:
             try:
-                from services import rag
+                from services.memory import rag
 
                 rag.index_character(cid)
             except Exception:  # noqa: BLE001
@@ -303,7 +303,7 @@ def clear_conversation(
         result["memory_removed"] = removed_memory
         for cid in speakers:
             try:
-                from services import rag
+                from services.memory import rag
 
                 rag.index_character(cid)
             except Exception:  # noqa: BLE001

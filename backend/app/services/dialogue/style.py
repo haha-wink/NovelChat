@@ -12,8 +12,8 @@ import re
 from collections import Counter
 from typing import Sequence
 
-from services import name_library
-from services.name_library import translit_ratio
+from services.catalog import name_library
+from services.catalog.name_library import translit_ratio
 
 #: 取连续汉字段，用于提口头禅
 _HAN_RUN = re.compile(r"[\u4e00-\u9fff]+")

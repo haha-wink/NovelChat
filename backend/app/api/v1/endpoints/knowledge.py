@@ -78,7 +78,7 @@ async def clean_chat_images(days: int = 0) -> dict:
     ``days`` 留空或 <=0 时用配置里的保留期（``CHAT_IMAGE_RETENTION_DAYS``）。
     想永久保留就把配置设成 0——服务层对 ``days <= 0`` 是"不删"，不会误清空。
     """
-    from services import housekeeping
+    from services.ops import housekeeping
 
     settings = get_settings()
     keep_days = int(days) if days > 0 else int(settings.chat_image_retention_days)

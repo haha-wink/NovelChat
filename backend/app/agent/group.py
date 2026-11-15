@@ -37,10 +37,10 @@ from datetime import datetime, timezone
 from typing import AsyncIterator, Awaitable, Callable, Optional
 
 from core import database as db
-from services import affect
-from services import dialogue
-from services import expression
-from services import reply as reply_mod
+from services.dialogue import affect
+from services.dialogue import dialogue
+from services.dialogue import expression
+from services.dialogue import reply as reply_mod
 
 logger = logging.getLogger(__name__)
 

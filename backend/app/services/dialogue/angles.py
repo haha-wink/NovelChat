@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from services import persona
+from services.dialogue import persona
 
 
 @dataclass(frozen=True)

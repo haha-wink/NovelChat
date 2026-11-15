@@ -17,7 +17,7 @@ torch 的几分之一、单次推理十几毫秒，且不占 torch 的线程池�
 
 用法::
 
-    from services import emotion_model
+    from services.dialogue import emotion_model
 
     backend = emotion_model.get_backend()      # auto: onnx 可用则 onnx，否则 rules
     signal = backend.analyze("我今天真的撑不住了")

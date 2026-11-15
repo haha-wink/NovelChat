@@ -5,6 +5,70 @@
 
 ---
 
+## 0. 2026-11 重构后的结构（当前以此为准）
+
+```text
+backend/app/
+├── core/                 基础设施 · 任何层都可用，它不依赖任何业务
+│   ├── config.py  database.py  paths.py  security.py  scene.py  text.py
+│   └── tools/            ① 工具协议层：ToolSpec 注册表 / execute / OpenAI schema
+├── readers/              文档 → 文本
+├── channels/             接入层：web（QQ/微信往后加在这里）
+├── services/             领域层（不知道"聊天"是什么）
+│   ├── dialogue/         对话理解与生成口径
+│   │     dialogue · affect · emotion_model · persona · dispatch · angles
+│   │     prompts · style · reply · expression · intent
+│   ├── memory/           记忆与检索
+│   │     agent_memory · rag · chat_memory · summarizer
+│   ├── catalog/          书 / 角色 / 合并（内容管理）
+│   │     library · merge · shelf · character_miner · name_library
+│   │     name_engine · extractor
+│   ├── ops/              运维杂项
+│   │     agent_log · housekeeping · media · cleaner
+│   └── runtime/          小型工具提供者
+│         time_tools
+├── skills/               ★ 技能库（可插拔，按模式加载）
+│   ├── base.py           Skill / SkillResult
+│   ├── loader.py         SKILL.md 解析 → Skill
+│   ├── registry.py       注册表：按 mode 过滤 + 按信号打分
+│   ├── chat/             chat 模式可用
+│   │   ├── comfort/      SKILL.md + engine.py（comfort_phrase / breathing_guide）
+│   │   ├── steady/       SKILL.md + engine.py（crisis_helpline）
+│   │   └── suggest/      SKILL.md + engine.py（small_step）
+│   └── work/             work 模式可用
+│       └── animation/    SKILL.md + engine.py（animation_start / status / capabilities）
+├── agent/                编排层（LangGraph 图 + 提示词装配 + 工具绑定）
+│   ├── graph.py  group_graph.py  group.py  manager.py  character.py  extraction.py
+│   └── tools/            ② 框架层：StructuredTool / ToolNode 封装
+└── api/                  入口层：路由壳 + schema
+```
+
+分层规则：
+
+```text
+core  →  services  →  skills  →  agent  →  api
+            ↑            ↑
+        readers      channels
+```
+
+- `services` 不能 import `agent` / `skills`
+- `skills` 可以用 `services`（comfort 要 persona），但 `services` 不能反过来用 `skills`
+- `core` 不依赖任何业务层
+
+## 模式（工作模式 vs 情感聊天）
+
+技能的适用范围写在 `SKILL.md` 的 `modes` 里，由 `skills.registry.available(mode)` 过滤：
+
+| 模式 | 可用技能 |
+|---|---|
+| `chat`（默认） | comfort / steady / suggest |
+| `work` | steady / suggest / animation（+ 以后的专业技能） |
+
+安全类（steady）两个模式都在——危机处理不能因为模式受限而失效。
+
+---
+
+
 ## 1. 全景
 
 ```

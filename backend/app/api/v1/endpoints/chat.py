@@ -6,7 +6,7 @@ from fastapi import APIRouter
 
 from api.v1.deps import *  # noqa: F401,F403
 from agent import graph as agent_graph
-from services import dialogue
+from services.dialogue import dialogue
 
 router = APIRouter()
 

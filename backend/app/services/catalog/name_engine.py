@@ -19,7 +19,7 @@ import logging
 import threading
 from typing import Any, Optional
 
-from services import name_library
+from services.catalog import name_library
 
 logger = logging.getLogger(__name__)
 

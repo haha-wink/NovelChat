@@ -32,7 +32,7 @@ import anyio  # noqa: E402
 import functools  # noqa: E402
 
 import api.v1.router as api_routes  # noqa: E402
-from services import expression as expression_module  # noqa: E402
+from services.dialogue import expression as expression_module  # noqa: E402
 from api.v1 import deps as api_deps  # noqa: E402
 from api.v1.endpoints import chat as chat_endpoint  # noqa: E402
 from api.v1.endpoints import shelves as shelves_endpoint  # noqa: E402
@@ -41,35 +41,35 @@ from core import database as dbmod  # noqa: E402
 from core.config import get_settings  # noqa: E402
 from main import app  # noqa: E402
 from readers.document import DocumentError, extract_text  # noqa: E402
-from services import agent_log
-from services import agent_memory
-from services import character_miner as miner
-from services import affect
-from services import emotion_model
+from services.ops import agent_log
+from services.memory import agent_memory
+from services.catalog import character_miner as miner
+from services.dialogue import affect
+from services.dialogue import emotion_model
 from agent import manager as agent_manager
 from agent import character as character_agent
 from agent import group as group_chat
-from services import expression  # noqa: E402
-from services import shelf
-from services import merge  # noqa: E402
-from services import extractor
-from services import library
-from services import prompts  # noqa: E402
-from services import cleaner  # noqa: E402
-from services import reply as reply_mod  # noqa: E402
-from services import dialogue  # noqa: E402
-from services import chat_memory
-from services import rag  # noqa: E402
+from services.dialogue import expression  # noqa: E402
+from services.catalog import shelf
+from services.catalog import merge  # noqa: E402
+from services.catalog import extractor
+from services.catalog import library
+from services.dialogue import prompts  # noqa: E402
+from services.ops import cleaner  # noqa: E402
+from services.dialogue import reply as reply_mod  # noqa: E402
+from services.dialogue import dialogue  # noqa: E402
+from services.memory import chat_memory
+from services.memory import rag  # noqa: E402
 from core import scene as scene_mod
-from services import style as style_mod  # noqa: E402
+from services.dialogue import style as style_mod  # noqa: E402
 from core import text as text_mod  # noqa: E402
 import skills  # noqa: E402
 from skills import registry as skill_registry  # noqa: E402
 import channels  # noqa: E402
 import channels.web as web_module  # noqa: E402
-from services import name_library
+from services.catalog import name_library
 from agent.tools import web as web_tools  # noqa: E402
-from services.media import ImageValidationError, decode_images  # noqa: E402
+from services.ops.media import ImageValidationError, decode_images  # noqa: E402
 
 SAMPLE = """第一章 雨夜试剑
 
@@ -753,7 +753,7 @@ async def web_tools_checks() -> None:
 
 async def name_engine_checks() -> None:
     """人名识别引擎：内置兜底 + 现成库适配（用假后端模拟 jieba 词性输出）。"""
-    from services import name_engine
+    from services.catalog import name_engine
 
     # --- 内置兜底 ---
     builtin = name_engine.Engine(name_engine.BuiltinBackend())
@@ -937,7 +937,7 @@ async def extraction_agent_checks() -> None:
           str(single)[:160])
 
     # --- name_scan：用 NLP 库独立扫全文，和算法名单对照找漏抽 ---
-    from services import name_engine as engine_module
+    from services.catalog import name_engine as engine_module
 
     class _ScanBackend(engine_module.Backend):
         name = "fake-nlp"
@@ -1942,7 +1942,7 @@ def dispatch_checks() -> None:
     """需求分析 -> 人数 -> 按性格适配选人。"""
     import random as _random
 
-    from services import dispatch, persona
+    from services.dialogue import dispatch, persona
 
     # ---- 性格画像 ----
     warm = _fake_member("阿暖", ["温柔", "体贴", "耐心"])
@@ -2268,7 +2268,7 @@ def conversation_checks() -> None:
 
 def clear_conversation_checks() -> None:
     """清空对话的两种语义：蒸馏保留记忆 / 连记忆一起删。"""
-    from services import agent_memory, chat_memory
+    from services.memory import agent_memory, chat_memory
 
     dbmod.init_db()
 
@@ -2324,7 +2324,7 @@ def clear_conversation_checks() -> None:
           str(result_b))
 
     # ---- B2. 蒸馏用的是「用户画像」提示词，不是角色简介 ----
-    from services import summarizer as summarizer_mod
+    from services.memory import summarizer as summarizer_mod
 
     check("蒸馏提示词：区分了用户画像与角色简介",
           summarizer_mod.MEMORY_SYSTEM_PROMPT != summarizer_mod.SUMMARY_SYSTEM_PROMPT
@@ -2398,7 +2398,7 @@ def time_tool_checks() -> None:
     from datetime import datetime, timedelta
 
     from core.tools import protocol as tool_protocol
-    from services import time_tools
+    from services.runtime import time_tools
 
     check("时间：06:00 是早上", time_tools.period_of(6)[0] == "早上", str(time_tools.period_of(6)))
     check("时间：12:00 是中午", time_tools.period_of(12)[0] == "中午")
@@ -2486,7 +2486,7 @@ def time_tool_checks() -> None:
 
 def temperament_checks() -> None:
     """性格五维：落库、读取优先、回填效果。"""
-    from services import persona
+    from services.dialogue import persona
 
     warm = {"name": "阿暖", "personality": ["温柔", "体贴", "耐心"]}
     sharp = {"name": "阿烈", "personality": ["暴躁", "毒舌"]}
@@ -2536,7 +2536,7 @@ def temperament_checks() -> None:
 def intent_checks() -> None:
     """意图分析器：要不要记忆 / 要不要工具 / 复合意图。"""
     from core.tools import protocol as tool_protocol
-    from services import intent
+    from services.dialogue import intent
 
     compound = intent.analyze(
         "我很难受，我之前跟你说过我分手了",
@@ -2608,7 +2608,7 @@ def intent_checks() -> None:
 
 
 def dispatch_find_awaiting(turns, *, text, semantic=None):
-    from services import dispatch
+    from services.dialogue import dispatch
 
     return dispatch.find_awaiting(turns, text=text, semantic=semantic)
 
@@ -2617,7 +2617,7 @@ def awaiting_checks() -> None:
     """谁在等你回答：识别问题、匹配回答、选人加权。"""
     import random as _random
 
-    from services import dispatch
+    from services.dialogue import dispatch
 
     turns = [
         {"role": "user", "content": "今天好难受，我感冒了"},
@@ -2992,7 +2992,8 @@ async def langgraph_checks() -> None:
 
 async def dialogue_judge_checks() -> None:
     """LLM 判官：只在需要时出手，挂了就回退规则。"""
-    from services import dialogue, extractor
+    from services.dialogue import dialogue
+    from services.catalog import extractor
 
     original = extractor.call_llm_json
     calls: list = []
@@ -3071,7 +3072,7 @@ async def dialogue_judge_checks() -> None:
 
 async def dialogue_checks() -> None:
     """对话工作流：预处理 → 情绪/意图 → SOP → 后置校验。"""
-    from services import dialogue
+    from services.dialogue import dialogue
 
     # --- 预处理 ---
     dirty = "你\u200b好\u3000\u3000啊\n\n\n\n在吗"
@@ -3161,7 +3162,7 @@ async def dialogue_checks() -> None:
           ("热线" in care.text or "信得过" in care.text) and care.notes, care.text[:40])
 
     # --- 情绪摘要进入蒸馏 ---
-    from services import chat_memory
+    from services.memory import chat_memory
 
     digest = chat_memory._mood_digest([
         {"intent": "vent", "emotion": "疲惫"},
@@ -3177,7 +3178,7 @@ async def housekeeping_checks() -> None:
     import os
     import time as _time
 
-    from services import housekeeping
+    from services.ops import housekeeping
 
     base = get_settings().uploads_path / "_hk_test"
     base.mkdir(parents=True, exist_ok=True)
@@ -3262,7 +3263,7 @@ async def group_angle_checks() -> None:
     import random as _random
 
     from agent import group_graph
-    from services import angles
+    from services.dialogue import angles
 
     warm = {"name": "阿暖", "personality": ["温柔", "体贴", "耐心"]}
     calm = {"name": "阿静", "personality": ["冷静", "理性", "沉稳"]}
@@ -3364,7 +3365,7 @@ async def group_parallel_checks() -> None:
     dbmod.insert_character(book_id=book["id"], name="苏晚", personality=["温柔"], source="novel")
     members = dbmod.ensure_shelf_members(shelf["id"])
 
-    from services import dialogue as _dialogue
+    from services.dialogue import dialogue as _dialogue
 
     signals = _dialogue.TurnSignals(
         text="我今天真的很难受", emotion="难过", intensity=0.8, intent="vent"
@@ -4570,7 +4571,7 @@ async def cleaner_http_checks() -> None:
 # 自动合并：名字 / 相似度+判定 / 管理 Agent 记忆
 # ---------------------------------------------------------------------------
 async def auto_merge_checks() -> None:
-    from services import merge as merge_mod
+    from services.catalog import merge as merge_mod
 
     dbmod.init_db()
 
@@ -4936,7 +4937,7 @@ def interrupted_extraction_checks() -> None:
 
 async def extract_fallback_checks() -> None:
     """补全环节炸了，不能把算法已经挖到的角色一起丢掉。"""
-    from services import extractor as extractor_mod
+    from services.catalog import extractor as extractor_mod
 
     dbmod.init_db()
     shelf = _test_shelf("fallback")
@@ -4973,7 +4974,7 @@ async def extract_fallback_checks() -> None:
 # 情绪小模型（ONNX 后端）
 # ---------------------------------------------------------------------------
 def emotion_model_checks() -> None:
-    from services import emotion_model as emo
+    from services.dialogue import emotion_model as emo
 
     backend = emo.get_backend()
     check("情绪模型：auto 解析到 ONNX（模型已就位）",

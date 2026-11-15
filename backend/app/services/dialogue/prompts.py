@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from core.config import get_settings
-from services import style
+from services.dialogue import style
 
 from typing import Iterable, Sequence
 

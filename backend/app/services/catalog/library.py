@@ -14,11 +14,11 @@ import anyio
 
 from core import database as db
 from core.config import get_settings
-from services import agent_log
-from services import character_miner as miner
-from services import cleaner
-from services import extractor
-from services.prompts import pick_avatar
+from services.ops import agent_log
+from services.catalog import character_miner as miner
+from services.ops import cleaner
+from services.catalog import extractor
+from services.dialogue.prompts import pick_avatar
 
 logger = logging.getLogger(__name__)
 
@@ -334,8 +334,8 @@ async def _sync_shelf_after_extraction(
     import anyio
 
     try:
-        from services import merge as merge_mod
-        from services import shelf as shelf_mod
+        from services.catalog import merge as merge_mod
+        from services.catalog import shelf as shelf_mod
 
         await anyio.to_thread.run_sync(shelf_mod.sync_members, shelf_id)
         await anyio.to_thread.run_sync(
@@ -466,7 +466,7 @@ async def _run_extraction(book_id: str) -> None:
         # 单个角色失败不该让整本书失败，所以逐个 try。
         indexed = 0
         try:
-            from services import rag
+            from services.memory import rag
 
             for character in created:
                 try:
@@ -594,7 +594,7 @@ def create_character(
 
     # 性格五维：抽取阶段没给就按关键词算一次，落库后选人直接用
     if not temperament:
-        from services import persona
+        from services.dialogue import persona
 
         temperament = persona.snapshot(
             {

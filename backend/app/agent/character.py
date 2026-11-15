@@ -38,8 +38,8 @@ from typing import Optional, Tuple
 from agno.agent import Agent
 
 from core.config import get_settings
-from services import affect
-from services import rag
+from services.dialogue import affect
+from services.memory import rag
 from agent.manager import get_agent
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ def prepare(
 def memory_preview(character: dict, *, limit: Optional[int] = None) -> list[str]:
     """当前会进提示词的初始记忆（排查"角色像失忆"时用）。"""
     from core.config import get_settings
-    from services import agent_memory
+    from services.memory import agent_memory
 
     if limit is None:
         limit = int(get_settings().excerpt_chunks)

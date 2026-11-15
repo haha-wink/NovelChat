@@ -25,9 +25,9 @@ import re
 from typing import Any, Awaitable, Callable, Optional
 
 from core.config import get_settings
-from services import character_miner as miner
-from services import name_engine
-from services import name_library
+from services.catalog import character_miner as miner
+from services.catalog import name_engine
+from services.catalog import name_library
 from agent.tools import web as web_tools
 
 logger = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ class ExtractionAgent:
     # 工具
     # ------------------------------------------------------------------
     async def _llm_json(self, messages: list[dict[str, str]], *, max_tokens: int = 1024) -> dict:
-        from services.extractor import call_llm_json
+        from services.catalog.extractor import call_llm_json
 
         if self._caller is not None:
             return await self._caller(messages)
