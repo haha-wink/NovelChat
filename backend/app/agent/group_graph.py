@@ -85,6 +85,10 @@ class GroupState(TypedDict, total=False):
     conversation_id: str
     #: 本轮模式：chat / work
     mode: str
+    #: 本轮技能产出的素材块（群聊一轮跑一次，供所有发言人参考）
+    skill_block: str
+    #: 本轮命中的技能名
+    skill_name: str
     #: 本轮每条发言（并行写入，聚合节点用来查重）
     replies: Annotated[list, operator.add]
     #: 被判定重复而折叠掉的（character_id 列表）
@@ -136,6 +140,10 @@ async def prepare_node(state: GroupState) -> dict:
         )
         conversation_id = conversation["id"]
 
+    # 【技能层】群聊一轮跑一次：命中技能后把素材放进 state，
+    # 所有发言人共享（否则工作模式在群里等于没开）
+    skill_block, skill_name = _run_skill(state, shelf_id)
+
     plan = state.get("dialogue_plan")
     db.add_chat_turn(
         shelf_id=shelf_id,
@@ -164,6 +172,8 @@ async def prepare_node(state: GroupState) -> dict:
         "finished": False,
         "greeting": greeting,
         "conversation_id": conversation_id,
+        "skill_block": skill_block,
+        "skill_name": skill_name,
     }
 
 
@@ -323,6 +333,37 @@ async def pick_node(state: GroupState) -> dict:
     return {"queue": queue, "round_no": round_no, "pending_forced": [], "finished": False}
 
 
+def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str]:
+    """按当前模式跑一次技能层，返回 (素材块, 技能名)。"""
+    import skills
+
+    signals = state.get("signals")
+    if signals is None:
+        return "", ""
+    payload = {
+        "text": state.get("text") or "",
+        "emotion": getattr(signals, "emotion", "平静"),
+        "intent": getattr(signals, "intent", "chat"),
+        "intensity": getattr(signals, "intensity", 0.0),
+        "crisis": getattr(signals, "crisis", False),
+    }
+    mode = str(state.get("mode") or "chat")
+    try:
+        result = skills.run_for(payload, mode=mode,
+                               extra={"user_id": state.get("user_id") or ""})
+    except Exception:  # noqa: BLE001 - 技能失败不能挡住群聊
+        logger.exception("群聊技能执行失败（已忽略）")
+        return "", ""
+
+    if result is None:
+        return "", ""
+    block = result.as_block()
+    if block:
+        logger.info("群聊技能：%s（%d 条素材，模式 %s）",
+                    result.skill, len(result.materials), mode)
+    return block, result.skill
+
+
 def _decide_greeting(shelf_id: str) -> dict:
     """跑 greeting_check 工具，拿到"该不该问候"。"""
     try:
@@ -415,6 +456,9 @@ async def speak_node(state: GroupState) -> dict:
             "先接住这个回答（确认、放心、或继续问一句），不要重新问一遍同一个问题。"
         )
     member_view = {**member, "_hint": hint}
+    skill_block = str(state.get("skill_block") or "")
+    if skill_block:
+        member_view["_skill_block"] = skill_block
     angle = {
         "key": speaker.get("angle") or "",
         "name": speaker.get("angle_name") or "",

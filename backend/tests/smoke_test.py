@@ -2694,7 +2694,7 @@ def cleanup_test_libraries() -> int:
     """删掉自检留下的临时书库（失败也不影响结果）。"""
     removed = 0
     patterns = (
-        "清空蒸馏库", "清空记忆库", "画像自检库", "会话自检库", "自检图库", "性格自检库", "性格测试库",
+        "清空蒸馏库", "清空记忆库", "画像自检库", "会话自检库", "群聊技能自检库", "自检图库", "性格自检库", "性格测试库",
         "并行测试库", "自检书库", "日志自检库", "问候自检库", "去重自检库",
         "去重测试库", "整段测试库", "复现库", "蒸馏库", "清空库",
     )
@@ -2965,6 +2965,17 @@ def awaiting_checks() -> None:
     check("等回答：换一个问题换一个人",
           found2[0]["name"] == "犬山贺" and found2[0]["match"] > 0.5,
           str([(f["name"], f["match"]) for f in found2]))
+
+    # 中文里很多"在问你"的句子没有问号，比如选择题
+    choice = [
+        {"role": "user", "content": "帮我做一段动画"},
+        {"role": "assistant", "speaker_name": "叶胜", "character_id": "c_ye",
+         "content": "先定一件事：是让小人站着看星星，还是走一段路。选一个我就能排时间轴。"},
+    ]
+    choice_found = dispatch.find_awaiting(choice, text="让小人走一段路，动画约30s")
+    check("等回答：无问号的选择题也算在等回答",
+          bool(choice_found) and choice_found[0]["name"] == "叶胜",
+          str([(f["name"], f["match"]) for f in choice_found]))
 
     # 陈述句不算提问
     plain = [{"role": "assistant", "speaker_name": "叶胜", "character_id": "c_ye",
@@ -3583,6 +3594,71 @@ async def group_awake_checks() -> None:
         members, text="@全体成员 开会", mentions=["all"], rng=rng
     )
     check("群聊唤醒：@全体成员 全员应答", len(everyone) == 2, str([s.name for s in everyone]))
+
+async def group_skill_checks() -> None:
+    """群聊也接技能层：工作模式命中技能、聊天模式不越界。"""
+    import random as _random
+
+    from agent import group as group_engine
+    from services.catalog import library as catalog_library
+    from skills import capabilities as _caps
+
+    dbmod.init_db()
+    lib = dbmod.create_library("群聊技能自检库", "临时")
+    shelf = dbmod.create_shelf(lib["id"], "群聊技能自检架")
+    book = catalog_library.create_book(
+        title="群聊技能书", source_name="g.txt", source_type="txt",
+        text="x", shelf_id=shelf["id"],
+    )
+    for name in ("甲", "乙"):
+        dbmod.insert_character(book_id=book["id"], name=name,
+                               personality=["温柔"], source="novel")
+    members = dbmod.ensure_shelf_members(shelf["id"])
+
+    captured: list[str] = []
+
+    async def generate(member, transcript):
+        captured.append(member.get("_skill_block") or "")
+        yield "好。"
+
+    async def run(text: str, mode: str) -> list[str]:
+        captured.clear()
+        signals = dialogue.classify(text)
+        async for _event in group_engine.run_turn(
+            shelf_id=shelf["id"], user_id="u_group_skill", text=text,
+            generate=generate, members=members, signals=signals,
+            dialogue_plan=dialogue.plan(signals), mode=mode,
+            rng=_random.Random(1),
+            tweaks={"max_speakers": 2, "max_rounds": 1, "threshold": 0.0,
+                    "all_threshold": 0.0, "cooldown_seconds": 0},
+        ):
+            pass
+        return list(captured)
+
+    text = "帮我做一段动画：星空下的小人"
+    chat_blocks = await run(text, "chat")
+    check("群聊技能：聊天模式不会起动画任务",
+          all("动画已经开做" not in item for item in chat_blocks),
+          str([item[:40] for item in chat_blocks]))
+
+    real_probe = _caps._probe
+    _caps._probe = lambda: {"node": True, "ffmpeg": True, "chrome": True,
+                            "numpy": True, "python": True}
+    try:
+        work_blocks = await run(text, "work")
+    finally:
+        _caps._probe = real_probe
+
+    check("群聊技能：工作模式会起动画任务",
+          any("动画" in item for item in work_blocks),
+          str([item[:50] for item in work_blocks]))
+    check("群聊技能：素材发给每个发言人",
+          len(work_blocks) >= 1 and all(item for item in work_blocks),
+          str([bool(item) for item in work_blocks]))
+
+    dbmod.delete_book(book["id"])
+    dbmod.delete_shelf(shelf["id"])
+
 
 async def group_angle_checks() -> None:
     """并行分工（角度）+ 聚合查重。"""
@@ -6164,6 +6240,7 @@ def main() -> int:
     asyncio.run(dialogue_checks())
     asyncio.run(housekeeping_checks())
     asyncio.run(group_awake_checks())
+    asyncio.run(group_skill_checks())
     asyncio.run(group_angle_checks())
     asyncio.run(group_parallel_checks())
     asyncio.run(group_graph_checks())

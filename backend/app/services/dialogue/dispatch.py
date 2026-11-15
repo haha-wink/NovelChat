@@ -167,11 +167,29 @@ _QUESTION_TAILS = ("吗", "呢", "么", "嘛")
 _IGNORE_CHARS = set("的了是在有和与就都也还很太没不我你他她它们这那个吗呢吧啊呀哦嗯？?，,。.！!、…~ ")
 
 
+#: 不带问号但确实是"在问你"的句式
+_QUESTION_PATTERNS = (
+    "还是",        # 选择题：站着看星星，还是走一段路
+    "要不要", "是不是", "有没有", "能不能", "可不可以", "会不会", "想不想",
+    "选一个", "告诉我", "说说看", "你觉得", "你怎么想",
+)
+
+
 def _looks_like_question(text: str) -> bool:
+    """判断这句是不是在等用户回答。
+
+    中文里很多问句没有问号——尤其是**选择题**：
+
+        是让小人站着看星星，还是走一段路。选一个我就能帮你排时间轴。
+
+    只认问号会漏掉这类，所以再加上"还是 / 要不要 / 选一个…"这些句式。
+    """
     body = (text or "").strip()
     if not body:
         return False
     if "？" in body or "?" in body:
+        return True
+    if any(pattern in body for pattern in _QUESTION_PATTERNS):
         return True
     return body.rstrip("。！!…~ ").endswith(_QUESTION_TAILS)
 

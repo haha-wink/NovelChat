@@ -107,6 +107,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
         # 附加群聊上下文：后说话的人要接得上前面的话
         lines = [f"{t['speaker']}：{t['text']}" for t in transcript[-8:]]
         hint = str(member.get("_hint") or "")
+        skill_block = str(member.get("_skill_block") or "")
         angle = member.get("_angle") or {}
         angle_block = ""
         if angle.get("name"):
@@ -124,6 +125,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
             + "\n\n【群聊上下文，最近几条】\n"
             + "\n".join(lines)
             + (f"\n\n【你在等这个回答】\n{hint}" if hint else "")
+            + (f"\n\n{skill_block}" if skill_block else "")
             + f"\n\n你在群聊里，用「{member['name']}」的身份说话。群聊规则：\n"
             "- 群里不止你一个人。可以顺着别人刚说的话接一句，也可以只对用户说。\n"
             "- 别人已经说过的建议或安慰（比如「多喝热水」）**不要再重复**："
@@ -171,6 +173,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 generate=generate,
                 session_id=f"group:{session.user_id}:{shelf_id}",
                 conversation_id=req.conversation_id or "",
+                mode=_resolve_mode(req.mode),
             ):
                 # 引擎事件 -> 渠道无关的出站消息 -> web 载荷。
                 # 这一圈看着绕，但换来的是：接 QQ/微信时引擎与这里一行都不用改。
