@@ -2110,6 +2110,54 @@ def skill_checks() -> None:
           block[:40])
 
 
+def skill_validate_checks() -> None:
+    """SKILL.md 校验：写错要能被抓出来，内置技能要全绿。"""
+    import tempfile
+    import pathlib as _pathlib
+
+    from skills import registry, validate
+
+    report = validate.validate_paths([registry.SKILLS_DIR])
+    check("校验：内置技能全部通过",
+          report.ok and report.checked >= 7,
+          f"{report.checked} 个 / 错误 {len(report.errors)}")
+    check("校验：内置技能没有警告",
+          not report.warnings, str([str(item) for item in report.warnings]))
+
+    with tempfile.TemporaryDirectory() as folder:
+        bad = _pathlib.Path(folder) / "broken"
+        bad.mkdir()
+        (bad / "SKILL.md").write_text(
+            "---\n"
+            "name: broken\n"
+            "description: 故意写错\n"
+            "modes: [wrok]\n"
+            "requires: [nonexistent_dep]\n"
+            "when:\n"
+            "  unknown_condition: true\n"
+            "steps:\n"
+            "  - [no_such_tool, {text: $usrname}]\n"
+            "---\n正文\n",
+            encoding="utf-8",
+        )
+        result = validate.validate_paths([_pathlib.Path(folder)])
+        messages = " | ".join(str(item) for item in result.issues)
+        check("校验：抓出未知模式", "未知模式" in messages, messages[:120])
+        check("校验：抓出未注册的工具", "no_such_tool" in messages, messages[:120])
+        check("校验：抓出未知占位符", "$usrname" in messages, messages[:120])
+        check("校验：抓出未知依赖", "nonexistent_dep" in messages, messages[:120])
+        check("校验：抓出未知 when 条件", "unknown_condition" in messages, messages[:120])
+        check("校验：有问题时整体判失败", not result.ok, str(result.as_dict())[:80])
+
+    # 注册表加载后应自动体检，且内置技能没有 error
+    registry.reload()
+    issues = registry.issues()
+    check("校验：注册表自动体检无 error",
+          not [item for item in issues if item.get("severity") == "error"], str(issues)[:120])
+    check("校验：describe 里带出 issues 字段",
+          "issues" in registry.describe(), str(list(registry.describe()))[:80])
+
+
 def skill_package_checks() -> None:
     """技能包：单独封装 / 依赖声明 / 外部可插拔。"""
     import pathlib as _pathlib
@@ -5998,6 +6046,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    skill_validate_checks()
     skill_package_checks()
     mode_checks()
     animation_checks()

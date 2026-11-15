@@ -70,6 +70,33 @@ def _ensure_loaded() -> None:
             logger.exception("加载外部技能失败：%s", directory)
 
     logger.info("技能加载完成：%d 个（%s）", len(_SKILLS), "、".join(_SKILLS))
+    _validate_after_load()
+
+
+#: 加载时发现的技能问题（健康检查会暴露出去）
+_ISSUES: list[dict] = []
+
+
+def _validate_after_load() -> None:
+    """加载完立刻体检：写错的 SKILL.md 在启动时就报，而不是静默不生效。"""
+    global _ISSUES
+    try:
+        from skills import validate
+
+        report = validate.validate_skills(_SKILLS.values())
+        _ISSUES = [item.as_dict() for item in report.issues]
+        for item in report.errors:
+            logger.error("技能配置错误 %s", item)
+        for item in report.warnings:
+            logger.warning("技能配置提醒 %s", item)
+    except Exception:  # noqa: BLE001 - 校验本身出错不能拖垮加载
+        logger.exception("技能校验失败（已忽略）")
+
+
+def issues() -> list[dict]:
+    """加载时发现的技能问题。"""
+    _ensure_loaded()
+    return list(_ISSUES)
 
 
 def register(skill: Skill, *, replace: bool = False) -> None:
@@ -81,8 +108,9 @@ def register(skill: Skill, *, replace: bool = False) -> None:
 
 def reload() -> list[Skill]:
     """重新扫目录（改完 SKILL.md 不用重启进程）。"""
-    global _LOADED
+    global _LOADED, _ISSUES
     _SKILLS.clear()
+    _ISSUES = []
     _LOADED = False
     _ensure_loaded()
     return list(_SKILLS.values())
@@ -177,4 +205,5 @@ def describe() -> dict:
             for skill in all_skills()
         ],
         "disabled": {"chat": unavailable("chat"), "work": unavailable("work")},
+        "issues": issues(),
     }

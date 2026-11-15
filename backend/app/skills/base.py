@@ -70,6 +70,10 @@ class Skill:
     body: str = ""
     #: 技能目录（排查用）
     path: str = ""
+    #: SKILL.md 里原始的 when 规则（校验用）
+    when_rules: dict = field(default_factory=dict)
+    #: 技能目录名（校验 name 是否和目录一致）
+    dir_name: str = ""
 
     def run(self, context: Optional[dict] = None) -> SkillResult:
         """按 steps 依次调工具，收集素材。同步、零额外模型调用。"""

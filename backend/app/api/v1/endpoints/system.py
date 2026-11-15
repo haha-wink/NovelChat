@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+import skills.registry as skills_registry  # noqa: E402
 from api.v1.deps import *  # noqa: F401,F403
 
 router = APIRouter()
@@ -53,6 +54,17 @@ def angles_describe() -> dict:
     from services.dialogue import angles
 
     return angles.describe()
+
+
+@router.get("/skills/validate")
+async def skills_validate() -> dict:
+    """体检技能包：写错的 SKILL.md、未知工具、未知占位符都会列出来。"""
+    import skills.validate as skill_validate
+
+    report = await anyio.to_thread.run_sync(
+        functools.partial(skill_validate.validate_paths, [skills_registry.SKILLS_DIR])
+    )
+    return report.as_dict()
 
 
 @router.get("/animation/capabilities")

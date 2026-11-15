@@ -264,15 +264,17 @@ def parse_skill(path: Path) -> Optional[Skill]:
         external=bool(meta.get("external") or False),
         body=body,
         path=str(skill_file),
+        when_rules=dict(meta.get("when") or {}),
+        dir_name=skill_file.parent.name,
     )
 
 
-def load_skill_dir(directory: Path) -> list[Skill]:
-    """加载技能包。
+def load_skill_dir(directory: Path, *, depth: int = 0) -> list[Skill]:
+    """加载技能包，支持三种布局：
 
-    支持两种布局：
-    - ``目录/SKILL.md``          -> 单个技能（外部插拔包常用）
-    - ``目录/子目录/SKILL.md``   -> 一组技能（内置 chat/ work/ 用这种）
+    - ``目录/SKILL.md``            -> 单个技能（外部插拔包）
+    - ``目录/子目录/SKILL.md``     -> 一组技能（内置 chat/ work/）
+    - ``目录/分组/子目录/SKILL.md`` -> 分组（skills/ 根目录，校验用）
     """
     skills: list[Skill] = []
     if not directory.exists() or not directory.is_dir():
@@ -282,20 +284,20 @@ def load_skill_dir(directory: Path) -> list[Skill]:
         skill = parse_skill(directory)
         return [skill] if skill is not None else []
 
+    if depth > 2:
+        return skills
+
     for child in sorted(directory.iterdir()):
         if not child.is_dir() or child.name.startswith(("_", ".")):
             continue
-        skill = parse_skill(child)
-        if skill is not None:
-            skills.append(skill)
+        skills.extend(load_skill_dir(child, depth=depth + 1))
     return skills
 
 
 def _engine_module_name(engine: Path) -> Optional[str]:
     """内置技能用包路径导入，保证和 `import skills.xxx.engine` 是**同一个模块对象**。
 
-    否则（用 importlib 按文件加载）会得到一份副本：工具注册在副本上，
-    测试/调用方却改的是原模块，打洞无效。
+    按文件加载会得到副本：工具注册在副本上，调用方却改的是原模块，热更/测试都失效。
     """
     try:
         relative = engine.resolve().relative_to(SKILLS_PACKAGE_DIR.resolve())
@@ -305,23 +307,28 @@ def _engine_module_name(engine: Path) -> Optional[str]:
     return ".".join(["skills", *parts])
 
 
-def load_engines(directory: Path) -> None:
+def load_engines(directory: Path, *, depth: int = 0) -> None:
     """导入技能自带的 engine.py——它们负责注册自己用到的工具。"""
     import importlib
     import importlib.util
 
-    if not directory.exists():
+    if not directory.exists() or depth > 2:
         return
+
     for child in sorted(directory.iterdir()):
+        if child.name.startswith(("_", ".")) or not child.is_dir():
+            continue
         engine = child / "engine.py"
         if not engine.exists():
+            # 分组目录（skills/chat、skills/work），往下找
+            load_engines(child, depth=depth + 1)
             continue
+
         module_name = _engine_module_name(engine)
         try:
             if module_name:
                 importlib.import_module(module_name)
             else:
-                # 外部目录：只能按文件加载
                 spec = importlib.util.spec_from_file_location(
                     f"skills._external_engines.{child.name}", engine
                 )

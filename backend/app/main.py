@@ -107,6 +107,23 @@ async def lifespan(app: FastAPI):
     logger.info("数据目录：%s", settings.data_path)
     logger.info("作品库：%s", settings.library_path)
 
+    # 启动时体检技能包：SKILL.md 写错要立刻报，不能等运行到才炸
+    try:
+        import skills.registry as skill_registry
+
+        skill_registry.all_skills()          # 触发加载 + 自动校验
+        problems = skill_registry.issues()
+        errors = [item for item in problems if item.get("severity") == "error"]
+        if errors:
+            logger.error("技能包有 %d 处错误，相关技能可能不生效", len(errors))
+        elif problems:
+            logger.warning("技能包有 %d 处提醒（不影响启动）", len(problems))
+        else:
+            logger.info("技能包体检通过：%d 个技能",
+                        len(skill_registry.all_skills()))
+    except Exception:  # noqa: BLE001 - 体检失败不能阻止启动
+        logger.exception("技能包体检失败（已忽略）")
+
     if not settings.deepseek_api_key.strip():
         logger.warning("未配置 DEEPSEEK_API_KEY：上传小说后角色抽取会失败，配置后可点「重新抽取」")
 
