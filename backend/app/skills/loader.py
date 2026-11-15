@@ -42,6 +42,9 @@ from skills.base import Skill
 
 logger = logging.getLogger(__name__)
 
+#: skills 包根目录（判断一个 engine 是不是内置的）
+SKILLS_PACKAGE_DIR = Path(__file__).resolve().parent
+
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.S)
 
 
@@ -257,18 +260,30 @@ def parse_skill(path: Path) -> Optional[Skill]:
         modes=modes,
         when=build_when(meta.get("when") or {}),
         steps=[(str(item[0]), dict(item[1] or {})) for item in steps],
+        requires=tuple(str(item) for item in _as_list(meta.get("requires"))),
+        external=bool(meta.get("external") or False),
         body=body,
         path=str(skill_file),
     )
 
 
 def load_skill_dir(directory: Path) -> list[Skill]:
-    """加载一个目录下所有技能包（每个子目录一个 SKILL.md）。"""
+    """加载技能包。
+
+    支持两种布局：
+    - ``目录/SKILL.md``          -> 单个技能（外部插拔包常用）
+    - ``目录/子目录/SKILL.md``   -> 一组技能（内置 chat/ work/ 用这种）
+    """
     skills: list[Skill] = []
-    if not directory.exists():
+    if not directory.exists() or not directory.is_dir():
         return skills
+
+    if (directory / "SKILL.md").exists():
+        skill = parse_skill(directory)
+        return [skill] if skill is not None else []
+
     for child in sorted(directory.iterdir()):
-        if not child.is_dir():
+        if not child.is_dir() or child.name.startswith(("_", ".")):
             continue
         skill = parse_skill(child)
         if skill is not None:
@@ -276,8 +291,23 @@ def load_skill_dir(directory: Path) -> list[Skill]:
     return skills
 
 
+def _engine_module_name(engine: Path) -> Optional[str]:
+    """内置技能用包路径导入，保证和 `import skills.xxx.engine` 是**同一个模块对象**。
+
+    否则（用 importlib 按文件加载）会得到一份副本：工具注册在副本上，
+    测试/调用方却改的是原模块，打洞无效。
+    """
+    try:
+        relative = engine.resolve().relative_to(SKILLS_PACKAGE_DIR.resolve())
+    except ValueError:
+        return None
+    parts = list(relative.with_suffix("").parts)
+    return ".".join(["skills", *parts])
+
+
 def load_engines(directory: Path) -> None:
     """导入技能自带的 engine.py——它们负责注册自己用到的工具。"""
+    import importlib
     import importlib.util
 
     if not directory.exists():
@@ -286,11 +316,17 @@ def load_engines(directory: Path) -> None:
         engine = child / "engine.py"
         if not engine.exists():
             continue
-        module_name = f"skills._engines.{child.name}_{abs(hash(str(engine))) % 10000}"
+        module_name = _engine_module_name(engine)
         try:
-            spec = importlib.util.spec_from_file_location(module_name, engine)
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+            if module_name:
+                importlib.import_module(module_name)
+            else:
+                # 外部目录：只能按文件加载
+                spec = importlib.util.spec_from_file_location(
+                    f"skills._external_engines.{child.name}", engine
+                )
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
         except Exception:  # noqa: BLE001 - 引擎坏了不该拖垮技能列表
             logger.exception("加载技能引擎失败：%s", engine)

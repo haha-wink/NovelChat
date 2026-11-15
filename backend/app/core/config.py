@@ -180,6 +180,10 @@ class Settings(BaseSettings):
     #: 允许前端切换模式（关掉就永远用 default_mode）
     allow_mode_switch: bool = True
 
+    #: 外部技能包目录（逗号分隔）。把一个带 SKILL.md 的目录丢进去就能用，
+    #: 不用改代码——这是"大技能可插拔"的入口
+    skills_extra_dirs: str = ""
+
     #: 动画技能包的目录（默认 <repo>/_external/ai--main）
     animation_skill_dir: str = ""
     #: auto = 检测 node/ffmpeg/Chrome；fake = 测试用假渲染器

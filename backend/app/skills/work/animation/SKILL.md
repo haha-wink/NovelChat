@@ -2,6 +2,8 @@
 name: animation
 description: 用户要一段动画/短片/动图：起一个后台渲染任务，先把进度告诉用户
 modes: [work]
+requires: [node, ffmpeg, chrome]
+external: true
 when:
   keywords: [动画, 短片, 视频, 动图, gif, GIF, MV, mv, 渲染, 歌词]
   action_words: [帮我做, 给我做, 做一个, 做一段, 生成, 剪一段, 做动画, 做成视频]

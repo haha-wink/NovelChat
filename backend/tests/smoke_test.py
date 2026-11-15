@@ -2110,6 +2110,112 @@ def skill_checks() -> None:
           block[:40])
 
 
+def skill_package_checks() -> None:
+    """技能包：单独封装 / 依赖声明 / 外部可插拔。"""
+    import pathlib as _pathlib
+    import tempfile
+
+    from core.tools import protocol as tool_protocol
+    from skills import capabilities, registry
+
+    registry.reload()
+    names = {skill.name for skill in registry.all_skills()}
+    check("技能包：内置 7 个技能都在",
+          {"comfort", "steady", "suggest", "animation",
+           "planning", "notes", "writing"} <= names, str(sorted(names)))
+
+    planning = registry.get("planning")
+    check("技能包：每个技能有自己的 SKILL.md",
+          bool(planning and planning.path.replace("\\", "/").endswith("planning/SKILL.md")),
+          planning.path if planning else "无")
+    check("技能包：技能声明了模式和步骤",
+          bool(planning and planning.modes == ("work",) and planning.steps),
+          str(planning and (planning.modes, planning.steps)))
+
+    # ---- 依赖声明：动画需要 ffmpeg/chrome，缺了就不该被选中 ----
+    animation = registry.get("animation")
+    check("可插拔：大技能声明了外部依赖",
+          bool(animation and set(animation.requires) >= {"node", "ffmpeg"}),
+          str(animation and animation.requires))
+    usable, missing = capabilities.check(animation.requires)
+    work_names = [skill.name for skill in registry.available("work")]
+    if usable:
+        check("可插拔：依赖齐全时动画在列表里", "animation" in work_names, str(work_names))
+    else:
+        check("可插拔：缺依赖时动画自动隐身", "animation" not in work_names, str(work_names))
+        disabled = {item["name"]: item["missing"] for item in registry.unavailable("work")}
+        check("可插拔：并且说明缺什么",
+              "animation" in disabled and disabled["animation"], str(disabled))
+
+    # ---- 三个零依赖的工作技能 ----
+    work_names = [skill.name for skill in registry.available("work")]
+    check("工作技能：planning/notes/writing 都可用",
+          {"planning", "notes", "writing"} <= set(work_names), str(work_names))
+    check("工作技能：情感技能不越界到工作模式",
+          "comfort" not in work_names, str(work_names))
+
+    breakdown = tool_protocol.execute(
+        "task_breakdown", {"text": "还没吃饭，要汇总工作表，还没洗衣服，浇花"})
+    check("planning：拆出 4 件事", breakdown["ok"] and breakdown["count"] == 4,
+          str(breakdown.get("count")))
+    order = [item["item"] for item in breakdown["order"]]
+    check("planning：吃饭排第一", order and "吃" in order[0], str(order))
+    check("planning：家务排在时限任务之后",
+          order.index("洗衣服") > order.index(next(i for i in order if "工作表" in i)),
+          str(order))
+
+    digest = tool_protocol.execute(
+        "note_digest", {"text": "今天定了下周上线。我要准备测试用例。回滚谁来定？"})
+    check("notes：分出待办与未决",
+          digest["ok"] and digest["todo"] and digest["open"], str(digest)[:90])
+
+    outline = tool_protocol.execute("writing_outline", {"text": "帮我写一份周报"})
+    check("writing：认得出周报并给结构",
+          outline["ok"] and outline["genre"] == "周报"
+          and any("下周计划" in item for item in outline["outline"]),
+          str(outline.get("outline"))[:80])
+
+    unknown = tool_protocol.execute("writing_outline", {"text": "帮我写点东西"})
+    check("writing：认不出文体时给通用结构",
+          unknown["ok"] and unknown["genre"] == "通用", str(unknown.get("genre")))
+
+    # ---- 外部可插拔目录 ----
+    settings = get_settings()
+    original = settings.skills_extra_dirs
+    with tempfile.TemporaryDirectory() as folder:
+        extra = _pathlib.Path(folder) / "my-skill"
+        extra.mkdir()
+        (extra / "SKILL.md").write_text(
+            "---\n"
+            "name: from_outside\n"
+            "description: 外部塞进来的技能\n"
+            "modes: [work]\n"
+            "when:\n"
+            "  keywords: [外部]\n"
+            "  base: 0.9\n"
+            "steps:\n"
+            "  - [small_step, {topic: 外部}]\n"
+            "---\n正文\n",
+            encoding="utf-8",
+        )
+        try:
+            settings.skills_extra_dirs = folder
+            registry.reload()
+            check("可插拔：外部目录里的 SKILL.md 被加载",
+                  "from_outside" in {skill.name for skill in registry.all_skills()},
+                  str(sorted(skill.name for skill in registry.all_skills())))
+            picked = registry.choose({"text": "这个外部需求", "intent": "chat"}, mode="work")
+            check("可插拔：外部技能按 when 规则被选中",
+                  picked is not None and picked.name == "from_outside",
+                  str(picked and picked.name))
+        finally:
+            settings.skills_extra_dirs = original
+            registry.reload()
+
+    check("可插拔：撤掉目录后外部技能消失",
+          "from_outside" not in {skill.name for skill in registry.all_skills()})
+
+
 def mode_checks() -> None:
     """工作模式：同一个请求，模式不同 -> 可用的技能不同。"""
     import asyncio as _asyncio
@@ -2141,9 +2247,17 @@ def mode_checks() -> None:
                 final = chunk
         return final
 
-    text = "帮我做一段水彩动画，雨夜的车站"
-    chat_state = _asyncio.run(_run(text, "chat"))
-    work_state = _asyncio.run(_run(text, "work"))
+    from skills import capabilities as _caps
+
+    _real = _caps._probe
+    _caps._probe = lambda: {"node": True, "ffmpeg": True, "chrome": True,
+                            "numpy": True, "python": True}
+    try:
+        text = "帮我做一段水彩动画，雨夜的车站"
+        chat_state = _asyncio.run(_run(text, "chat"))
+        work_state = _asyncio.run(_run(text, "work"))
+    finally:
+        _caps._probe = _real
     chat_block = str(chat_state.get("skill_block") or "")
     work_block = str(work_state.get("skill_block") or "")
 
@@ -2234,33 +2348,50 @@ def animation_checks() -> None:
     finally:
         animation.capabilities = original_caps
 
-    # --- 第③层：技能选择 ---
-    act = skill_registry.choose({"text": "帮我做一段水彩动画，雨夜的车站",
-                         "intent": "chat", "emotion": "平静", "crisis": False},
-                        mode="work")
-    check("动画：工作模式下、有动作词时选中 animation",
-          act is not None and act.name == "animation", str(act and act.name))
+    # --- 第③层：技能选择（先假装依赖齐全，否则动画会被 requires 挡掉）---
+    from skills import capabilities as _caps_mod
 
-    chat_mode = skill_registry.choose({"text": "帮我做一段水彩动画，雨夜的车站",
-                                       "intent": "chat", "emotion": "平静"},
-                                      mode="chat")
-    check("模式：聊天模式下不开放工作技能",
-          chat_mode is None or chat_mode.name != "animation",
-          str(chat_mode and chat_mode.name))
+    _real_probe = _caps_mod._probe
+    _caps_mod._probe = lambda: {"node": True, "ffmpeg": True, "chrome": True,
+                                "numpy": True, "python": True}
+    try:
+        act = skill_registry.choose(
+            {"text": "帮我做一段水彩动画，雨夜的车站", "intent": "chat",
+             "emotion": "平静", "crisis": False},
+            mode="work",
+        )
+        check("动画：工作模式下、有动作词时选中 animation",
+              act is not None and act.name == "animation", str(act and act.name))
 
-    no_action = skill_registry.choose({"text": "我看视频也难受",
-                               "intent": "vent", "emotion": "难过", "crisis": False})
-    check("动画：只是提到视频不抢情绪安慰",
-          no_action is not None and no_action.name == "comfort",
-          str(no_action and no_action.name))
+        chat_mode = skill_registry.choose(
+            {"text": "帮我做一段水彩动画，雨夜的车站", "intent": "chat",
+             "emotion": "平静"},
+            mode="chat",
+        )
+        check("模式：聊天模式下不开放工作技能",
+              chat_mode is None or chat_mode.name != "animation",
+              str(chat_mode and chat_mode.name))
 
-    crisis = skill_registry.choose({"text": "帮我做个动画", "intent": "crisis",
-                            "emotion": "难过", "crisis": True})
-    check("动画：危机时不抢戏", crisis is not None and crisis.name == "steady",
-          str(crisis and crisis.name))
+        no_action = skill_registry.choose(
+            {"text": "我看视频也难受", "intent": "vent", "emotion": "难过",
+             "crisis": False})
+        check("动画：只是提到视频不抢情绪安慰",
+              no_action is not None and no_action.name == "comfort",
+              str(no_action and no_action.name))
 
-    names = [item["name"] for item in skill_registry.describe()["skills"]]
-    check("动画：已出现在技能清单里", "animation" in names, str(names))
+        crisis = skill_registry.choose(
+            {"text": "帮我做个动画", "intent": "crisis", "emotion": "难过",
+             "crisis": True})
+        check("动画：危机时不抢戏",
+              crisis is not None and crisis.name == "steady",
+              str(crisis and crisis.name))
+
+        names = [item["name"] for item in skill_registry.describe()["skills"]]
+        check("动画：已出现在技能清单里", "animation" in names, str(names))
+    finally:
+        _caps_mod._probe = _real_probe
+
+
 
 
 def conversation_checks() -> None:
@@ -5867,6 +5998,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    skill_package_checks()
     mode_checks()
     animation_checks()
     conversation_checks()

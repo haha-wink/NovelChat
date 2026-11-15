@@ -35,11 +35,20 @@ _SKILLS: dict[str, Skill] = {}
 _LOADED = False
 
 
+def _extra_dirs() -> list[Path]:
+    """外部可插拔技能目录（settings.skills_extra_dirs，逗号分隔）。"""
+    from core.config import get_settings
+
+    raw = str(getattr(get_settings(), "skills_extra_dirs", "") or "")
+    return [Path(item.strip()) for item in raw.split(",") if item.strip()]
+
+
 def _ensure_loaded() -> None:
     global _LOADED
     if _LOADED:
         return
     _LOADED = True
+
     for folder in ("chat", "work"):
         directory = SKILLS_DIR / folder
         # 先加载引擎（注册工具），再解析 SKILL.md（引用工具名）
@@ -49,6 +58,17 @@ def _ensure_loaded() -> None:
             logger.exception("加载技能引擎失败：%s", directory)
         for skill in loader.load_skill_dir(directory):
             register(skill, replace=True)
+
+    # 外部技能包：把一个目录丢进去就能用，不用改代码
+    for directory in _extra_dirs():
+        try:
+            loader.load_engines(directory)
+            for skill in loader.load_skill_dir(directory):
+                register(skill, replace=True)
+                logger.info("外部技能已加载：%s（%s）", skill.name, directory)
+        except Exception:  # noqa: BLE001
+            logger.exception("加载外部技能失败：%s", directory)
+
     logger.info("技能加载完成：%d 个（%s）", len(_SKILLS), "、".join(_SKILLS))
 
 
@@ -78,10 +98,36 @@ def get(name: str) -> Optional[Skill]:
     return _SKILLS.get(name)
 
 
+def _usable(skill: Skill) -> tuple[bool, list[str]]:
+    from skills import capabilities
+
+    return capabilities.check(skill.requires)
+
+
 def available(mode: str = "chat") -> list[Skill]:
-    """当前模式下可用的技能。"""
+    """当前模式下**且依赖齐全**的技能。"""
     wanted = (mode or "chat").strip().lower()
-    return [skill for skill in all_skills() if wanted in skill.modes]
+    result = []
+    for skill in all_skills():
+        if wanted not in skill.modes:
+            continue
+        usable, _missing = _usable(skill)
+        if usable:
+            result.append(skill)
+    return result
+
+
+def unavailable(mode: str = "chat") -> list[dict]:
+    """该模式下可用但缺依赖的技能（前端/health 用来解释为什么没有）。"""
+    wanted = (mode or "chat").strip().lower()
+    result = []
+    for skill in all_skills():
+        if wanted not in skill.modes:
+            continue
+        usable, missing = _usable(skill)
+        if not usable:
+            result.append({"name": skill.name, "missing": missing})
+    return result
 
 
 def choose(signals: dict, *, mode: str = "chat") -> Optional[Skill]:
@@ -123,7 +169,12 @@ def describe() -> dict:
                 "description": skill.description,
                 "modes": list(skill.modes),
                 "tools": [name for name, _ in skill.steps],
+                "requires": list(skill.requires),
+                "external": skill.external,
+                "available": _usable(skill)[0],
+                "missing": _usable(skill)[1],
             }
             for skill in all_skills()
         ],
+        "disabled": {"chat": unavailable("chat"), "work": unavailable("work")},
     }

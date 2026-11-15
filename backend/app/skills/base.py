@@ -62,6 +62,10 @@ class Skill:
     when: Optional[Callable[[dict], float]] = None
     #: 要调的工具，形如 [("breathing_guide", {"seconds": 4})]
     steps: list[tuple[str, dict]] = field(default_factory=list)
+    #: 依赖的外部能力（node / ffmpeg / chrome / numpy…），空 = 纯 Python
+    requires: tuple[str, ...] = ()
+    #: 大技能（自带引擎/素材，可放在仓库外）——可插拔包用
+    external: bool = False
     #: SKILL.md 正文（给模型看的说明，可选注入）
     body: str = ""
     #: 技能目录（排查用）
