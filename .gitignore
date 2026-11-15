@@ -49,3 +49,7 @@ frontend/.ssr-check/
 
 # 外部参考仓库（只读，不入库）
 _external/
+
+# 技能包下载的二进制依赖（用 scripts/fetch_animation_deps.py 获取）
+backend/app/skills/work/animation/bin/
+!backend/app/skills/work/animation/bin/.gitkeep

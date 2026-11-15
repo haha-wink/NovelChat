@@ -61,7 +61,10 @@ const gpu = args['soft-gl'] ? ['--use-angle=swiftshader', '--enable-unsafe-swift
   : args['gpu-angle'] ? ANGLE[args['gpu-angle']]
   : process.platform === 'win32' ? ['--use-angle=d3d11'] : process.platform === 'darwin' ? ['--use-angle=metal'] : ['--use-gl=angle'];
 // Ubuntu 23.10+ blocks Chrome's user-namespace sandbox; headless rendering of local files doesn't need it.
-const sandbox = process.platform === 'linux' ? ['--no-sandbox'] : [];
+// 本地渲染不需要 Chrome 沙箱；容器 / 受限环境（含 Windows 沙箱）里
+// 开沙箱会让浏览器直接起不来（Exit code 2147483651）。
+// 这是本地 vendored 副本的改动：上游只在 Linux 上关。
+const sandbox = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
 const browser = await puppeteer.launch({
   executablePath: CHROME, headless: true, protocolTimeout: 0,
   args: [...sandbox, '--allow-file-access-from-files', '--ignore-gpu-blocklist', ...gpu, '--enable-gpu-rasterization', '--window-size=1920,1080', '--disable-renderer-backgrounding', '--disable-background-timer-throttling']

@@ -2110,6 +2110,35 @@ def skill_checks() -> None:
           block[:40])
 
 
+def fetch_script_checks() -> None:
+    """依赖下载脚本：能定位技能包、能按平台选源（不联网）。"""
+    import importlib.util
+    import pathlib as _pathlib
+
+    script = _pathlib.Path(__file__).resolve().parents[2] / "scripts" / "fetch_animation_deps.py"
+    check("下载脚本：文件存在", script.exists(), str(script))
+    if not script.exists():
+        return
+
+    spec = importlib.util.spec_from_file_location("fetch_animation_deps", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    check("下载脚本：指向 animation 技能包",
+          module.PACKAGE_DIR.name == "animation"
+          and module.PACKAGE_DIR.parent.name == "work",
+          str(module.PACKAGE_DIR))
+    check("下载脚本：装到包内 bin/",
+          module.BIN_DIR == module.PACKAGE_DIR / "bin", str(module.BIN_DIR))
+    check("下载脚本：平台识别为中/英之一",
+          module.platform_key() in ("win64", "linux", "mac"),
+          module.platform_key())
+    check("下载脚本：ffmpeg 源是 https",
+          module.FFMPEG_WIN_URL.startswith("https://"), module.FFMPEG_WIN_URL)
+    check("下载脚本：有 dry-run 开关",
+          hasattr(module, "main") and "dry-run" in module.main.__doc__ if module.main.__doc__ else True)
+
+
 def skill_vendor_checks() -> None:
     """animation 是自包含技能包：素材在包内，依赖可放包内 bin/。"""
     import pathlib as _pathlib
@@ -2162,9 +2191,21 @@ def skill_vendor_checks() -> None:
             bin_dir.rmdir()
         registry.reload()
 
-    check("自包含：撤掉包内依赖后 animation 又隐身",
-          "animation" not in [skill.name for skill in registry.available("work")],
-          str([skill.name for skill in registry.available("work")]))
+    # 真装过依赖的机器上 bin/ 里有文件，"隐身"要人为把两个来源都清掉才测得出来
+    _real_find = capabilities.find_bundled
+    _real_probe = capabilities._probe
+    capabilities.find_bundled = lambda name, package_dir=None: None
+    capabilities._probe = lambda: {"node": False, "ffmpeg": False, "chrome": False,
+                                   "numpy": False, "python": True}
+    try:
+        registry.reload()
+        check("自包含：两个来源都没有时 animation 隐身",
+              "animation" not in [skill.name for skill in registry.available("work")],
+              str([skill.name for skill in registry.available("work")]))
+    finally:
+        capabilities.find_bundled = _real_find
+        capabilities._probe = _real_probe
+        registry.reload()
 
 
 def skill_validate_checks() -> None:
@@ -2220,6 +2261,8 @@ def skill_package_checks() -> None:
     import pathlib as _pathlib
     import tempfile
 
+    import pathlib as _pathlib
+
     from core.tools import protocol as tool_protocol
     from skills import capabilities, registry
 
@@ -2242,7 +2285,9 @@ def skill_package_checks() -> None:
     check("可插拔：大技能声明了外部依赖",
           bool(animation and set(animation.requires) >= {"node", "ffmpeg"}),
           str(animation and animation.requires))
-    usable, missing = capabilities.check(animation.requires)
+    # 依赖可能放在技能包自己的 bin/ 里，所以检查时必须带上包目录
+    _pkg = _pathlib.Path(animation.path).parent
+    usable, missing = capabilities.check(animation.requires, package_dir=_pkg)
     work_names = [skill.name for skill in registry.available("work")]
     if usable:
         check("可插拔：依赖齐全时动画在列表里", "animation" in work_names, str(work_names))
@@ -6103,6 +6148,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    fetch_script_checks()
     skill_vendor_checks()
     skill_validate_checks()
     skill_package_checks()

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -96,12 +97,42 @@ def _which(*names: str) -> Optional[str]:
     return None
 
 
+def _find_npm() -> Optional[str]:
+    """找 npm 可执行文件。
+
+    Windows 上 ``shutil.which("npm")`` 可能返回 ``npm.ps1``——那是 PowerShell 脚本，
+    subprocess 直接跑会失败（rc=4294963248）。所以优先找同目录的 ``npm.cmd``。
+    """
+    for candidate in (BIN_DIR / "npm.cmd", BIN_DIR / "npm"):
+        if candidate.is_file():
+            return str(candidate)
+
+    node = _which("node")
+    if node:
+        folder = Path(node).parent
+        for name in ("npm.cmd", "npm.bat", "npm"):
+            candidate = folder / name
+            if candidate.is_file():
+                return str(candidate)
+
+    for name in ("npm.cmd", "npm.bat", "npm"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
 def _find_chrome() -> Optional[str]:
-    # 包内自带的 Chrome 优先
-    for candidate in (BIN_DIR / "chrome" / "chrome.exe",
-                      BIN_DIR / "chrome" / "chrome",
-                      BIN_DIR / "chrome-linux64" / "chrome",
-                      BIN_DIR / "chrome.exe"):
+    # 包内自带的 Chrome 优先（含 headless-shell：比全量 Chrome 小 80MB）
+    for candidate in (
+        BIN_DIR / "chrome" / "chrome.exe",
+        BIN_DIR / "chrome" / "chrome",
+        BIN_DIR / "chrome" / "chrome-headless-shell.exe",
+        BIN_DIR / "chrome" / "chrome-headless-shell",
+        BIN_DIR / "chrome-linux64" / "chrome",
+        BIN_DIR / "chrome-headless-shell.exe",
+        BIN_DIR / "chrome.exe",
+    ):
         if candidate.is_file():
             return str(candidate)
 
@@ -225,6 +256,58 @@ def _fake_render(job_id: str, project: Path, seconds: float = 0.6) -> str:
     return str(target)
 
 
+def _job_env(project: Path) -> dict:
+    """给子进程一份干净环境：缓存和临时目录都落在项目内。
+
+    默认的 TEMP 在用户目录，沙箱（以及某些 Docker 配置）写不进去——
+    Puppeteer 建临时 profile 时会直接 EPERM。
+    """
+    cache = project / ".npm-cache"
+    temp = project / ".tmp"
+    cache.mkdir(parents=True, exist_ok=True)
+    temp.mkdir(parents=True, exist_ok=True)
+
+    env = dict(os.environ)
+    env["npm_config_cache"] = str(cache)
+    env["npm_config_logs_dir"] = str(cache / "_logs")
+    env["npm_config_update_notifier"] = "false"
+    env["TMPDIR"] = str(temp)
+    env["TEMP"] = str(temp)
+    env["TMP"] = str(temp)
+    return env
+
+
+def _ensure_node_modules(job_id: str, project: Path) -> None:
+    """第一次渲染前装依赖（p5 / p5.brush / puppeteer-core）。
+
+    上游脚手架脚本会顺手 npm install，我们这边是异步任务，所以自己补这一步。
+    装过就跳过（判断 node_modules 是否存在）。
+    """
+    node_modules = project / "node_modules"
+    if node_modules.exists() and any(node_modules.iterdir()):
+        return
+
+    npm = _find_npm()
+    if not npm:
+        raise RuntimeError("没有 npm，无法安装渲染依赖")
+
+    _touch(job_id, STAGE_SCAFFOLD, note="安装渲染依赖（首次较慢）")
+    logger.info("安装渲染依赖：%s", project)
+    env = _job_env(project)
+
+    completed = subprocess.run(
+        [npm, "install", "--no-audit", "--no-fund"],
+        cwd=str(project),
+        capture_output=True,
+        text=True,
+        timeout=int(get_settings().animation_render_timeout or 900),
+        env=env,
+    )
+    if completed.returncode != 0:
+        tail = (completed.stderr or completed.stdout or "")[-300:]
+        raise RuntimeError(f"npm install 失败（{completed.returncode}）：{tail}")
+
+
 def _real_render(job_id: str, project: Path) -> str:
     """真渲染：调技能包里的 render.mjs。"""
     node = _which("node")
@@ -241,6 +324,7 @@ def _real_render(job_id: str, project: Path) -> str:
         capture_output=True,
         text=True,
         timeout=int(get_settings().animation_render_timeout or 900),
+        env=_job_env(project),
     )
     if completed.returncode != 0:
         raise RuntimeError(
@@ -293,6 +377,8 @@ def _run_job(job_id: str) -> None:
         if caps["renderer"] == "fake":
             video = _fake_render(job_id, project)
         else:
+            _ensure_node_modules(job_id, project)
+            _touch(job_id, STAGE_RENDER, note="逐帧渲染")
             video = _real_render(job_id, project)
 
         _touch(job_id, STAGE_ENCODE)

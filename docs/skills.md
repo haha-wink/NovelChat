@@ -139,6 +139,16 @@ skills/work/animation/
 技能包 bin/  >  PATH
 ```
 
+一键下载：
+
+```bash
+python scripts/fetch_animation_deps.py             # ffmpeg + chrome-headless-shell
+python scripts/fetch_animation_deps.py --dry-run   # 干跑
+python scripts/fetch_animation_deps.py --full-chrome
+```
+
+脚本会把可执行文件放进 `bin/`，然后跑一次 `-version` 自检。
+
 所以把 `ffmpeg.exe` 丢进 `skills/work/animation/bin/`，
 这个技能立刻变成「依赖齐全」——不用改 PATH，也不用装到系统里。
 

@@ -89,9 +89,24 @@ def find_bundled(name: str, package_dir: Optional[Path]) -> Optional[str]:
         bin_dir / name / f"{name}.exe",
         bin_dir / f"{name}-linux64" / name,
     ]
+    # Chrome 有多种发行形态：完整版 chrome / headless-shell
+    if name == "chrome":
+        candidates += [
+            bin_dir / "chrome" / "chrome-headless-shell",
+            bin_dir / "chrome" / "chrome-headless-shell.exe",
+            bin_dir / "chrome-headless-shell",
+            bin_dir / "chrome-headless-shell.exe",
+        ]
     for candidate in candidates:
         if candidate.is_file():
             return str(candidate)
+    # 兜底：bin/chrome*/ 里任何名字带 chrome 的可执行文件
+    for folder in bin_dir.glob("chrome*"):
+        if not folder.is_dir():
+            continue
+        for item in folder.iterdir():
+            if item.is_file() and "chrome" in item.name.lower():
+                return str(item)
     return None
 
 

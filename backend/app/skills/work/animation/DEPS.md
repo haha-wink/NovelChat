@@ -10,6 +10,24 @@
 
 装好后重启后端，或调用 `GET /api/skills/validate` 让状态刷新。
 
+## 一键下载
+
+```bash
+python scripts/fetch_animation_deps.py            # ffmpeg + Chrome headless-shell
+python scripts/fetch_animation_deps.py --dry-run  # 只看要下什么
+python scripts/fetch_animation_deps.py --force    # 重下
+python scripts/fetch_animation_deps.py --full-chrome   # 用完整版 Chrome（200MB）
+```
+
+下载完会自动跑一次 `-version` 验证，并落到本包的 `bin/`：
+
+```
+bin/ffmpeg.exe
+bin/chrome/chrome-headless-shell.exe
+```
+
+默认用 **chrome-headless-shell**（120MB），比完整版 Chrome 小 80MB，无头渲染够用。
+
 ## 能不能放进包里
 
 可以。把可执行文件放进本包的 `bin/` 目录，引擎会**优先**用包内的：
@@ -39,3 +57,19 @@ skills/work/animation/
     ├── UPSTREAM_SKILL.md # 上游的技能说明（原样保留）
     └── LICENSE
 ```
+
+## 对上游代码的本地改动
+
+`vendor/template/render.mjs` 有一处修改：
+
+```js
+// 上游：只有 Linux 关沙箱
+const sandbox = process.platform === 'linux' ? ['--no-sandbox'] : [];
+// 本地：所有平台都关
+const sandbox = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
+```
+
+原因：容器 / 受限环境（包括 Windows 沙箱）里开着 Chrome 沙箱，
+浏览器直接起不来（Exit code 2147483651）。本地渲染不需要沙箱。
+
+其余文件保持上游原样（`UPSTREAM_SKILL.md`、`template/` 其他文件、`references/`、`scripts/`）。
