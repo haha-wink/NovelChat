@@ -32,6 +32,15 @@
         >
           清空对话和记忆
         </button>
+        <button
+          class="mode-toggle"
+          :class="{ work: mode === 'work' }"
+          :title="mode === 'work' ? '工作模式：可以调用专业技能' : '聊天模式：只有情感陪伴技能'"
+          @click="toggleMode"
+        >
+          <span class="mode-dot"></span>
+          {{ modeLabel }}
+        </button>
         <button class="ghost" :disabled="isLoading" @click="newChat">新对话</button>
       </div>
 
@@ -225,6 +234,9 @@ const {
   openChat,
   loadChatHistory,
   newChat,
+  mode,
+  modeLabel,
+  toggleMode,
   removeCharacter,
   openEditor,
   closeEditor,

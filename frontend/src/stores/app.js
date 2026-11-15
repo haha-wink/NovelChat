@@ -98,6 +98,34 @@ const group = reactive({
   sidebarDragging: false,
   conversationsLoading: false
 })
+//: 工作模式开关：chat（情感聊天，默认）/ work（可调专业技能）
+const MODE_KEY = 'novelchat.mode'
+const mode = ref('chat')
+const modeLabel = computed(() => (mode.value === 'work' ? '工作模式' : '聊天模式'))
+
+function setMode(next) {
+  const value = next === 'work' ? 'work' : 'chat'
+  mode.value = value
+  try {
+    localStorage.setItem(MODE_KEY, value)
+  } catch (storageError) {
+    // 隐私模式下忽略
+  }
+}
+
+function toggleMode() {
+  setMode(mode.value === 'work' ? 'chat' : 'work')
+}
+
+function restoreMode() {
+  try {
+    const saved = localStorage.getItem(MODE_KEY)
+    if (saved === 'work' || saved === 'chat') mode.value = saved
+  } catch (storageError) {
+    // 忽略
+  }
+}
+
 const groupContainer = ref(null)
 
 //: 书架列表（书库 → 书架 → 书）
@@ -850,7 +878,9 @@ function fetchChat(token, characterId, prompt, images, options = {}) {
     token,
     character_id: characterId,
     prompt,
-    images_base64: images.length > 0 ? images : null
+    images_base64: images.length > 0 ? images : null,
+    // 模式决定能用哪些技能：chat 只有情感类，work 才能调专业技能
+    mode: mode.value
   }
   // 断点续跑：同一个 turn_id + resume=true，后端从断点接着生成
   if (options.turnId) body.turn_id = options.turnId
@@ -1395,7 +1425,8 @@ async function sendGroupMessage() {
           prompt: text,
           images_base64: images.map((image) => image.base64),
           // 发到当前选中的对话里；后端按这个 id 落流水
-          conversation_id: group.conversationId || null
+          conversation_id: group.conversationId || null,
+          mode: mode.value
         })
       })
 
@@ -1503,6 +1534,7 @@ async function readGroupStream(response) {
 /** 启动：恢复身份 → 拉健康状态与书架 → 回到上次的群 */
 export async function bootstrap() {
   localStorage.setItem(NAME_KEY, myName.value)
+  restoreMode()
   await loadHealth()
   await loadBooks()
   if (shelves.value.length) {
@@ -1619,6 +1651,11 @@ const state = {
   clearCharacterHistory,
   ensureConversation,
   restoreSidebarWidth,
+  mode,
+  modeLabel,
+  setMode,
+  toggleMode,
+  restoreMode,
   currentSidebarWidth,
   startSidebarResize,
   resetSidebarWidth,

@@ -45,13 +45,47 @@ logger = logging.getLogger(__name__)
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.S)
 
 
+def _split_top_level(text: str) -> list[str]:
+    """按顶层逗号拆，括号里的逗号不算。
+
+    ``animation_start, {prompt: $text, style: watercolor}`` 必须拆成两段，
+    而不是四段——之前就是这里把步骤参数拆空了。
+    """
+    parts: list[str] = []
+    depth = 0
+    quote = ""
+    chunk = ""
+    for char in text:
+        if quote:
+            chunk += char
+            if char == quote:
+                quote = ""
+            continue
+        if char in "\"'":
+            quote = char
+            chunk += char
+            continue
+        if char in "[{(":
+            depth += 1
+        elif char in "]})":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append(chunk)
+            chunk = ""
+        else:
+            chunk += char
+    if chunk.strip():
+        parts.append(chunk)
+    return [part.strip() for part in parts if part.strip()]
+
+
 def _parse_scalar(text: str) -> Any:
     text = text.strip()
     if text.startswith("[") and text.endswith("]"):
         inner = text[1:-1].strip()
         if not inner:
             return []
-        return [_parse_scalar(item) for item in inner.split(",")]
+        return [_parse_scalar(item) for item in _split_top_level(inner)]
     if text.startswith("{") and text.endswith("}"):
         return _parse_inline_map(text[1:-1])
     if text in ("true", "True"):
@@ -72,22 +106,7 @@ def _parse_scalar(text: str) -> Any:
 def _parse_inline_map(text: str) -> dict:
     """解析 `{emotion: 难过, seconds: 4}` 这种一行写完的映射。"""
     result: dict[str, Any] = {}
-    depth = 0
-    chunk = ""
-    parts: list[str] = []
-    for char in text:
-        if char in "[{":
-            depth += 1
-        elif char in "]}":
-            depth -= 1
-        if char == "," and depth == 0:
-            parts.append(chunk)
-            chunk = ""
-        else:
-            chunk += char
-    if chunk.strip():
-        parts.append(chunk)
-    for part in parts:
+    for part in _split_top_level(text):
         if ":" not in part:
             continue
         key, value = part.split(":", 1)

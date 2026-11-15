@@ -55,6 +55,17 @@
           </div>
         </div>
         <div class="head-actions">
+          <button
+            class="mode-toggle"
+            :class="{ work: mode === 'work' }"
+            :title="mode === 'work'
+              ? '工作模式：可以调用专业技能（动画等），点一下回到聊天模式'
+              : '聊天模式：只有情感陪伴技能，点一下开启工作模式'"
+            @click="toggleMode"
+          >
+            <span class="mode-dot"></span>
+            {{ modeLabel }}
+          </button>
           <button class="ghost small" @click="openGroupInfo">信息</button>
         </div>
       </div>
@@ -232,6 +243,9 @@ const {
   removeShelf,
   openShelfChat,
   enterGroup,
+  mode,
+  modeLabel,
+  toggleMode,
   newConversation,
   switchConversation,
   deleteConversation,

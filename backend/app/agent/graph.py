@@ -277,8 +277,9 @@ async def skill_node(state: TurnState) -> dict:
     context = state.get("context_block") or ""
     if block:
         context = f"{context}\n\n{block}" if context else block
-        logger.debug("本轮技能：%s（%d 条素材，模式 %s）",
-                     result.skill, len(result.materials), mode)
+        if result is not None:
+            logger.debug("本轮技能：%s（%d 条素材，模式 %s）",
+                         result.skill, len(result.materials), mode)
     return {"skill_block": block, "context_block": context}
 
 

@@ -2110,6 +2110,58 @@ def skill_checks() -> None:
           block[:40])
 
 
+def mode_checks() -> None:
+    """工作模式：同一个请求，模式不同 -> 可用的技能不同。"""
+    import asyncio as _asyncio
+
+    from agent import graph as agent_graph
+
+    character = {"id": "c_mode", "name": "沈砚", "role": "剑客",
+                 "personality": ["冷静"], "speech_style": "", "background": ""}
+
+    async def _fake(_state):
+        yield "嗯。"
+
+    async def _run(text: str, mode: str) -> dict:
+        final: dict = {}
+        async for kind, chunk in agent_graph.get_turn_graph().astream(
+            {
+                "user_id": "u_mode", "user_name": "读", "character": character,
+                "book_title": "b", "shelf_id": "", "raw_text": text,
+                "image_urls": [], "api_key": "k", "model": "m",
+                "extra_context": "", "persist": False, "session_id": "s",
+                "mode": mode,
+            },
+            config={"configurable": {
+                "thread_id": f"mode-{mode}-{abs(hash(text)) % 9999}",
+                "llm": _fake, "summarizer": None}, "recursion_limit": 100},
+            stream_mode=["custom", "values"],
+        ):
+            if kind == "values" and isinstance(chunk, dict) and chunk.get("reply"):
+                final = chunk
+        return final
+
+    text = "帮我做一段水彩动画，雨夜的车站"
+    chat_state = _asyncio.run(_run(text, "chat"))
+    work_state = _asyncio.run(_run(text, "work"))
+    chat_block = str(chat_state.get("skill_block") or "")
+    work_block = str(work_state.get("skill_block") or "")
+
+    check("模式：聊天模式下不会起动画任务",
+          "动画" not in chat_block, chat_block[:80])
+    check("模式：工作模式下会起动画任务",
+          "动画" in work_block, work_block[:80])
+    check("模式：两种模式的素材不一样", chat_block != work_block,
+          f"{chat_block[:40]} / {work_block[:40]}")
+
+    # 安全技能不受模式影响
+    crisis_state = _asyncio.run(_run("我真的不想活了", "work"))
+    crisis_block = str(crisis_state.get("skill_block") or "")
+    check("模式：工作模式下危机仍然给求助渠道",
+          "12356" in crisis_block or "热线" in crisis_block or "信得过" in crisis_block,
+          crisis_block[:80])
+
+
 def animation_checks() -> None:
     """动画技能：能力探测、异步任务、技能层接入（用假渲染器，不碰 node/ffmpeg）。"""
     import pathlib as _pathlib
@@ -5815,6 +5867,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    mode_checks()
     animation_checks()
     conversation_checks()
     clear_conversation_checks()

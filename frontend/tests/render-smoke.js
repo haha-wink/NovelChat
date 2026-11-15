@@ -41,6 +41,7 @@ function seed(app) {
     character_count: 3, char_count: 318602, progress: 100, stage: '完成'
   }]
   app.uploadShelfId.value = 'shelf_1'
+  app.setMode('work')   // 渲染工作模式下的开关状态
 
   app.group.shelfId = 'shelf_1'
   app.group.shelfTitle = '龙族大家庭'
