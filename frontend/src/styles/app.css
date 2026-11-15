@@ -529,33 +529,56 @@ button.small { padding: 5px 10px; font-size: 12px; }
 /* ---------- 群聊左侧：对话列表 ---------- */
 .group-layout {
   display: flex;
-  gap: 12px;
+  flex-direction: row;   /* .chat-page 默认是 column，这里必须显式覆盖 */
+  gap: 0;
   align-items: stretch;
+  /* 覆盖 .page 的居中：这一页要从窗口左边开始 */
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 0;
 }
 
 .group-main {
-  flex: 1;
+  /* 聊天区保持原宽度，正好接在会话栏右边，右侧留白与之对称。
+     border-box 让 860 含内边距，和改版前的内容宽度一致 */
+  flex: 0 1 860px;
+  max-width: 860px;
+  box-sizing: border-box;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  padding: 24px 28px 0;
 }
 
+/* 会话栏从窗口左边缘开始，右边缘正好接上聊天区的左边缘。
+   宽度 = (视口 - 聊天区宽) / 2，再夹在 200~460 之间防止窄屏太挤。 */
 .conv-sidebar {
-  width: 190px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  /* 正好等于「窗口左边 -> 聊天区左边」这一段：
+     100vw 减去聊天区宽度后对半分，聊天区就自然居中，
+     会话栏的右边缘也就是聊天区的左边缘 */
+  width: calc((100vw - 860px) / 2);
+  min-width: 200px;
+  max-width: 760px;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 8px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid var(--line, rgba(0, 0, 0, 0.08));
-  max-height: calc(100vh - 150px);
+  padding: 20px 20px 20px 24px;
+  border-radius: 0;
+  border-right: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+  background: rgba(255, 255, 255, 0.72);
+  min-height: 100vh;
+  max-height: 100vh;
+  position: sticky;
+  top: 0;
   overflow-y: auto;
 }
 
 .conv-new {
   width: 100%;
+  max-width: 460px;
   padding: 9px 10px;
   border-radius: 10px;
   border: 1px dashed rgba(90, 120, 200, 0.45);
@@ -582,6 +605,7 @@ button.small { padding: 5px 10px; font-size: 12px; }
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-width: 460px;
 }
 
 .conv-item {
@@ -639,16 +663,37 @@ button.small { padding: 5px 10px; font-size: 12px; }
   color: #b4453c;
 }
 
+@media (max-width: 1180px) {
+  /* 窄屏没有"左段"可取，会话栏堆到聊天区上方 */
+  .conv-sidebar {
+    width: 100%;
+    min-height: 0;
+    max-height: 150px;
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+    padding: 12px 14px;
+  }
+  .group-main {
+    max-width: none;
+    flex: 1 1 100%;
+    padding: 16px 16px 0;
+  }
+  .conv-list {
+    flex-direction: row;
+  }
+  .conv-item {
+    min-width: 140px;
+  }
+}
+
 @media (max-width: 720px) {
   .group-layout {
     flex-direction: column;
-  }
-  .conv-sidebar {
-    width: 100%;
-    max-height: 140px;
-    flex-direction: row;
-    align-items: center;
-    overflow-x: auto;
   }
   .conv-list {
     flex-direction: row;
