@@ -84,6 +84,11 @@ _JOBS: dict[str, dict] = {}
 # ---------------------------------------------------------------------------
 
 def _which(*names: str) -> Optional[str]:
+    """先找包内 bin/，再找 PATH。"""
+    for name in names:
+        for candidate in (BIN_DIR / name, BIN_DIR / f"{name}.exe"):
+            if candidate.is_file():
+                return str(candidate)
     for name in names:
         found = shutil.which(name)
         if found:
@@ -92,6 +97,14 @@ def _which(*names: str) -> Optional[str]:
 
 
 def _find_chrome() -> Optional[str]:
+    # 包内自带的 Chrome 优先
+    for candidate in (BIN_DIR / "chrome" / "chrome.exe",
+                      BIN_DIR / "chrome" / "chrome",
+                      BIN_DIR / "chrome-linux64" / "chrome",
+                      BIN_DIR / "chrome.exe"):
+        if candidate.is_file():
+            return str(candidate)
+
     candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -106,11 +119,25 @@ def _find_chrome() -> Optional[str]:
     return None
 
 
+#: 本技能包目录（engine.py 所在位置）
+PACKAGE_DIR = Path(__file__).resolve().parent
+#: 包内自带的引擎素材
+VENDOR_DIR = PACKAGE_DIR / "vendor"
+#: 可选：把 ffmpeg / chrome 放进这里，包就完全自包含
+BIN_DIR = PACKAGE_DIR / "bin"
+
+
 def skill_dir() -> Path:
-    """技能包目录（含 SKILL.md / template/）。"""
+    """上游引擎目录（要有 template/）。
+
+    优先级：配置 > 包内 vendor/ > 老位置 _external/ai--main。
+    包内带了一份拷贝，所以整个技能包可以单独拷走。
+    """
     configured = (get_settings().animation_skill_dir or "").strip()
     if configured:
         return Path(configured)
+    if (VENDOR_DIR / "template").exists():
+        return VENDOR_DIR
     return PROJECT_ROOT / "_external" / "ai--main"
 
 
@@ -122,13 +149,21 @@ def capabilities() -> dict:
     ffmpeg = _which("ffmpeg")
     chrome = _find_chrome()
     root = skill_dir()
-    has_package = (root / "SKILL.md").exists()
+    # 包内 vendor/ 没有自己的 SKILL.md（上游那份改名 UPSTREAM_SKILL.md），
+    # 所以按"有没有 template/"判断素材齐不齐
+    has_package = (root / "template").exists() or (root / "SKILL.md").exists()
     ok = fake or bool(node and ffmpeg and chrome and has_package)
+    bundled = sorted(
+        item.name for item in BIN_DIR.iterdir()
+    ) if BIN_DIR.exists() else []
     return {
         "renderer": "fake" if fake else "real",
         "available": ok,
         "skill_dir": str(root),
         "skill_package": has_package,
+        #: 包内 bin/ 里放了什么（ffmpeg.exe / chrome/ …）
+        "bundled": bundled,
+        "self_contained": bool(bundled) or has_package,
         "node": node or "",
         "ffmpeg": ffmpeg or "",
         "chrome": chrome or "",

@@ -2110,6 +2110,63 @@ def skill_checks() -> None:
           block[:40])
 
 
+def skill_vendor_checks() -> None:
+    """animation 是自包含技能包：素材在包内，依赖可放包内 bin/。"""
+    import pathlib as _pathlib
+    import shutil as _shutil
+    import tempfile
+
+    import skills.work.animation.engine as animation
+    from skills import capabilities, registry
+
+    package = _pathlib.Path(animation.PACKAGE_DIR)
+    check("自包含：引擎素材在技能包内",
+          (package / "vendor" / "template" / "render.mjs").exists(),
+          str(package / "vendor"))
+    check("自包含：分镜与像素参考也在包内",
+          (package / "vendor" / "references" / "lyric-storyboard.md").exists())
+    check("自包含：保留上游许可",
+          (package / "vendor" / "LICENSE").exists())
+    check("自包含：有依赖说明", (package / "DEPS.md").exists())
+    check("自包含：engine 解析到包内 vendor",
+          _pathlib.Path(animation.skill_dir()).name == "vendor",
+          str(animation.skill_dir()))
+
+    caps = animation.capabilities()
+    check("自包含：能力探测认得包内素材",
+          caps["skill_package"] and caps["self_contained"], str(caps)[:120])
+
+    # ---- 把依赖放进包内 bin/，应当被认出来 ----
+    bin_dir = package / "bin"
+    created = not bin_dir.exists()
+    bin_dir.mkdir(exist_ok=True)
+    stub_ffmpeg = bin_dir / "ffmpeg.exe"
+    stub_chrome = bin_dir / "chrome.exe"
+    try:
+        stub_ffmpeg.write_text("stub", encoding="ascii")
+        stub_chrome.write_text("stub", encoding="ascii")
+        found = capabilities.find_bundled("ffmpeg", package)
+        check("自包含：包内 bin/ 的 ffmpeg 能被找到", bool(found), str(found))
+        ok, missing = capabilities.check(
+            ("ffmpeg", "chrome"), package_dir=package)
+        check("自包含：依赖放包里就算齐全", ok and not missing, str(missing))
+
+        registry.reload()
+        check("自包含：包内放齐后 animation 变可用",
+              "animation" in [skill.name for skill in registry.available("work")],
+              str([skill.name for skill in registry.available("work")]))
+    finally:
+        stub_ffmpeg.unlink(missing_ok=True)
+        stub_chrome.unlink(missing_ok=True)
+        if created and bin_dir.exists() and not any(bin_dir.iterdir()):
+            bin_dir.rmdir()
+        registry.reload()
+
+    check("自包含：撤掉包内依赖后 animation 又隐身",
+          "animation" not in [skill.name for skill in registry.available("work")],
+          str([skill.name for skill in registry.available("work")]))
+
+
 def skill_validate_checks() -> None:
     """SKILL.md 校验：写错要能被抓出来，内置技能要全绿。"""
     import tempfile
@@ -6046,6 +6103,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    skill_vendor_checks()
     skill_validate_checks()
     skill_package_checks()
     mode_checks()

@@ -109,6 +109,39 @@ D:/my-skills/{a,b,c}/SKILL.md      ← 一组技能
 
 外部技能同样走 `requires` / `modes` 过滤，行为与内置完全一致。
 
+## 4.5 自包含大技能（animation 就是这么做的）
+
+大技能可以把**引擎素材和依赖都放进自己的包里**，拷走目录就能用：
+
+```
+skills/work/animation/
+├── SKILL.md              # 技能声明
+├── engine.py             # 工具实现
+├── DEPS.md               # 依赖说明 + 怎么放
+├── bin/                  # 可选：ffmpeg.exe / chrome/
+└── vendor/               # 上游引擎（MIT, John Heibel）
+    ├── template/         # p5.js 渲染模板
+    ├── references/       # 分镜 / 音乐视频 / 像素 MV 写法
+    ├── scripts/          # new_project.sh、beat_grid.py
+    ├── examples/         # 完整例子
+    └── LICENSE
+```
+
+查找顺序（`engine.skill_dir()`）：
+
+```
+配置 ANIMATION_SKILL_DIR  >  包内 vendor/  >  老位置 _external/ai--main
+```
+
+依赖查找顺序（`capabilities.check`）：
+
+```
+技能包 bin/  >  PATH
+```
+
+所以把 `ffmpeg.exe` 丢进 `skills/work/animation/bin/`，
+这个技能立刻变成「依赖齐全」——不用改 PATH，也不用装到系统里。
+
 ## 5. 依赖声明与自动隐身
 
 大技能在 `SKILL.md` 里声明依赖：

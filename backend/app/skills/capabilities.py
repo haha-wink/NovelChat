@@ -75,12 +75,44 @@ def refresh() -> None:
     _probe.cache_clear()
 
 
-def check(requires: list[str] | tuple[str, ...]) -> tuple[bool, list[str]]:
-    """检查一组依赖是否齐全。返回 (是否齐全, 缺哪些)。"""
+def find_bundled(name: str, package_dir: Optional[Path]) -> Optional[str]:
+    """在技能包的 bin/ 里找依赖（自包含包用）。"""
+    if package_dir is None:
+        return None
+    bin_dir = Path(package_dir) / "bin"
+    if not bin_dir.exists():
+        return None
+    candidates = [
+        bin_dir / name,
+        bin_dir / f"{name}.exe",
+        bin_dir / name / name,
+        bin_dir / name / f"{name}.exe",
+        bin_dir / f"{name}-linux64" / name,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def check(
+    requires: list[str] | tuple[str, ...],
+    *,
+    package_dir: Optional[Path] = None,
+) -> tuple[bool, list[str]]:
+    """检查一组依赖是否齐全。返回 (是否齐全, 缺哪些)。
+
+    ``package_dir`` 给了就先看这个技能包自带的 ``bin/``——支持"依赖放包里"。
+    """
     if not requires:
         return True, []
     probed = _probe()
-    missing = [name for name in requires if not probed.get(name, False)]
+    missing = []
+    for name in requires:
+        if find_bundled(name, package_dir):
+            continue
+        if not probed.get(name, False):
+            missing.append(name)
     return (not missing), missing
 
 

@@ -127,9 +127,12 @@ def get(name: str) -> Optional[Skill]:
 
 
 def _usable(skill: Skill) -> tuple[bool, list[str]]:
+    from pathlib import Path as _Path
+
     from skills import capabilities
 
-    return capabilities.check(skill.requires)
+    package_dir = _Path(skill.path).parent if skill.path else None
+    return capabilities.check(skill.requires, package_dir=package_dir)
 
 
 def available(mode: str = "chat") -> list[Skill]:
