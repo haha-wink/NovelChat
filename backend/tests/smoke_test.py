@@ -2108,6 +2108,99 @@ def skill_checks() -> None:
           block[:40])
 
 
+def animation_checks() -> None:
+    """动画技能：能力探测、异步任务、技能层接入（用假渲染器，不碰 node/ffmpeg）。"""
+    import pathlib as _pathlib
+    import time as _time
+
+    from core import tool_protocol
+    from services import animation, skills
+
+    caps = animation.capabilities()
+    check("动画：能力探测字段齐全",
+          {"renderer", "available", "missing"} <= set(caps), str(caps))
+    check("动画：三个工具都注册了",
+          {"animation_start", "animation_status", "animation_capabilities"}
+          <= set(tool_protocol.names()), str(tool_protocol.names()))
+
+    # --- 缺依赖时不能说"开做了" ---
+    original_caps = animation.capabilities
+    try:
+        animation.capabilities = lambda: {
+            "renderer": "real", "available": False, "missing": ["ffmpeg"],
+            "skill_dir": "", "skill_package": False, "node": "", "chrome": "",
+        }
+        missing = tool_protocol.execute("animation_start", {"prompt": "做个动画"})
+        check("动画：缺依赖时如实说缺什么",
+              missing["ok"] and missing.get("ready") is False
+              and "ffmpeg" in str(missing.get("text")),
+              str(missing))
+
+        # --- 有了假渲染器：整条链路跑通 ---
+        animation.capabilities = lambda: {
+            "renderer": "fake", "available": True, "missing": [],
+            "skill_dir": "", "skill_package": True, "node": "", "chrome": "",
+        }
+        started = tool_protocol.execute(
+            "animation_start", {"prompt": "帮我做一段水彩动画：雨夜车站"})
+        check("动画：起任务立刻返回 job_id（不等渲染）",
+              started["ok"] and started.get("job_id"), str(started)[:120])
+
+        job_id = started["job_id"]
+        final = None
+        for _ in range(60):
+            _time.sleep(0.1)
+            final = animation.job_status(job_id)
+            if final and final["stage"] in ("done", "failed", "awaiting_confirmation"):
+                break
+        check("动画：任务能跑到 done", bool(final) and final["stage"] == "done",
+              str(final and final.get("stage")))
+        check("动画：产物文件存在",
+              bool(final) and _pathlib.Path(final.get("video") or "").exists(),
+              str(final and final.get("video")))
+        check("动画：分镜文件写出来了",
+              bool(final) and (_pathlib.Path(final["dir"]) / "STORYBOARD.md").exists())
+
+        status = tool_protocol.execute("animation_status", {"job_id": job_id})
+        check("动画：状态查询能拿到产物路径",
+              status["ok"] and "video" in str(status.get("text")), str(status)[:120])
+
+        # --- 歌词 MV 要先确认分镜 ---
+        gated = tool_protocol.execute(
+            "animation_start", {"prompt": "给我做一段歌词 MV，配这首歌"})
+        gated_final = None
+        for _ in range(40):
+            _time.sleep(0.1)
+            gated_final = animation.job_status(gated["job_id"])
+            if gated_final and gated_final["stage"] in ("awaiting_confirmation", "done", "failed"):
+                break
+        check("动画：歌词 MV 停在等确认分镜",
+              bool(gated_final) and gated_final["stage"] == "awaiting_confirmation",
+              str(gated_final and gated_final.get("stage")))
+    finally:
+        animation.capabilities = original_caps
+
+    # --- 第③层：技能选择 ---
+    act = skills.choose({"text": "帮我做一段水彩动画，雨夜的车站",
+                         "intent": "chat", "emotion": "平静", "crisis": False})
+    check("动画：有动作词时选中 animation",
+          act is not None and act.name == "animation", str(act and act.name))
+
+    no_action = skills.choose({"text": "我看视频也难受",
+                               "intent": "vent", "emotion": "难过", "crisis": False})
+    check("动画：只是提到视频不抢情绪安慰",
+          no_action is not None and no_action.name == "comfort",
+          str(no_action and no_action.name))
+
+    crisis = skills.choose({"text": "帮我做个动画", "intent": "crisis",
+                            "emotion": "难过", "crisis": True})
+    check("动画：危机时不抢戏", crisis is not None and crisis.name == "steady",
+          str(crisis and crisis.name))
+
+    names = [item["name"] for item in skills.describe()["skills"]]
+    check("动画：已出现在技能清单里", "animation" in names, str(names))
+
+
 def conversation_checks() -> None:
     """一个书架多个对话：建、列、切、删，互不串。"""
     dbmod.init_db()
@@ -5711,6 +5804,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    animation_checks()
     conversation_checks()
     clear_conversation_checks()
     time_tool_checks()

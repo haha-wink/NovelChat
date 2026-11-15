@@ -174,6 +174,13 @@ class Settings(BaseSettings):
     #: 未蒸馏的对话条数超过它就自动蒸馏；0 = 关闭自动蒸馏
     #: 自动蒸馏阈值：0 = 关闭。记忆改由"清空对话"时蒸馏（用户要求不再用固定阈值）
     chat_distill_threshold: int = 0
+
+    #: 动画技能包的目录（默认 <repo>/_external/ai--main）
+    animation_skill_dir: str = ""
+    #: auto = 检测 node/ffmpeg/Chrome；fake = 测试用假渲染器
+    animation_renderer: str = "auto"
+    #: 单次渲染超时（秒），整片渲染很慢
+    animation_render_timeout: int = 900
     #: 蒸馏后保留最近几天的对话原文
     chat_retention_days: int = 7
 

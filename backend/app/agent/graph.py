@@ -241,6 +241,8 @@ async def skill_node(state: TurnState) -> dict:
             "intent": getattr(signals, "intent", "chat"),
             "intensity": getattr(signals, "intensity", 0.0),
             "crisis": getattr(signals, "crisis", False),
+            # 技能判据要用原话（比如"帮我做个动画"）
+            "text": state.get("text") or "",
         }
 
     try:

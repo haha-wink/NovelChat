@@ -178,6 +178,33 @@ def _when_suggest(signals: dict) -> float:
     return 0.8 if signals.get("intent") == "seek_help" else 0.0
 
 
+#: 用户明确"要做"的动作词——光提到"视频"不算
+_ANIMATION_ACTIONS = ("帮我做", "给我做", "做一个", "做一段", "生成", "剪一段",
+                      "做动画", "做个动画", "渲染", "做成视频")
+
+
+def _when_animation(signals: dict) -> float:
+    """用户要一段动画/短片时命中。
+
+    长任务技能：这里只判断"该不该起"，真正跑在后台线程
+    （见 services/animation.py）。
+    """
+    if signals.get("crisis"):
+        return 0.0
+    text = str(signals.get("text") or "")
+    if not text:
+        return 0.0
+    # 延迟导入：避免动画模块的依赖在纯聊天链路上被加载
+    from services import animation
+
+    if not any(hint in text for hint in animation.ANIMATION_HINTS):
+        return 0.0
+    # 有明确动作词才算"要我动手做"
+    if any(word in text for word in _ANIMATION_ACTIONS):
+        return 0.85
+    return 0.55
+
+
 SKILLS: dict[str, Skill] = {
     "comfort": Skill(
         name="comfort",
@@ -193,6 +220,12 @@ SKILLS: dict[str, Skill] = {
         description="危机：给现实求助渠道，稳住对方",
         when=_when_steady,
         steps=[("crisis_helpline", {"region": "中国"})],
+    ),
+    "animation": Skill(
+        name="animation",
+        description="用户要一段动画/短片/动图：起一个后台渲染任务，先把进度告诉用户",
+        when=_when_animation,
+        steps=[("animation_start", {"prompt": "", "style": ""})],
     ),
     "suggest": Skill(
         name="suggest",
@@ -225,6 +258,9 @@ def run_for(signals: dict, *, extra: Optional[dict] = None) -> Optional[SkillRes
     context = {
         "emotion": (signals or {}).get("emotion") or "难过",
         "topic": (extra or {}).get("topic") or "",
+        # 动画技能要用用户原话当 prompt
+        "prompt": (signals or {}).get("text") or "",
+        "style": (extra or {}).get("style") or "watercolor",
         **(extra or {}),
     }
     return skill.run(context)

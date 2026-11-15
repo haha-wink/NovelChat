@@ -46,3 +46,6 @@ out.json
 \.idea/
 torchinductor_*/
 frontend/.ssr-check/
+
+# 外部参考仓库（只读，不入库）
+_external/

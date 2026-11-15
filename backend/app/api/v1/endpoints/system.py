@@ -39,6 +39,15 @@ def build_info() -> dict:
     }
 
 
+def animation_describe() -> dict:
+    from services import animation
+
+    try:
+        return animation.describe()
+    except Exception:  # noqa: BLE001 - 动画模块出问题不能拖垮 health
+        return {"available": False, "error": "动画模块未就绪"}
+
+
 def angles_describe() -> dict:
     """发言分工清单。"""
     from services import angles
@@ -46,10 +55,45 @@ def angles_describe() -> dict:
     return angles.describe()
 
 
+@router.get("/animation/capabilities")
+async def animation_capabilities() -> dict:
+    """这台机器能不能渲动画。"""
+    from services import animation
+
+    return await anyio.to_thread.run_sync(animation.capabilities)
+
+
+@router.get("/animation")
+async def animation_jobs(limit: int = 20) -> list[dict]:
+    from services import animation
+
+    return await anyio.to_thread.run_sync(
+        functools.partial(animation.list_jobs, limit=limit)
+    )
+
+
+@router.get("/animation/{job_id}")
+async def animation_job(job_id: str) -> dict:
+    from services import animation
+
+    job = await anyio.to_thread.run_sync(animation.job_status, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return job
+
+
+@router.post("/animation/{job_id}/confirm")
+async def animation_confirm(job_id: str) -> dict:
+    """歌词/MV 类任务：确认分镜后继续渲染。"""
+    from services import animation
+
+    return await anyio.to_thread.run_sync(animation.confirm, job_id)
+
+
 def tools_describe() -> dict:
     """工具层清单（协议层 + 框架层）。"""
     from agent.tools import langgraph_tools
-    from services import intent, skills, time_tools  # noqa: F401 - 导入即注册工具
+    from services import animation, intent, skills, time_tools  # noqa: F401 - 导入即注册工具
 
     return langgraph_tools.describe()
 
@@ -76,6 +120,7 @@ async def health() -> dict:
         "status": "ok",
         # 对话工作流跑在哪张图上（节点顺序一目了然）
         "build": build_info(),
+        "animation": animation_describe(),
         "workflow": agent_graph.describe(),
         "group_workflow": agent_group_graph.describe(),
         "group_tuning": {
