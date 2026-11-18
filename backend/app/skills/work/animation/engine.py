@@ -631,10 +631,15 @@ def delete_job(job_id: str) -> dict:
     job = job_status(job_id)
     if not job:
         return {"ok": False, "error": "任务不存在"}
-    stamp_path = Path(str(job.get("dir") or "")) / "status.json"
-    stamp = stamp_path.stat().st_mtime if stamp_path.exists() else 0.0
-    stale = (time.time() - stamp) > 6 * 3600 if stamp else True
-    if job.get("stage") not in ("done", "failed") and not stale:
+    # 真正在跑 = 本进程里有活的任务对象。进程重启后残留的目录虽然状态写着
+    # "render"，其实早就是僵尸了，必须允许删（否则用户永远清不掉）
+    live = job_id in _JOBS
+    recent = False
+    if live:
+        stamp_path = Path(str(job.get("dir") or "")) / "status.json"
+        stamp = stamp_path.stat().st_mtime if stamp_path.exists() else 0.0
+        recent = (time.time() - stamp) < 10 * 60
+    if live and recent and job.get("stage") not in ("done", "failed"):
         return {"ok": False, "error": "任务还在跑，等它结束再删"}
 
     folder = Path(str(job.get("dir") or "")) or (jobs_dir() / job_id)
@@ -657,7 +662,8 @@ def cleanup(keep: int = 10, max_mb: int = 2000, stale_hours: float = 6.0) -> dic
 
     只动 done / failed 的；正在跑的一律不碰。
     """
-    keep = max(1, int(keep))
+    # keep=0 表示一个都不留
+    keep = max(0, int(keep))
     folders = _job_folders()
 
     def size_of(folder: Path) -> int:
@@ -682,7 +688,7 @@ def cleanup(keep: int = 10, max_mb: int = 2000, stale_hours: float = 6.0) -> dic
         running = job.get("stage") not in ("done", "failed", None)
         # 卡在"渲染中"但几小时没动静的，是进程被杀留下的僵尸，按垃圾处理
         stale = running and (now - stamp) > stale_hours * 3600
-        if running and not stale:
+        if running and not stale and job_id in _JOBS:
             kept.append(job_id)
             continue
 

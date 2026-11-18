@@ -136,6 +136,16 @@ def _serve_video(path: Path, request: Request, *, download: bool) -> Response:
 
 
 
+@router.delete("/animation")
+async def animation_clear() -> dict:
+    """清空所有任务（含目录）。正在本进程里跑的仍然会被挡住。"""
+    import skills.work.animation.engine as animation_engine
+
+    return await anyio.to_thread.run_sync(
+        functools.partial(animation_engine.cleanup, keep=0, max_mb=0)
+    )
+
+
 @router.get("/animation/stats")
 async def animation_stats() -> dict:
     """任务占用：多少个、共多大（任务栏用）。"""

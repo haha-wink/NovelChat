@@ -2111,7 +2111,12 @@ def skill_checks() -> None:
 
 
 def task_cleanup_checks() -> None:
-    """任务清理：删单个、按数量/体积回收、正在跑的不能删。"""
+    """任务清理：删单个 / 全删 / 僵尸 / 在跑的保护。
+
+    **全部在临时目录里做**：绝不能碰用户真实的 data/animation
+    （之前就因为这个把用户的成片全删了）。
+    """
+    import json as _json
     import pathlib as _pathlib
     import tempfile
 
@@ -2122,51 +2127,86 @@ def task_cleanup_checks() -> None:
           isinstance(stats.get("count"), int) and "total_mb" in stats,
           str(stats))
 
-    # ---- 正在跑的任务拒绝删除 ----
+    real_jobs_dir = animation_engine.jobs_dir
     with tempfile.TemporaryDirectory() as folder:
-        job_dir = _pathlib.Path(folder) / "anim_1234567890ab"
-        job_dir.mkdir(parents=True)
-        (job_dir / "status.json").write_text(
-            '{"id": "anim_1234567890ab", "stage": "render", "dir": "%s"}'
-            % str(job_dir).replace("\\", "\\\\"),
-            encoding="utf-8",
-        )
-        animation_engine._JOBS["anim_1234567890ab"] = {
-            "id": "anim_1234567890ab", "stage": "render", "dir": str(job_dir),
-        }
+        sandbox = _pathlib.Path(folder)
+        animation_engine.jobs_dir = lambda: sandbox
         try:
-            refused = animation_engine.delete_job("anim_1234567890ab")
-            check("任务：正在跑的不让删",
+            def make(job_id: str, stage: str) -> _pathlib.Path:
+                job_dir = sandbox / job_id
+                job_dir.mkdir(parents=True, exist_ok=True)
+                (job_dir / "status.json").write_text(
+                    _json.dumps({"id": job_id, "stage": stage, "dir": str(job_dir)},
+                                ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                return job_dir
+
+            # 本进程里真的在跑 -> 拒绝
+            running_dir = make("anim_aaaaaaaabbbb", "render")
+            animation_engine._JOBS["anim_aaaaaaaabbbb"] = {
+                "id": "anim_aaaaaaaabbbb", "stage": "render", "dir": str(running_dir),
+            }
+            refused = animation_engine.delete_job("anim_aaaaaaaabbbb")
+            check("任务：本进程在跑的不让删",
                   not refused.get("ok") and "还在跑" in str(refused.get("error")),
                   str(refused))
 
-            animation_engine._JOBS["anim_1234567890ab"]["stage"] = "done"
-            removed = animation_engine.delete_job("anim_1234567890ab")
+            animation_engine._JOBS["anim_aaaaaaaabbbb"]["stage"] = "done"
+            removed = animation_engine.delete_job("anim_aaaaaaaabbbb")
             check("任务：结束的可以删", removed.get("ok"), str(removed))
-            check("任务：目录真的没了", not job_dir.exists(), str(job_dir))
+            check("任务：目录真的没了", not running_dir.exists(), str(running_dir))
+
+            # 进程重启后残留的目录：状态写着 render，但 _JOBS 里没有 -> 僵尸，能删
+            make("anim_ccccccccdddd", "scaffold")
+            zombie = animation_engine.delete_job("anim_ccccccccdddd")
+            check("任务：重启剩下的僵尸任务能删", zombie.get("ok"), str(zombie))
+
+            # 全删：keep=0
+            for index in range(3):
+                make(f"anim_10000000000{index}", "done")
+            cleared = animation_engine.cleanup(keep=0, max_mb=0)
+            check("任务：keep=0 可以全删",
+                  cleared.get("ok") and animation_engine.stats()["count"] == 0,
+                  str({"cleared": cleared, "left": animation_engine.stats()}))
+
+            # 按数量回收
+            for index in range(6):
+                make(f"anim_20000000000{index}", "done")
+            trimmed = animation_engine.cleanup(keep=3, max_mb=99999)
+            check("任务：按数量只留最近的",
+                  trimmed.get("ok") and animation_engine.stats()["count"] == 3,
+                  str({"trimmed": trimmed, "left": animation_engine.stats()}))
         finally:
-            animation_engine._JOBS.pop("anim_1234567890ab", None)
+            animation_engine.jobs_dir = real_jobs_dir
+            animation_engine._JOBS.pop("anim_aaaaaaaabbbb", None)
 
     missing = animation_engine.delete_job("anim_ffffffffffff")
     check("任务：删不存在的返回失败", not missing.get("ok"), str(missing))
 
-    result = animation_engine.cleanup(keep=6, max_mb=1500)
-    check("任务：清理返回删除清单和回收体积",
-          result.get("ok") and "removed" in result and "freed_mb" in result,
-          str(result))
-    check("任务：清理后不超上限",
-          animation_engine.stats()["count"] <= max(6, len(result.get("removed", [])) + 6),
-          str(animation_engine.stats()))
+    # 真实目录只做"不删任何东西"的安全调用：keep 和上限都给足
+    safe = animation_engine.cleanup(keep=9999, max_mb=999999)
+    check("任务：上限给足时不误删",
+          safe.get("ok") and not safe.get("removed"), str(safe))
 
 
 async def video_route_checks() -> None:
     """成片出口：能播放、能下载、能拖进度条，任务号不能穿越。"""
     import skills.work.animation.engine as animation_engine
 
-    jobs = animation_engine.list_jobs(limit=30)
-    done = next((job for job in jobs if job.get("video")), None)
+    import pathlib as _pathlib
+
+    jobs = animation_engine.list_jobs(limit=40)
+    # 假渲染器产出的占位文件只有几十字节，Range 测试没意义，要挑真成片
+    done = next(
+        (job for job in jobs
+         if job.get("video")
+         and _pathlib.Path(job["video"]).is_file()
+         and _pathlib.Path(job["video"]).stat().st_size > 4096),
+        None,
+    )
     if done is None:
-        print("  · 跳过成片路由检查（这台机器还没渲染出过成片）")
+        print("  · 跳过成片路由检查（还没有真实的成片）")
         return
 
     job_id = done["id"]
@@ -2512,12 +2552,20 @@ def mode_checks() -> None:
 
 
 def animation_checks() -> None:
-    """动画技能：能力探测、异步任务、技能层接入（用假渲染器，不碰 node/ffmpeg）。"""
+    """动画技能：能力探测、异步任务、技能层接入（用假渲染器，不碰 node/ffmpeg）。
+
+    **任务目录挂在临时目录里**：否则每跑一次自检，就在用户真实的
+    data/animation 里堆一堆假任务（之前就踩过）。
+    """
     import pathlib as _pathlib
+    import tempfile as _tempfile
     import time as _time
 
     from core.tools import protocol as tool_protocol
     import skills.work.animation.engine as animation
+
+    _sandbox = _tempfile.TemporaryDirectory(prefix="anim-test-", ignore_cleanup_errors=True)
+    animation.jobs_dir = lambda: _pathlib.Path(_sandbox.name)
 
     caps = animation.capabilities()
     check("动画：能力探测字段齐全",

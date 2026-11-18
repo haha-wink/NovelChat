@@ -1106,6 +1106,20 @@ async function deleteTask(jobId) {
   }
 }
 
+async function clearAllTasks() {
+  taskPanel.loading = true
+  try {
+    const result = await api('/api/animation', { method: 'DELETE' })
+    await loadTasks()
+    return result
+  } catch (failure) {
+    taskPanel.error = failure.message
+    return null
+  } finally {
+    taskPanel.loading = false
+  }
+}
+
 async function cleanupTasks() {
   taskPanel.loading = true
   try {
@@ -1847,6 +1861,7 @@ const state = {
   loadTasks,
   deleteTask,
   cleanupTasks,
+  clearAllTasks,
   toggleTaskPanel,
   restoreTaskWidth,
   currentTaskWidth,

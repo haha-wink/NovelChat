@@ -221,8 +221,21 @@
           <button class="ghost small" :disabled="taskPanel.loading" @click="loadTasks">
             {{ taskPanel.loading ? '刷新中…' : '刷新' }}
           </button>
-          <button class="ghost small" :disabled="taskPanel.loading" @click="cleanupTasks">
-            清理旧任务
+          <button
+            class="ghost small"
+            :disabled="taskPanel.loading"
+            title="只留最近 8 个，其余删掉"
+            @click="cleanupTasks"
+          >
+            清理旧的
+          </button>
+          <button
+            class="ghost small danger"
+            :disabled="taskPanel.loading || !taskPanel.jobs.length"
+            title="删掉所有任务和成片文件"
+            @click="clearAllTasks"
+          >
+            全部删除
           </button>
         </div>
 
@@ -330,6 +343,7 @@ const {
   restoreTaskWidth,
   resetTaskWidth,
   startTaskResize,
+  clearAllTasks,
   cleanupTasks,
   deleteTask,
   loadTasks,
