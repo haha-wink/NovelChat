@@ -2110,6 +2110,56 @@ def skill_checks() -> None:
           block[:40])
 
 
+def skill_asset_checks() -> None:
+    """群聊/单聊带上传素材时，技能层能拿到歌词/配乐和风格。"""
+    import pathlib as _pathlib
+    import tempfile as _tempfile
+
+    from agent import group_graph
+
+    # 像素风 + 歌词文件 + 配乐，都放在 assets 里
+    assets = [
+        {"kind": "lyrics", "path": "/tmp/a.lrc"},
+        {"kind": "audio", "path": "/tmp/a.mp3"},
+    ]
+    pixel = group_graph._skill_assets({"text": "做个像素风格歌词 MV", "assets": assets})
+    check("素材上下文：像素风被识别", pixel["style"] == "pixel", str(pixel))
+    check("素材上下文：歌词文件传下去", pixel["lyrics_file"] == "/tmp/a.lrc", str(pixel))
+    check("素材上下文：配乐传下去", pixel["audio"] == "/tmp/a.mp3", str(pixel))
+
+    plain = group_graph._skill_assets({"text": "做个动画"})
+    check("素材上下文：默认水彩", plain["style"] == "watercolor", str(plain))
+    check("素材上下文：没素材时是空串",
+          plain["lyrics_file"] == "" and plain["audio"] == "", str(plain))
+
+    # 技能步骤里的占位符能被填上
+    from skills import registry
+
+    registry.reload()
+    skill = registry.get("animation")
+    steps = dict(skill.steps) if skill else {}
+    check("素材上下文：animation 步骤里有风格占位符",
+          "$style" in str(steps.get("animation_start") or {}), str(steps))
+
+    # 像素模式写进 config.js
+    import shutil as _shutil
+
+    import skills.work.animation.engine as animation
+
+    with _tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+        project = _pathlib.Path(folder) / "p"
+        _shutil.copytree(animation.skill_dir() / "template", project)
+        animation._prepare_lyric_project(project, {
+            "lyrics": "第一句\n第二句", "style": "pixel", "duration": 8,
+        })
+        config = (project / "src" / "config.js").read_text(encoding="utf-8")
+        check("素材上下文：像素模式写进 config",
+              "pixel: true" in config and "rpgBox" in config, config[:160])
+        karaoke = (project / "src" / "karaoke.js").read_text(encoding="utf-8")
+        check("素材上下文：像素模式也写了歌词",
+              "第一句" in karaoke, "没写")
+
+
 def lrc_checks() -> None:
     """LRC 时间轴：多时间戳、offset、按真实时间排 LY，不是均分。"""
     import skills.work.animation.engine as animation
@@ -6584,6 +6634,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    skill_asset_checks()
     lrc_checks()
     lyric_mv_checks()
     task_cleanup_checks()

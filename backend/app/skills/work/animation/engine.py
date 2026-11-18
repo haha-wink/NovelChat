@@ -882,7 +882,15 @@ def _prepare_lyric_project(project: Path, job: dict) -> dict:
     config = project / "src" / "config.js"
     if config.exists():
         source = config.read_text(encoding="utf-8")
-        replacement = f"const PROJECT = {{\n  duration: {duration:.2f}, bpm: 120, offset: 0,\n}};"
+        style = str(job.get("style") or "watercolor").lower()
+        if style == "pixel":
+            # 像素歌词模式：跳过水彩纸纹，歌词画成 RPG 对话框
+            replacement = (
+                f"const PROJECT = {{\n  duration: {duration:.2f}, bpm: 120, offset: 0,\n"
+                f"  pixel: true, pixelGrid: [320, 180], lyricUI: 'rpgBox',\n}};"
+            )
+        else:
+            replacement = f"const PROJECT = {{\n  duration: {duration:.2f}, bpm: 120, offset: 0,\n}};"
         start = source.find("const PROJECT = {")
         if start >= 0:
             end = source.find("};", start)

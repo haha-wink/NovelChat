@@ -187,6 +187,11 @@
             发送
           </button>
         </div>
+        <div v-if="pendingAssets.length" class="pending-assets">
+          <span v-for="(asset, index) in pendingAssets" :key="index" class="pending-asset">
+            {{ asset.kind === 'lyrics' ? '📄' : '🎵' }} {{ asset.name }}
+          </span>
+        </div>
         <p class="footer-text">
           群里每位成员都是独立的角色 Agent，有各自的情绪与记忆；不想让谁说话，点上面的成员卡片。
         </p>
@@ -357,6 +362,7 @@ const {
   chatContainer,
   textareaRef,
   pendingImages,
+  pendingAssets,
   conversations,
   editor,
   status,

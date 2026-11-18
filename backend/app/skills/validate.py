@@ -29,7 +29,11 @@ KNOWN_WHEN_KEYS = {
 }
 
 #: steps 参数里认得的占位符
-KNOWN_PLACEHOLDERS = {"text", "emotion", "intent", "topic", "mode"}
+KNOWN_PLACEHOLDERS = {
+    "text", "emotion", "intent", "topic", "mode",
+    # 素材类：由调用方（群聊/单聊）从上传的文件里填
+    "style", "lyrics", "lyrics_file", "audio", "duration",
+}
 
 #: frontmatter 认得的字段
 KNOWN_META_KEYS = {

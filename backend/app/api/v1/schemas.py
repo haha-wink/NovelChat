@@ -64,6 +64,9 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     #: 模式：chat（默认）/ work（工作模式，可调专业技能）
     mode: Optional[str] = None
+    #: 这一轮附带的素材（已上传的歌词/配乐）
+    #: [{"kind": "lyrics" | "audio", "path": "..."}]
+    assets: Optional[List[dict]] = None
     #: 兼容字段：仅当 ALLOW_CLIENT_API_KEY=true 时生效
     api_key: Optional[str] = None
 

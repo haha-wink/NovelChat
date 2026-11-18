@@ -174,6 +174,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 session_id=f"group:{session.user_id}:{shelf_id}",
                 conversation_id=req.conversation_id or "",
                 mode=_resolve_mode(req.mode),
+                assets=req.assets or [],
             ):
                 # 引擎事件 -> 渠道无关的出站消息 -> web 载荷。
                 # 这一圈看着绕，但换来的是：接 QQ/微信时引擎与这里一行都不用改。
@@ -352,6 +353,9 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                 "api_key": api_key,
                 "model": settings.deepseek_model,
                 "extra_context": "",
+                # 本轮附带的上传素材（歌词/配乐），技能层会拿去起渲染任务
+                "assets": req.assets or [],
+                "mode": _resolve_mode(req.mode),
                 "persist": True,
                 "session_id": agno_session,
             }

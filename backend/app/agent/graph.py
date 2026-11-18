@@ -95,6 +95,8 @@ class TurnState(TypedDict, total=False):
     skill_block: str
     #: 本轮模式：chat / work
     mode: str
+    #: 本轮附带的上传素材
+    assets: list
     reply: str
     notes: list[str]
 
@@ -250,8 +252,23 @@ async def skill_node(state: TurnState) -> dict:
         }
 
     mode = str(state.get("mode") or "chat")
+
+    # 本轮附带的上传素材：风格看原话，歌词/配乐用路径
+    text = str(state.get("text") or "")
+    style = "pixel" if ("像素" in text or "pixel" in text.lower()) else "watercolor"
+    lyrics_file = ""
+    audio = ""
+    for asset in state.get("assets") or []:
+        kind = str(asset.get("kind") or "")
+        path = str(asset.get("path") or "")
+        if kind == "lyrics":
+            lyrics_file = path
+        elif kind == "audio":
+            audio = path
+    extra = {"style": style, "lyrics_file": lyrics_file, "audio": audio}
+
     try:
-        result = skills.run_for(payload, mode=mode)
+        result = skills.run_for(payload, mode=mode, extra=extra)
     except Exception:  # noqa: BLE001 - 技能失败不能影响聊天
         logger.exception("技能执行失败（已忽略）")
         result = None

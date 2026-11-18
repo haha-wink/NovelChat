@@ -363,6 +363,7 @@ async def run_turn(
     rng: Optional[random.Random] = None,
     conversation_id: str = "",
     mode: str = "chat",
+    assets: Optional[list] = None,
 ) -> AsyncIterator[dict]:
     """跑完一整个回合，逐条产出事件。
 
@@ -406,6 +407,7 @@ async def run_turn(
         "generate": generate,
         "conversation_id": conversation_id,
         "mode": mode,
+        "assets": list(assets or []),
     }
 
     async for event in group_graph.get_group_graph().astream(

@@ -89,6 +89,8 @@ class GroupState(TypedDict, total=False):
     skill_block: str
     #: 本轮命中的技能名
     skill_name: str
+    #: 用户这轮附带的上传素材：[{kind: lyrics|audio, path}]
+    assets: list
     #: 本轮每条发言（并行写入，聚合节点用来查重）
     replies: Annotated[list, operator.add]
     #: 被判定重复而折叠掉的（character_id 列表）
@@ -348,6 +350,30 @@ def _skill_jobs(result) -> list[dict]:
     return jobs
 
 
+def _skill_assets(state: GroupState) -> dict:
+    """从本轮状态里拼技能上下文：风格、上传的歌词/音频。"""
+    text = str(state.get("text") or "")
+    style = "pixel" if ("像素" in text or "pixel" in text.lower()) else "watercolor"
+    lyrics_file = ""
+    audio = ""
+    for asset in state.get("assets") or []:
+        kind = str(asset.get("kind") or "")
+        path = str(asset.get("path") or "")
+        if not path:
+            continue
+        if kind == "lyrics":
+            lyrics_file = path
+        elif kind == "audio":
+            audio = path
+    return {
+        "style": style,
+        "lyrics_file": lyrics_file,
+        "audio": audio,
+        "lyrics": "",
+        "duration": 0,
+    }
+
+
 def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str, list[dict]]:
     """按当前模式跑一次技能层，返回 (素材块, 技能名, 起了的任务)。"""
     import skills
@@ -362,10 +388,11 @@ def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str, list[dict]]:
         "intensity": getattr(signals, "intensity", 0.0),
         "crisis": getattr(signals, "crisis", False),
     }
+    extra = _skill_assets(state)
     mode = str(state.get("mode") or "chat")
     try:
         result = skills.run_for(payload, mode=mode,
-                               extra={"user_id": state.get("user_id") or ""})
+                               extra={"user_id": state.get("user_id") or "", **extra})
     except Exception:  # noqa: BLE001 - 技能失败不能挡住群聊
         logger.exception("群聊技能执行失败（已忽略）")
         return "", "", []

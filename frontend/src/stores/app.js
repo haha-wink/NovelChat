@@ -18,8 +18,24 @@ import {
 import { renderMarkdown } from '../utils/markdown.js'
 import { readSSEStream } from '../utils/sse.js'
 
+//: 聊天里附带的非图片素材（歌词 / 配乐），走动画素材接口
+const ASSET_SUFFIXES = {
+  lyrics: ['.lrc', '.txt'],
+  audio: ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac']
+}
+
+function assetKindOf(fileName) {
+  const lower = String(fileName || '').toLowerCase()
+  for (const [kind, suffixes] of Object.entries(ASSET_SUFFIXES)) {
+    if (suffixes.some((suffix) => lower.endsWith(suffix))) return kind
+  }
+  return ''
+}
+
 const MAX_IMAGES = 4
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+//: 这轮消息附带的上传素材：[{kind, path, name}]
+const pendingAssets = ref([])
 const NAME_KEY = 'novel:reader-name'
 //: 记住上次进的群（书架），下次打开直接回到那里
 const LAST_SHELF_KEY = 'novel:last-shelf'
@@ -770,6 +786,22 @@ function handleFileSelect(event) {
     return
   }
 
+  // 歌词 / 配乐不当作图片：走动画素材接口存盘，消息里带路径
+  const assetKind = assetKindOf(file.name)
+  if (assetKind) {
+    upload('/api/animation/assets', (() => {
+      const body = new FormData()
+      body.append('file', file)
+      body.append('kind', assetKind)
+      return body
+    })())
+      .then((info) => {
+        pendingAssets.value.push({ kind: assetKind, path: info.path, name: info.name })
+      })
+      .catch((failure) => alert(failure.message))
+    return
+  }
+
   const reader = new FileReader()
   reader.onload = (loadEvent) => {
     pendingImages.value.push({ base64: loadEvent.target.result, fileName: file.name })
@@ -803,18 +835,31 @@ async function sendMessage() {
   })
   conversation.messages.push({ role: 'user', content: userText, at: new Date().toISOString() })
 
+  const assetsPayload = pendingAssets.value.map((asset) => ({
+    kind: asset.kind, path: asset.path
+  }))
+  for (const asset of pendingAssets.value) {
+    conversation.messages.push({
+      role: 'user', content: '', isAsset: true, assetKind: asset.kind,
+      fileName: asset.name
+    })
+  }
+
   chatInput.value = ''
   pendingImages.value = []
+  pendingAssets.value = []
   scrollToBottom()
   isLoading.value = true
 
   try {
     let token = await ensureToken(character.id)
-    let response = await fetchChat(token, character.id, userText, imagesPayload)
+    let response = await fetchChat(token, character.id, userText, imagesPayload,
+      { assets: assetsPayload })
 
     if (response.status === 401) {
       token = await refreshToken(character.id)
-      response = await fetchChat(token, character.id, userText, imagesPayload)
+      response = await fetchChat(token, character.id, userText, imagesPayload,
+        { assets: assetsPayload })
     }
 
     if (!response.ok) {
@@ -879,6 +924,8 @@ function fetchChat(token, characterId, prompt, images, options = {}) {
     character_id: characterId,
     prompt,
     images_base64: images.length > 0 ? images : null,
+    // 歌词/配乐：已上传的素材路径
+    assets: options.assets && options.assets.length ? options.assets : null,
     // 模式决定能用哪些技能：chat 只有情感类，work 才能调专业技能
     mode: mode.value
   }
@@ -1693,8 +1740,12 @@ async function sendGroupMessage() {
     images: images.map((image) => image.base64),
     at: new Date().toISOString()
   })
+  const assetsSnapshot = pendingAssets.value.map((asset) => ({
+    kind: asset.kind, path: asset.path
+  }))
   group.input = ''
   pendingImages.value = []
+  pendingAssets.value = []
   group.loading = true
   scrollGroupBottom()
 
@@ -1708,6 +1759,8 @@ async function sendGroupMessage() {
           token: authToken,
           prompt: text,
           images_base64: images.map((image) => image.base64),
+          // 歌词/配乐：已上传的素材路径，技能层会拿去起渲染任务
+          assets: assetsSnapshot,
           // 发到当前选中的对话里；后端按这个 id 落流水
           conversation_id: group.conversationId || null,
           mode: mode.value
@@ -1875,6 +1928,7 @@ const state = {
   chatContainer,
   textareaRef,
   pendingImages,
+  pendingAssets,
   conversations,
   editor,
   status,

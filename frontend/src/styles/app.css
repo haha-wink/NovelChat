@@ -1125,3 +1125,19 @@ body.resizing-task {
   color: var(--text-muted, #6b7280);
   line-height: 1.5;
 }
+
+/* ---------- 待发送的素材（歌词/配乐） ---------- */
+.pending-assets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 0 28px;
+}
+
+.pending-asset {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(90, 120, 200, 0.12);
+  color: var(--accent, #4a6fd4);
+}
