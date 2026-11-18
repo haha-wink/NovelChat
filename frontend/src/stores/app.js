@@ -1093,6 +1093,18 @@ async function loadTasks() {
   }
 }
 
+async function confirmTask(jobId) {
+  taskPanel.busy = jobId
+  try {
+    await api(`/api/animation/${jobId}/confirm`, { method: 'POST' })
+    await loadTasks()
+  } catch (failure) {
+    taskPanel.error = failure.message
+  } finally {
+    taskPanel.busy = ''
+  }
+}
+
 async function deleteTask(jobId) {
   taskPanel.busy = jobId
   try {
@@ -1859,6 +1871,7 @@ const state = {
   loadSkillHealth,
   taskPanel,
   loadTasks,
+  confirmTask,
   deleteTask,
   cleanupTasks,
   clearAllTasks,

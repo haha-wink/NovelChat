@@ -60,6 +60,19 @@ skills/work/animation/
 
 ## 对上游代码的本地改动
 
+### 1. `vendor/template/studio.html`：补上 karaoke.js
+
+```html
+<script src="src/timeline.js"></script>
+<script src="src/karaoke.js"></script>   <!-- 本地补的 -->
+```
+
+上游 `karaoke.js` 定义了 `window.overlayHook`（歌词渲染），
+但 `studio.html` 没引它 —— 结果 `LY` 里填满歌词也不会显示一个字。
+这是"歌词 MV 做不出来"的直接原因。
+
+### 2. `vendor/template/render.mjs`：全平台关沙箱
+
 `vendor/template/render.mjs` 有一处修改：
 
 ```js

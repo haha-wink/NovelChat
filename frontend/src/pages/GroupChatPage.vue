@@ -252,6 +252,15 @@
               <span class="task-time">{{ formatTime(job.created_at) }}</span>
             </div>
             <div class="task-buttons">
+              <button
+                v-if="job.stage === 'awaiting_confirmation'"
+                class="primary small"
+                :disabled="taskPanel.busy === job.id"
+                title="确认分镜，开始渲染"
+                @click="confirmTask(job.id)"
+              >
+                确认分镜
+              </button>
               <a
                 v-if="job.video"
                 class="ghost small"
@@ -345,6 +354,7 @@ const {
   startTaskResize,
   clearAllTasks,
   cleanupTasks,
+  confirmTask,
   deleteTask,
   loadTasks,
   taskPanel,

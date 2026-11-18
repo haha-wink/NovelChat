@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -345,8 +346,19 @@ def _run_job(job_id: str) -> None:
     """后台线程：脚手架 → 分镜 → 渲染 → 编码。"""
     with _LOCK:
         job = dict(_JOBS.get(job_id) or {})
+
+    if not job:
+        # 进程重启后内存里没有：从 status.json 捞回来，否则 confirm 续跑会直接崩
+        job = job_status(job_id) or {}
+        if not job:
+            logger.warning("动画任务不存在，无法续跑：%s", job_id)
+            return
+        with _LOCK:
+            _JOBS[job_id] = dict(job)
+
     project = Path(job.get("dir") or "") / "project"
 
+    lyric_info: dict = {}
     try:
         _touch(job_id, STAGE_SCAFFOLD)
 
@@ -364,18 +376,40 @@ def _run_job(job_id: str) -> None:
         # 分镜文件：技能包要求先写下来（歌词 MV 还要人确认）
         _touch(job_id, STAGE_STORYBOARD)
         storyboard = Path(job["dir"]) / "STORYBOARD.md"
-        storyboard.write_text(
-            "# 分镜（草稿）\n\n"
-            f"- 需求：{job.get('prompt') or ''}\n"
-            f"- 风格：{job.get('style') or 'watercolor'}\n"
-            "- 说明：由 animation 技能自动生成，逐镜细节需要人工补充。\n",
-            encoding="utf-8",
-        )
+        lyric_lines = _lyric_lines(job)
+        if lyric_lines:
+            table = "\n".join(
+                f"| {index * 3:.0f}–{index * 3 + 3:.0f}s | {line} | （待填画面） |"
+                for index, line in enumerate(lyric_lines)
+            )
+            storyboard.write_text(
+                "# 分镜（草稿）\n\n"
+                f"- 需求：{job.get('prompt') or ''}\n"
+                f"- 风格：{job.get('style') or 'watercolor'}\n"
+                f"- 歌词：{len(lyric_lines)} 行\n\n"
+                "| 时间 | 歌词 | 画面事件 |\n|------|------|----------|\n"
+                + table + "\n",
+                encoding="utf-8",
+            )
+        else:
+            storyboard.write_text(
+                "# 分镜（草稿）\n\n"
+                f"- 需求：{job.get('prompt') or ''}\n"
+                f"- 风格：{job.get('style') or 'watercolor'}\n"
+                "- 说明：由 animation 技能自动生成，逐镜细节需要人工补充。\n",
+                encoding="utf-8",
+            )
 
         if job.get("requires_confirmation"):
             _touch(job_id, STAGE_AWAITING,
                    note="歌词/MV 类需要先确认分镜，确认后再渲染")
             return
+
+        # 歌词 MV：把歌词真正填进模板（不然渲染出来只是模板默认画面）
+        lyric_info = _prepare_lyric_project(project, job)
+        if lyric_info["lines"]:
+            _touch(job_id, STAGE_RENDER,
+                   note=f"填入 {lyric_info['lines']} 行歌词（{lyric_info['duration']}s）")
 
         _touch(job_id, STAGE_RENDER)
         if caps["renderer"] == "fake":
@@ -386,6 +420,8 @@ def _run_job(job_id: str) -> None:
             video = _real_render(job_id, project)
 
         _touch(job_id, STAGE_ENCODE)
+        if lyric_info.get("audio"):
+            video = _mux_audio(video, lyric_info["audio"])
         size = Path(video).stat().st_size if Path(video).exists() else 0
         _touch(
             job_id, STAGE_DONE,
@@ -405,6 +441,9 @@ def create_job(
     style: str = "watercolor",
     user_id: str = "",
     background: bool = True,
+    lyrics: str = "",
+    audio: str = "",
+    duration: float = 0.0,
 ) -> dict:
     """起一个渲染任务，立刻返回（渲染在后台线程）。"""
     job_id = f"anim_{uuid.uuid4().hex[:12]}"
@@ -420,6 +459,9 @@ def create_job(
         "dir": str(folder),
         "video": "",
         "error": "",
+        "lyrics": str(lyrics or "")[:8000],
+        "audio": str(audio or ""),
+        "duration": float(duration or 0),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -474,8 +516,14 @@ def confirm(job_id: str) -> dict:
         return {"ok": False, "error": f"当前状态是 {job.get('stage')}，不需要确认"}
     with _LOCK:
         live = _JOBS.get(job_id)
-        if live is not None:
-            live["requires_confirmation"] = False
+        if live is None:
+            # 重启后从磁盘读出来的任务：先放进内存再续跑
+            live = dict(job)
+            _JOBS[job_id] = live
+        live["requires_confirmation"] = False
+        live["stage"] = STAGE_SCAFFOLD
+        live["note"] = "已确认分镜，开始渲染"
+        _write_status(live)
     thread = threading.Thread(target=_run_job, args=(job_id,), daemon=True)
     thread.start()
     return {"ok": True, "job": job_status(job_id)}
@@ -525,10 +573,30 @@ def _tool_start(args: dict) -> dict:
         }
 
     style = str(args.get("style") or "watercolor")
-    job = create_job(prompt, style=style, user_id=str(args.get("user_id") or ""))
+
+    # 歌词可以从参数给，也可以直接写在 prompt 里（"…配这首歌" 后面换行开始）
+    lyrics = str(args.get("lyrics") or "").strip()
+    if not lyrics and "\n" in prompt:
+        head, _, rest = prompt.partition("\n")
+        if _needs_storyboard(head) and rest.strip():
+            lyrics = rest.strip()
+            prompt = head.strip()
+
+    needs_confirm = _needs_storyboard(prompt) or bool(lyrics)
+    job = create_job(
+        prompt, style=style, user_id=str(args.get("user_id") or ""),
+        lyrics=lyrics,
+        audio=str(args.get("audio") or ""),
+        duration=float(args.get("duration") or 0),
+    )
     label = _STAGE_LABELS.get(job["stage"], job["stage"])
-    if job["stage"] == STAGE_AWAITING:
-        text = f"分镜我先写好了（任务 {job['id']}），你确认一下我再开始渲染。"
+
+    # 注意：create_job 是异步起线程的，这里 stage 通常还是 scaffold。
+    # 所以要按 prompt 提前判断"会不会停在等确认"，否则用户以为已经在做了，
+    # 结果永远停在 awaiting_confirmation（歌词 MV 就是这么卡住的）
+    if needs_confirm or job["stage"] == STAGE_AWAITING:
+        text = (f"分镜我先写好了（任务 {job['id']}），你确认一下我再开始渲染。"
+                "在右侧任务栏点「确认分镜」就行。")
     elif job["stage"] == STAGE_FAILED:
         return {"ok": False, "error": job.get("error") or "渲染失败", "job_id": job["id"]}
     else:
@@ -563,6 +631,12 @@ tool_protocol.register(
             "prompt": {"type": "string", "description": "要做什么动画，用用户的原话"},
             "style": {"type": "string",
                       "description": "watercolor（手绘水彩，默认）/ pixel（像素风）"},
+            "lyrics": {"type": "string",
+                       "description": "歌词全文（多行）。歌词 MV 必填，会逐句打在画面上"},
+            "audio": {"type": "string",
+                      "description": "配乐文件路径（可选），渲染完会混进成片"},
+            "duration": {"type": "number",
+                         "description": "时长秒（可选），不给就按音频时长/歌词行数估"},
         },
         handler=_tool_start,
         required=("prompt",),
@@ -728,3 +802,107 @@ def stats() -> dict:
             except OSError:
                 continue
     return {"count": len(folders), "total_mb": round(total / 1024 / 1024, 1)}
+
+# ---------------------------------------------------------------------------
+# 歌词 MV：把歌词真正填进模板的 karaoke.js / config.js
+# ---------------------------------------------------------------------------
+
+def _lyric_lines(job: dict) -> list[str]:
+    """从任务里取歌词行（用户给的多行文本）。"""
+    raw = str(job.get("lyrics") or "").strip()
+    if not raw:
+        return []
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def _probe_duration(path: Path) -> float:
+    """用 ffmpeg 读音频时长（读不出来就返回 0）。"""
+    ffmpeg = _which("ffmpeg")
+    if not ffmpeg:
+        return 0.0
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-i", str(path)], capture_output=True, text=True, timeout=60,
+        )
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr or "")
+        if match:
+            hours, minutes, seconds = match.groups()
+            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except Exception:  # noqa: BLE001
+        pass
+    return 0.0
+
+
+def _prepare_lyric_project(project: Path, job: dict) -> dict:
+    """把歌词写进 src/karaoke.js 的 LY，把总时长写进 src/config.js。
+
+    返回 {"lines": n, "duration": s, "audio": path|""}。
+    """
+    lines = _lyric_lines(job)
+    if not lines:
+        return {"lines": 0, "duration": 0, "audio": ""}
+
+    audio = str(job.get("audio") or "").strip()
+    audio_path = Path(audio) if audio and Path(audio).exists() else None
+
+    # 时长：优先用户给的 > 音频实际时长 > 每句 3 秒
+    duration = float(job.get("duration") or 0)
+    if not duration and audio_path is not None:
+        duration = _probe_duration(audio_path)
+    per_line = 3.0
+    if not duration:
+        duration = max(6.0, per_line * len(lines))
+    else:
+        per_line = duration / max(1, len(lines))
+
+    # 逐句排时间轴：均分，最后留一点余量
+    entries = []
+    for index, line in enumerate(lines):
+        start = round(index * per_line, 2)
+        end = round(min(duration, start + per_line * 0.92), 2)
+        entries.append(f"  [{start}, {end}, {json.dumps(line, ensure_ascii=False)}],")
+    ly_block = "const LY = [\n" + "\n".join(entries) + "\n];"
+
+    karaoke = project / "src" / "karaoke.js"
+    if karaoke.exists():
+        source = karaoke.read_text(encoding="utf-8")
+        head = source.find("const LY = [")
+        if head >= 0:
+            tail = source.find("];", head)
+            if tail > head:
+                source = source[:head] + ly_block + source[tail + 2:]
+                karaoke.write_text(source, encoding="utf-8")
+
+    config = project / "src" / "config.js"
+    if config.exists():
+        source = config.read_text(encoding="utf-8")
+        replacement = f"const PROJECT = {{\n  duration: {duration:.2f}, bpm: 120, offset: 0,\n}};"
+        start = source.find("const PROJECT = {")
+        if start >= 0:
+            end = source.find("};", start)
+            if end > start:
+                source = source[:start] + replacement + source[end + 2:]
+                config.write_text(source, encoding="utf-8")
+
+    return {"lines": len(lines), "duration": round(duration, 2),
+            "audio": str(audio_path) if audio_path else ""}
+
+
+def _mux_audio(video: str, audio: str) -> str:
+    """把配乐混进成片；失败就保留无声版（不掩盖画面成果）。"""
+    ffmpeg = _which("ffmpeg")
+    if not ffmpeg or not audio or not Path(audio).exists():
+        return video
+    target = str(Path(video).with_name("video_with_audio.mp4"))
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", video, "-i", audio,
+             "-c:v", "copy", "-c:a", "aac", "-shortest", target],
+            capture_output=True, text=True, timeout=600,
+        )
+        if Path(target).exists() and Path(target).stat().st_size > 0:
+            logger.info("已混入配乐：%s", target)
+            return target
+    except Exception:  # noqa: BLE001
+        logger.exception("混音失败（保留无声版）")
+    return video

@@ -2110,6 +2110,125 @@ def skill_checks() -> None:
           block[:40])
 
 
+def lyric_mv_checks() -> None:
+    """歌词 MV：起任务要说明"先确认分镜"，确认后必须真的跑到完成。
+
+    用假渲染器 + 临时任务目录，不碰真实数据、不碰 node/ffmpeg。
+    """
+    import pathlib as _pathlib
+    import tempfile as _tempfile
+    import time as _time
+
+    from core.config import get_settings
+    from core.tools import protocol as tool_protocol
+
+    import skills.work.animation.engine as animation
+
+    settings = get_settings()
+    original_renderer = settings.animation_renderer
+    settings.animation_renderer = "fake"
+
+    sandbox = _tempfile.TemporaryDirectory(prefix="mv-test-",
+                                           ignore_cleanup_errors=True)
+    real_jobs_dir = animation.jobs_dir
+    animation.jobs_dir = lambda: _pathlib.Path(sandbox.name)
+
+    job_id = ""
+    try:
+        started = tool_protocol.execute(
+            "animation_start", {"prompt": "帮我做一段歌词 MV，配这首歌"})
+        check("歌词MV：起了任务", started.get("ok") and started.get("job_id"),
+              str(started))
+        job_id = started.get("job_id") or ""
+        # 关键：文案必须提前说明"要确认"，否则用户以为已经在渲染
+        check("歌词MV：起任务时就说明要先确认分镜",
+              "确认" in str(started.get("text")), str(started.get("text"))[:80])
+
+        for _ in range(40):
+            if animation.job_status(job_id)["stage"] == "awaiting_confirmation":
+                break
+            _time.sleep(0.2)
+        check("歌词MV：停在等确认",
+              animation.job_status(job_id)["stage"] == "awaiting_confirmation",
+              str(animation.job_status(job_id)["stage"]))
+
+        confirmed = animation.confirm(job_id)
+        check("歌词MV：确认被接受", confirmed.get("ok"), str(confirmed))
+
+        for _ in range(60):
+            if animation.job_status(job_id)["stage"] in ("done", "failed"):
+                break
+            _time.sleep(0.2)
+        final = animation.job_status(job_id)
+        check("歌词MV：确认后真的跑完", final["stage"] == "done",
+              f"{final['stage']} {final.get('error') or ''}"[:120])
+        check("歌词MV：产出了成片", bool(final.get("video")), str(final.get("video")))
+
+        # ---- 歌词真的填进模板了 ----
+        import shutil as _shutil
+
+        template = animation.skill_dir() / "template"
+        demo_project = _pathlib.Path(sandbox.name) / "lyric-project"
+        _shutil.copytree(template, demo_project)
+        info = animation._prepare_lyric_project(demo_project, {
+            "lyrics": "月光落在旧车站\n风把伞吹歪了\n我还站在原地",
+            "duration": 9,
+        })
+        check("歌词MV：算出了时长和行数",
+              info["lines"] == 3 and info["duration"] == 9, str(info))
+
+        karaoke = (demo_project / "src" / "karaoke.js").read_text(encoding="utf-8")
+        check("歌词MV：歌词真的写进模板",
+              "月光落在旧车站" in karaoke and "我还站在原地" in karaoke,
+              karaoke[karaoke.find("const LY"):][:120])
+        check("歌词MV：每句都有起止时间",
+              karaoke.count("[\"") >= 3 or karaoke.count(", \"") >= 3 + 3,
+              str(karaoke.count(", \"")))
+
+        config = (demo_project / "src" / "config.js").read_text(encoding="utf-8")
+        check("歌词MV：总时长写进 config.js",
+              "duration: 9.00" in config, config[config.find("const PROJECT"):][:60])
+
+        # 上游模板没加载 karaoke.js，歌词就不显示——这条防回归
+        studio = (demo_project / "studio.html").read_text(encoding="utf-8")
+        check("歌词MV：studio.html 真的加载了 karaoke.js",
+              "src/karaoke.js" in studio, "未加载")
+
+        # 多行 prompt 能自动拆出歌词
+        started2 = tool_protocol.execute("animation_start", {
+            "prompt": "帮我做一段歌词MV\n第一句\n第二句\n第三句"})
+        job2 = animation.job_status(started2["job_id"]) or {}
+        check("歌词MV：从多行原话里拆出了歌词",
+              len(animation._lyric_lines(job2)) == 3,
+              str(animation._lyric_lines(job2)))
+        try:
+            animation.delete_job(started2["job_id"])
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 普通动画不该卡在等确认
+        plain = tool_protocol.execute(
+            "animation_start", {"prompt": "帮我做一段动画：星空下的小人"})
+        plain_id = plain.get("job_id") or ""
+        for _ in range(40):
+            if animation.job_status(plain_id)["stage"] in ("done", "failed"):
+                break
+            _time.sleep(0.2)
+        check("歌词MV：普通动画不需要确认就能完成",
+              animation.job_status(plain_id)["stage"] == "done",
+              str(animation.job_status(plain_id)["stage"]))
+    finally:
+        for leftover in (job_id,):
+            if leftover:
+                try:
+                    animation.delete_job(leftover)
+                except Exception:  # noqa: BLE001
+                    pass
+        animation.jobs_dir = real_jobs_dir
+        settings.animation_renderer = original_renderer
+        sandbox.cleanup()
+
+
 def task_cleanup_checks() -> None:
     """任务清理：删单个 / 全删 / 僵尸 / 在跑的保护。
 
@@ -6363,6 +6482,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    lyric_mv_checks()
     task_cleanup_checks()
     asyncio.run(video_route_checks())
     fetch_script_checks()

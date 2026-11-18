@@ -16,6 +16,12 @@
       playsinline
     ></video>
 
+    <div v-if="state === 'awaiting'" class="anim-actions">
+      <button class="primary small" :disabled="confirming" @click="confirm">
+        {{ confirming ? '提交中…' : '确认分镜，开始渲染' }}
+      </button>
+    </div>
+
     <div v-if="ready" class="anim-actions">
       <a class="ghost small" :href="videoUrl + '?download=1'">下载 mp4</a>
     </div>
@@ -35,6 +41,7 @@ const props = defineProps({
 })
 
 const STAGE_TEXT = {
+  awaiting_confirmation: '等确认分镜',
   scaffold: '搭项目',
   render: '逐帧渲染',
   encode: '编码视频',
@@ -45,6 +52,20 @@ const STAGE_TEXT = {
 const stage = ref('scaffold')
 const state = ref('running')
 const error = ref('')
+const confirming = ref(false)
+
+async function confirm() {
+  confirming.value = true
+  try {
+    await fetch(`/api/animation/${props.jobId}/confirm`, { method: 'POST' })
+    state.value = 'running'
+    poll()
+  } catch {
+    error.value = '确认失败，试试右侧任务栏'
+  } finally {
+    confirming.value = false
+  }
+}
 
 const ready = computed(() => state.value === 'done')
 const stageLabel = computed(() => STAGE_TEXT[stage.value] || stage.value || '处理中')
@@ -58,7 +79,9 @@ async function poll() {
     if (!response.ok) return
     const job = await response.json()
     stage.value = job.stage || stage.value
-    if (job.stage === 'done') {
+    if (job.stage === 'awaiting_confirmation') {
+      state.value = 'awaiting'
+    } else if (job.stage === 'done') {
       state.value = 'done'
       stop()
     } else if (job.stage === 'failed') {
