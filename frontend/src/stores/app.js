@@ -1059,6 +1059,129 @@ function resetSidebarWidth() {
   }
 }
 
+// ---------------- 任务栏（右侧）：动画任务，和对话互不干扰 ----------------
+
+const TASK_MIN = 220
+const TASK_MAX = 560
+const TASK_KEY = 'novelchat.taskWidth'
+
+const taskPanel = reactive({
+  open: true,
+  loading: false,
+  error: '',
+  //: [{id, prompt, stage, video, note, created_at}]
+  jobs: [],
+  //: {count, total_mb}
+  stats: { count: 0, total_mb: 0 },
+  width: 0,
+  dragging: false,
+  busy: ''
+})
+
+async function loadTasks() {
+  taskPanel.loading = true
+  taskPanel.error = ''
+  try {
+    const jobs = await api('/api/animation?limit=30')
+    taskPanel.jobs = Array.isArray(jobs) ? jobs : []
+    const stat = await api('/api/animation/stats').catch(() => null)
+    if (stat) taskPanel.stats = stat
+  } catch (failure) {
+    taskPanel.error = failure.message
+  } finally {
+    taskPanel.loading = false
+  }
+}
+
+async function deleteTask(jobId) {
+  taskPanel.busy = jobId
+  try {
+    await api(`/api/animation/${jobId}`, { method: 'DELETE' })
+    taskPanel.jobs = taskPanel.jobs.filter((job) => job.id !== jobId)
+    await loadTasks()
+  } catch (failure) {
+    taskPanel.error = failure.message
+  } finally {
+    taskPanel.busy = ''
+  }
+}
+
+async function cleanupTasks() {
+  taskPanel.loading = true
+  try {
+    const result = await api('/api/animation/cleanup', { method: 'POST' })
+    await loadTasks()
+    return result
+  } catch (failure) {
+    taskPanel.error = failure.message
+    return null
+  } finally {
+    taskPanel.loading = false
+  }
+}
+
+function toggleTaskPanel() {
+  taskPanel.open = !taskPanel.open
+}
+
+function restoreTaskWidth() {
+  try {
+    const saved = Number(localStorage.getItem(TASK_KEY) || 0)
+    if (saved >= TASK_MIN && saved <= TASK_MAX) taskPanel.width = saved
+  } catch {
+    // 隐私模式忽略
+  }
+}
+
+function currentTaskWidth() {
+  if (taskPanel.width) return taskPanel.width
+  return 300
+}
+
+function startTaskResize(event) {
+  if (event.button !== undefined && event.button !== 0) return
+  event.preventDefault()
+  taskPanel.dragging = true
+  document.body.classList.add('resizing-task')
+  const startX = event.clientX
+  const startWidth = currentTaskWidth()
+
+  const move = (moveEvent) => {
+    // 右侧栏：往左拖变宽
+    const next = Math.min(
+      TASK_MAX,
+      Math.max(TASK_MIN, startWidth - (moveEvent.clientX - startX))
+    )
+    taskPanel.width = Math.round(next)
+  }
+  const stop = () => {
+    taskPanel.dragging = false
+    document.body.classList.remove('resizing-task')
+    window.removeEventListener('mousemove', move)
+    window.removeEventListener('mouseup', stop)
+    try {
+      localStorage.setItem(TASK_KEY, String(taskPanel.width))
+    } catch {
+      // 忽略
+    }
+  }
+  window.addEventListener('mousemove', move)
+  window.addEventListener('mouseup', stop)
+}
+
+function taskWidthPx() {
+  return taskPanel.width ? `${taskPanel.width}px` : ''
+}
+
+function resetTaskWidth() {
+  taskPanel.width = 0
+  try {
+    localStorage.removeItem(TASK_KEY)
+  } catch {
+    // 忽略
+  }
+}
+
 // ---------------- 技能体检 ----------------
 
 const skillPanel = reactive({
@@ -1720,6 +1843,16 @@ const state = {
   ensureConversation,
   skillPanel,
   loadSkillHealth,
+  taskPanel,
+  loadTasks,
+  deleteTask,
+  cleanupTasks,
+  toggleTaskPanel,
+  restoreTaskWidth,
+  currentTaskWidth,
+  startTaskResize,
+  taskWidthPx,
+  resetTaskWidth,
   restoreSidebarWidth,
   mode,
   modeLabel,

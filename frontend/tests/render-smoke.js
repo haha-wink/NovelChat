@@ -82,6 +82,16 @@ function seed(app) {
     })
   }
 
+  // 右侧任务栏：两个任务（一个完成、一个在渲染）
+  app.taskPanel.jobs = [
+    { id: 'anim_aaaaaaaaaa', prompt: '星空下的小人', stage: 'done',
+      video: '/api/animation/anim_aaaaaaaaaa/video', created_at: '2026-11-15T17:00:00' },
+    { id: 'anim_bbbbbbbbbb', prompt: '下雨的街道', stage: 'render',
+      video: '', created_at: '2026-11-15T17:05:00' }
+  ]
+  app.taskPanel.stats = { count: 2, total_mb: 25.4 }
+  app.taskPanel.loading = false
+
   app.skillPanel.loaded = true
   app.skillPanel.checked = 7
   app.skillPanel.ok = true

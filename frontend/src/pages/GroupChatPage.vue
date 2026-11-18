@@ -192,6 +192,80 @@
         </p>
       </div>
       </div>
+
+      <!-- 任务栏：动画任务，独立于对话，拖左边界的把手改宽度 -->
+      <div
+        v-if="taskPanel.open"
+        class="task-resizer"
+        :class="{ active: taskPanel.dragging }"
+        title="拖动调整任务栏宽度，双击恢复"
+        @mousedown="startTaskResize"
+        @dblclick="resetTaskWidth"
+      >
+        <span class="conv-resizer-grip"></span>
+      </div>
+
+      <aside
+        v-if="taskPanel.open"
+        class="task-sidebar"
+        :style="taskWidthPx() ? { width: taskWidthPx() } : {}"
+      >
+        <div class="task-head">
+          <strong>任务</strong>
+          <span class="task-stats">
+            {{ taskPanel.stats.count }} 个 · {{ taskPanel.stats.total_mb }} MB
+          </span>
+        </div>
+
+        <div class="task-actions">
+          <button class="ghost small" :disabled="taskPanel.loading" @click="loadTasks">
+            {{ taskPanel.loading ? '刷新中…' : '刷新' }}
+          </button>
+          <button class="ghost small" :disabled="taskPanel.loading" @click="cleanupTasks">
+            清理旧任务
+          </button>
+        </div>
+
+        <p v-if="taskPanel.error" class="error">{{ taskPanel.error }}</p>
+        <p v-else-if="!taskPanel.jobs.length" class="conv-hint">
+          还没有任务。工作模式下让它做个动画，这里会出现进度和成片。
+        </p>
+
+        <ul class="task-list">
+          <li v-for="job in taskPanel.jobs" :key="job.id" class="task-item">
+            <div class="task-title">{{ job.prompt || '（没有描述）' }}</div>
+            <div class="task-meta">
+              <span class="task-stage" :class="'stage-' + job.stage">{{ job.stage }}</span>
+              <span class="task-time">{{ formatTime(job.created_at) }}</span>
+            </div>
+            <div class="task-buttons">
+              <a
+                v-if="job.video"
+                class="ghost small"
+                :href="`/api/animation/${job.id}/video`"
+                target="_blank"
+                rel="noreferrer"
+              >
+                看
+              </a>
+              <a
+                v-if="job.video"
+                class="ghost small"
+                :href="`/api/animation/${job.id}/video?download=1`"
+              >
+                下载
+              </a>
+              <button
+                class="ghost small danger"
+                :disabled="taskPanel.busy === job.id"
+                @click="deleteTask(job.id)"
+              >
+                删除
+              </button>
+            </div>
+          </li>
+        </ul>
+      </aside>
     </main>
 </template>
 
@@ -252,6 +326,14 @@ const {
   mode,
   modeLabel,
   toggleMode,
+  taskWidthPx,
+  restoreTaskWidth,
+  resetTaskWidth,
+  startTaskResize,
+  cleanupTasks,
+  deleteTask,
+  loadTasks,
+  taskPanel,
   newConversation,
   switchConversation,
   deleteConversation,
@@ -333,5 +415,7 @@ const sidebarStyle = computed(() => {
 
 onMounted(() => {
   restoreSidebarWidth()
+  restoreTaskWidth()
+  loadTasks()
 })
 </script>

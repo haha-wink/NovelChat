@@ -80,6 +80,7 @@ async def animation_capabilities() -> dict:
 
 @router.get("/animation")
 async def animation_jobs(limit: int = 20) -> list[dict]:
+    """任务列表（附磁盘占用统计，界面右侧任务栏用）。"""
     import skills.work.animation.engine as animation_engine
 
     return await anyio.to_thread.run_sync(
@@ -131,6 +132,35 @@ def _serve_video(path: Path, request: Request, *, download: bool) -> Response:
     headers["Content-Length"] = str(length)
     return StreamingResponse(chunks(), status_code=206, media_type="video/mp4",
                              headers=headers)
+
+
+
+
+@router.get("/animation/stats")
+async def animation_stats() -> dict:
+    """任务占用：多少个、共多大（任务栏用）。"""
+    import skills.work.animation.engine as animation_engine
+
+    return await anyio.to_thread.run_sync(animation_engine.stats)
+
+
+@router.delete("/animation/{job_id}")
+async def animation_delete(job_id: str) -> dict:
+    """删掉一个任务（含项目目录）。"""
+    import skills.work.animation.engine as animation_engine
+
+    return await anyio.to_thread.run_sync(animation_engine.delete_job, job_id)
+
+
+@router.post("/animation/cleanup")
+async def animation_cleanup(keep: int = 8, max_mb: int = 1500, stale_hours: float = 6.0) -> dict:
+    """清理老任务：只留最近 keep 个，总量不超过 max_mb。"""
+    import skills.work.animation.engine as animation_engine
+
+    return await anyio.to_thread.run_sync(
+        functools.partial(animation_engine.cleanup, keep=keep,
+                          max_mb=max_mb, stale_hours=stale_hours)
+    )
 
 
 @router.get("/animation/{job_id}/video")

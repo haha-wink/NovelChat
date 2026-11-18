@@ -2110,6 +2110,55 @@ def skill_checks() -> None:
           block[:40])
 
 
+def task_cleanup_checks() -> None:
+    """任务清理：删单个、按数量/体积回收、正在跑的不能删。"""
+    import pathlib as _pathlib
+    import tempfile
+
+    import skills.work.animation.engine as animation_engine
+
+    stats = animation_engine.stats()
+    check("任务：stats 返回数量和体积",
+          isinstance(stats.get("count"), int) and "total_mb" in stats,
+          str(stats))
+
+    # ---- 正在跑的任务拒绝删除 ----
+    with tempfile.TemporaryDirectory() as folder:
+        job_dir = _pathlib.Path(folder) / "anim_1234567890ab"
+        job_dir.mkdir(parents=True)
+        (job_dir / "status.json").write_text(
+            '{"id": "anim_1234567890ab", "stage": "render", "dir": "%s"}'
+            % str(job_dir).replace("\\", "\\\\"),
+            encoding="utf-8",
+        )
+        animation_engine._JOBS["anim_1234567890ab"] = {
+            "id": "anim_1234567890ab", "stage": "render", "dir": str(job_dir),
+        }
+        try:
+            refused = animation_engine.delete_job("anim_1234567890ab")
+            check("任务：正在跑的不让删",
+                  not refused.get("ok") and "还在跑" in str(refused.get("error")),
+                  str(refused))
+
+            animation_engine._JOBS["anim_1234567890ab"]["stage"] = "done"
+            removed = animation_engine.delete_job("anim_1234567890ab")
+            check("任务：结束的可以删", removed.get("ok"), str(removed))
+            check("任务：目录真的没了", not job_dir.exists(), str(job_dir))
+        finally:
+            animation_engine._JOBS.pop("anim_1234567890ab", None)
+
+    missing = animation_engine.delete_job("anim_ffffffffffff")
+    check("任务：删不存在的返回失败", not missing.get("ok"), str(missing))
+
+    result = animation_engine.cleanup(keep=6, max_mb=1500)
+    check("任务：清理返回删除清单和回收体积",
+          result.get("ok") and "removed" in result and "freed_mb" in result,
+          str(result))
+    check("任务：清理后不超上限",
+          animation_engine.stats()["count"] <= max(6, len(result.get("removed", [])) + 6),
+          str(animation_engine.stats()))
+
+
 async def video_route_checks() -> None:
     """成片出口：能播放、能下载、能拖进度条，任务号不能穿越。"""
     import skills.work.animation.engine as animation_engine
@@ -6266,6 +6315,7 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    task_cleanup_checks()
     asyncio.run(video_route_checks())
     fetch_script_checks()
     skill_vendor_checks()

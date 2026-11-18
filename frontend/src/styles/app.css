@@ -953,3 +953,115 @@ body.resizing-sidebar {
   color: #b4453c;
   line-height: 1.5;
 }
+
+/* ---------- 右侧任务栏 ---------- */
+.task-resizer {
+  width: 8px;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 8px;
+  transition: background 0.15s ease;
+}
+
+.task-resizer:hover,
+.task-resizer.active {
+  background: rgba(90, 120, 200, 0.12);
+}
+
+.task-sidebar {
+  flex: 0 0 auto;
+  width: 300px;
+  max-width: 45vw;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 12px;
+  overflow-y: auto;
+  border-left: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.task-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.task-stats {
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+}
+
+.task-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-item {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+}
+
+.task-title {
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.task-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.task-stage {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(90, 120, 200, 0.12);
+  color: var(--accent, #4a6fd4);
+}
+
+.task-stage.stage-done {
+  background: rgba(47, 143, 91, 0.14);
+  color: #2f8f5b;
+}
+
+.task-stage.stage-failed {
+  background: rgba(180, 69, 60, 0.14);
+  color: #b4453c;
+}
+
+.task-time {
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+}
+
+.task-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+body.resizing-task {
+  cursor: col-resize;
+  user-select: none;
+}

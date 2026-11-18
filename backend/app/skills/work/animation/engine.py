@@ -603,3 +603,122 @@ def describe() -> dict:
         "stages": list(_STAGE_LABELS.values()),
         "jobs": len(list_jobs(limit=200)),
     }
+
+# ---------------------------------------------------------------------------
+# 任务清理：磁盘会一直涨，留最近若干个就行
+# ---------------------------------------------------------------------------
+
+def _job_folders() -> list[tuple[str, float, Path]]:
+    """(job_id, 创建时间戳, 目录) 按时间倒序。"""
+    items = []
+    for folder in jobs_dir().glob("anim_*"):
+        if not folder.is_dir():
+            continue
+        stamp = 0.0
+        status = folder / "status.json"
+        if status.exists():
+            try:
+                stamp = status.stat().st_mtime
+            except OSError:
+                stamp = 0.0
+        items.append((folder.name, stamp, folder))
+    items.sort(key=lambda row: row[1], reverse=True)
+    return items
+
+
+def delete_job(job_id: str) -> dict:
+    """删掉一个任务（状态 + 整个项目目录）。正在跑的拒绝删。"""
+    job = job_status(job_id)
+    if not job:
+        return {"ok": False, "error": "任务不存在"}
+    stamp_path = Path(str(job.get("dir") or "")) / "status.json"
+    stamp = stamp_path.stat().st_mtime if stamp_path.exists() else 0.0
+    stale = (time.time() - stamp) > 6 * 3600 if stamp else True
+    if job.get("stage") not in ("done", "failed") and not stale:
+        return {"ok": False, "error": "任务还在跑，等它结束再删"}
+
+    folder = Path(str(job.get("dir") or "")) or (jobs_dir() / job_id)
+    try:
+        if folder.exists():
+            shutil.rmtree(folder, ignore_errors=True)
+        else:
+            shutil.rmtree(jobs_dir() / job_id, ignore_errors=True)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"删除失败：{exc}"}
+
+    with _LOCK:
+        _JOBS.pop(job_id, None)
+    logger.info("动画任务已删除：%s", job_id)
+    return {"ok": True, "job_id": job_id}
+
+
+def cleanup(keep: int = 10, max_mb: int = 2000, stale_hours: float = 6.0) -> dict:
+    """清理老任务：只留最近 keep 个，且总量不超过 max_mb。
+
+    只动 done / failed 的；正在跑的一律不碰。
+    """
+    keep = max(1, int(keep))
+    folders = _job_folders()
+
+    def size_of(folder: Path) -> int:
+        total = 0
+        for item in folder.rglob("*"):
+            try:
+                if item.is_file():
+                    total += item.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    removed: list[str] = []
+    freed = 0
+    kept: list[str] = []
+    total_bytes = 0
+    limit = max(1, int(max_mb)) * 1024 * 1024
+
+    now = time.time()
+    for index, (job_id, stamp, folder) in enumerate(folders):
+        job = job_status(job_id) or {}
+        running = job.get("stage") not in ("done", "failed", None)
+        # 卡在"渲染中"但几小时没动静的，是进程被杀留下的僵尸，按垃圾处理
+        stale = running and (now - stamp) > stale_hours * 3600
+        if running and not stale:
+            kept.append(job_id)
+            continue
+
+        size = size_of(folder)
+        too_many = index >= keep
+        too_big = (total_bytes + size) > limit and total_bytes > 0
+        if too_many or too_big:
+            result = delete_job(job_id)
+            if result.get("ok"):
+                removed.append(job_id)
+                freed += size
+            continue
+
+        kept.append(job_id)
+        total_bytes += size
+
+    if removed:
+        logger.info("动画任务清理：删除 %d 个，回收 %.1f MB",
+                    len(removed), freed / 1024 / 1024)
+    return {
+        "ok": True,
+        "removed": removed,
+        "freed_mb": round(freed / 1024 / 1024, 1),
+        "kept": len(kept),
+    }
+
+
+def stats() -> dict:
+    """任务占用情况（界面上显示"共 X 个 / Y MB"）。"""
+    folders = _job_folders()
+    total = 0
+    for _job_id, _stamp, folder in folders:
+        for item in folder.rglob("*"):
+            try:
+                if item.is_file():
+                    total += item.stat().st_size
+            except OSError:
+                continue
+    return {"count": len(folders), "total_mb": round(total / 1024 / 1024, 1)}
