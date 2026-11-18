@@ -6,7 +6,7 @@
 
 import { computed, nextTick, reactive, ref } from 'vue'
 
-import { api } from '../api/client.js'
+import { api, upload } from '../api/client.js'
 import {
   avatarSrc,
   formatCount,
@@ -1093,6 +1093,85 @@ async function loadTasks() {
   }
 }
 
+//: 歌词 MV 表单（任务栏里的上传区）
+const lyricForm = reactive({
+  prompt: '帮我做一段歌词MV',
+  lyricsPath: '',
+  lyricsName: '',
+  lyricsLines: 0,
+  lyricsTimed: false,
+  audioPath: '',
+  audioName: '',
+  busy: false,
+  message: ''
+})
+
+async function uploadAsset(file, kind) {
+  const body = new FormData()
+  body.append('file', file)
+  body.append('kind', kind)
+  return upload('/api/animation/assets', body)
+}
+
+async function pickLyricsFile(file) {
+  if (!file) return
+  lyricForm.message = ''
+  try {
+    const info = await uploadAsset(file, 'lyrics')
+    lyricForm.lyricsPath = info.path
+    lyricForm.lyricsName = info.name
+    lyricForm.lyricsLines = info.lines || 0
+    lyricForm.lyricsTimed = Boolean(info.timed)
+    lyricForm.message = info.timed
+      ? `已读入 ${info.lines} 行歌词（带时间轴）`
+      : `已读入 ${info.lines} 行歌词（无时间轴，会按音频时长均分）`
+  } catch (failure) {
+    lyricForm.message = failure.message
+  }
+}
+
+async function pickAudioFile(file) {
+  if (!file) return
+  lyricForm.message = ''
+  try {
+    const info = await uploadAsset(file, 'audio')
+    lyricForm.audioPath = info.path
+    lyricForm.audioName = info.name
+    lyricForm.message = `配乐已上传（${Math.round((info.bytes || 0) / 1024)} KB）`
+  } catch (failure) {
+    lyricForm.message = failure.message
+  }
+}
+
+async function startLyricJob() {
+  if (!lyricForm.lyricsPath) {
+    lyricForm.message = '先选一个歌词文件（.lrc 或 .txt）'
+    return
+  }
+  lyricForm.busy = true
+  lyricForm.message = ''
+  try {
+    const result = await api('/api/animation/start', {
+      method: 'POST',
+      body: {
+        prompt: lyricForm.prompt || '帮我做一段歌词MV',
+        lyrics_file: lyricForm.lyricsPath,
+        audio: lyricForm.audioPath
+      }
+    })
+    const job = result?.job || {}
+    lyricForm.message = job.stage === 'awaiting_confirmation'
+      ? '分镜写好了，确认一下就开始渲染'
+      : `已开做（${job.stage || '排队中'}）`
+    await loadTasks()
+    return job
+  } catch (failure) {
+    lyricForm.message = failure.message
+  } finally {
+    lyricForm.busy = false
+  }
+}
+
 async function confirmTask(jobId) {
   taskPanel.busy = jobId
   try {
@@ -1871,6 +1950,10 @@ const state = {
   loadSkillHealth,
   taskPanel,
   loadTasks,
+  lyricForm,
+  pickLyricsFile,
+  pickAudioFile,
+  startLyricJob,
   confirmTask,
   deleteTask,
   cleanupTasks,

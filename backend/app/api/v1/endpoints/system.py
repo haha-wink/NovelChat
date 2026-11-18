@@ -2,6 +2,7 @@
 
 import functools
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -171,6 +172,119 @@ async def animation_cleanup(keep: int = 8, max_mb: int = 1500, stale_hours: floa
         functools.partial(animation_engine.cleanup, keep=keep,
                           max_mb=max_mb, stale_hours=stale_hours)
     )
+
+
+
+
+#: 允许上传的素材类型
+_ANIM_ASSET_KINDS = {
+    "lyrics": {".lrc", ".txt"},
+    "audio": {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"},
+}
+
+
+def _assets_dir() -> Path:
+    path = Path(get_settings().data_path) / "animation" / "assets"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@router.post("/animation/start", status_code=201)
+async def animation_start_job(payload: dict) -> dict:
+    """界面直接起任务（不经过模型）：歌词文件 / 配乐 / 一句话需求。"""
+    import skills.work.animation.engine as animation_engine
+
+    prompt = str(payload.get("prompt") or "帮我做一段歌词MV").strip()
+    lyrics_file = str(payload.get("lyrics_file") or "").strip()
+    audio = str(payload.get("audio") or "").strip()
+
+    lrc = ""
+    if lyrics_file:
+        path = Path(lyrics_file)
+        if not path.is_file():
+            raise HTTPException(status_code=400, detail="歌词文件不存在，请重新上传")
+        lrc = path.read_text(encoding="utf-8", errors="replace")
+
+    if audio and not Path(audio).is_file():
+        raise HTTPException(status_code=400, detail="音频文件不存在，请重新上传")
+
+    job = await anyio.to_thread.run_sync(
+        functools.partial(
+            animation_engine.create_job,
+            prompt,
+            style=str(payload.get("style") or "watercolor"),
+            lyrics=str(payload.get("lyrics") or ""),
+            lrc=lrc,
+            lyrics_file=lyrics_file,
+            audio=audio,
+            duration=float(payload.get("duration") or 0),
+        )
+    )
+    return {"ok": True, "job": job}
+
+
+@router.post("/animation/assets", status_code=201)
+async def animation_upload_asset(file: UploadFile = File(...), kind: str = Form("lyrics")) -> dict:
+    """上传歌词（.lrc/.txt）或配乐（mp3/wav…）。返回落盘路径，供起任务时引用。"""
+    import skills.work.animation.engine as animation_engine
+
+    kind = (kind or "lyrics").strip().lower()
+    allowed = _ANIM_ASSET_KINDS.get(kind)
+    if not allowed:
+        raise HTTPException(status_code=400, detail=f"kind 只能是 {list(_ANIM_ASSET_KINDS)}")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{kind} 只支持 {'、'.join(sorted(allowed))}，你传的是 {suffix or '无扩展名'}",
+        )
+
+    raw = await file.read()
+    limit = 40 * 1024 * 1024 if kind == "audio" else 2 * 1024 * 1024
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件是空的")
+    if len(raw) > limit:
+        raise HTTPException(status_code=413, detail=f"文件太大（上限 {limit // 1024 // 1024}MB）")
+
+    target = _assets_dir() / f"{kind}_{uuid.uuid4().hex[:12]}{suffix}"
+    target.write_bytes(raw)
+
+    payload = {
+        "ok": True,
+        "kind": kind,
+        "path": str(target),
+        "name": file.filename or target.name,
+        "bytes": len(raw),
+    }
+
+    if kind == "lyrics":
+        text = raw.decode("utf-8", errors="replace")
+        parsed = animation_engine.parse_lrc(text)
+        lines = [item["text"] for item in parsed if item.get("text")]
+        payload["lines"] = len(lines)
+        payload["timed"] = any(item.get("start") is not None for item in parsed)
+        payload["preview"] = lines[:5]
+
+    return payload
+
+
+@router.get("/animation/assets")
+async def animation_list_assets() -> list[dict]:
+    """已上传的素材（界面上给个下拉，不用重复传）。"""
+    folder = _assets_dir()
+    items = []
+    for path in sorted(folder.iterdir(), reverse=True)[:50]:
+        if not path.is_file():
+            continue
+        kind = "lyrics" if path.name.startswith("lyrics_") else "audio"
+        items.append({
+            "kind": kind,
+            "path": str(path),
+            "name": path.name,
+            "bytes": path.stat().st_size,
+        })
+    return items
 
 
 @router.get("/animation/{job_id}/video")

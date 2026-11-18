@@ -217,6 +217,45 @@
           </span>
         </div>
 
+        <!-- 歌词 MV：直接上传歌词 + 配乐，不用在群里拼文本 -->
+        <details class="lyric-box">
+          <summary>做歌词 MV</summary>
+          <div class="lyric-body">
+            <label class="lyric-file">
+              <span>歌词文件（.lrc 有时间轴 / .txt 均分）</span>
+              <input
+                type="file"
+                accept=".lrc,.txt"
+                @change="pickLyricsFile($event.target.files[0])"
+              />
+            </label>
+            <p v-if="lyricForm.lyricsName" class="lyric-note">
+              {{ lyricForm.lyricsName }} · {{ lyricForm.lyricsLines }} 行
+              {{ lyricForm.lyricsTimed ? '（带时间轴）' : '' }}
+            </p>
+
+            <label class="lyric-file">
+              <span>配乐（可选，mp3 / wav / m4a）</span>
+              <input
+                type="file"
+                accept=".mp3,.wav,.m4a,.aac,.ogg,.flac"
+                @change="pickAudioFile($event.target.files[0])"
+              />
+            </label>
+            <p v-if="lyricForm.audioName" class="lyric-note">{{ lyricForm.audioName }}</p>
+
+            <input v-model="lyricForm.prompt" class="lyric-prompt" placeholder="一句话需求" />
+            <button
+              class="primary small"
+              :disabled="lyricForm.busy || !lyricForm.lyricsPath"
+              @click="startLyricJob"
+            >
+              {{ lyricForm.busy ? '上传中…' : '开始渲染' }}
+            </button>
+            <p v-if="lyricForm.message" class="lyric-note">{{ lyricForm.message }}</p>
+          </div>
+        </details>
+
         <div class="task-actions">
           <button class="ghost small" :disabled="taskPanel.loading" @click="loadTasks">
             {{ taskPanel.loading ? '刷新中…' : '刷新' }}
@@ -354,6 +393,10 @@ const {
   startTaskResize,
   clearAllTasks,
   cleanupTasks,
+  lyricForm,
+  pickLyricsFile,
+  pickAudioFile,
+  startLyricJob,
   confirmTask,
   deleteTask,
   loadTasks,

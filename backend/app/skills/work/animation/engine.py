@@ -376,7 +376,9 @@ def _run_job(job_id: str) -> None:
         # 分镜文件：技能包要求先写下来（歌词 MV 还要人确认）
         _touch(job_id, STAGE_STORYBOARD)
         storyboard = Path(job["dir"]) / "STORYBOARD.md"
-        lyric_lines = _lyric_lines(job)
+        lyric_lines = [text for _s, _e, text in _lyric_timeline(job)[0]]
+        if not lyric_lines:
+            lyric_lines = _lyric_lines(job)
         if lyric_lines:
             table = "\n".join(
                 f"| {index * 3:.0f}–{index * 3 + 3:.0f}s | {line} | （待填画面） |"
@@ -444,6 +446,8 @@ def create_job(
     lyrics: str = "",
     audio: str = "",
     duration: float = 0.0,
+    lrc: str = "",
+    lyrics_file: str = "",
 ) -> dict:
     """起一个渲染任务，立刻返回（渲染在后台线程）。"""
     job_id = f"anim_{uuid.uuid4().hex[:12]}"
@@ -460,6 +464,8 @@ def create_job(
         "video": "",
         "error": "",
         "lyrics": str(lyrics or "")[:8000],
+        "lrc": str(lrc or "")[:20000],
+        "lyrics_file": str(lyrics_file or ""),
         "audio": str(audio or ""),
         "duration": float(duration or 0),
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -582,10 +588,22 @@ def _tool_start(args: dict) -> dict:
             lyrics = rest.strip()
             prompt = head.strip()
 
-    needs_confirm = _needs_storyboard(prompt) or bool(lyrics)
+    # 上传的歌词文件优先（LRC 有真实时间轴）
+    lyrics_file = str(args.get("lyrics_file") or "").strip()
+
+    needs_confirm = _needs_storyboard(prompt) or bool(lyrics) or bool(lyrics_file)
+    lrc = ""
+    if lyrics_file and Path(lyrics_file).is_file():
+        try:
+            lrc = Path(lyrics_file).read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            lrc = ""
+
     job = create_job(
         prompt, style=style, user_id=str(args.get("user_id") or ""),
         lyrics=lyrics,
+        lrc=lrc,
+        lyrics_file=lyrics_file,
         audio=str(args.get("audio") or ""),
         duration=float(args.get("duration") or 0),
     )
@@ -632,7 +650,9 @@ tool_protocol.register(
             "style": {"type": "string",
                       "description": "watercolor（手绘水彩，默认）/ pixel（像素风）"},
             "lyrics": {"type": "string",
-                       "description": "歌词全文（多行）。歌词 MV 必填，会逐句打在画面上"},
+                       "description": "歌词全文（多行）。歌词 MV 用，会逐句打在画面上"},
+            "lyrics_file": {"type": "string",
+                            "description": "歌词文件路径（.lrc 有真实时间轴，.txt 均分）"},
             "audio": {"type": "string",
                       "description": "配乐文件路径（可选），渲染完会混进成片"},
             "duration": {"type": "number",
@@ -834,33 +854,19 @@ def _probe_duration(path: Path) -> float:
 
 
 def _prepare_lyric_project(project: Path, job: dict) -> dict:
-    """把歌词写进 src/karaoke.js 的 LY，把总时长写进 src/config.js。
+    """把歌词按**真实时间轴**写进 src/karaoke.js 的 LY，总时长写进 config.js。
 
-    返回 {"lines": n, "duration": s, "audio": path|""}。
+    LRC 给到时间戳就按 LRC，否则按音频时长均分，再否则每句 3 秒。
     """
-    lines = _lyric_lines(job)
-    if not lines:
-        return {"lines": 0, "duration": 0, "audio": ""}
+    timeline, duration = _lyric_timeline(job)
+    if not timeline:
+        return {"lines": 0, "duration": 0, "audio": "", "lrc": False}
 
-    audio = str(job.get("audio") or "").strip()
-    audio_path = Path(audio) if audio and Path(audio).exists() else None
-
-    # 时长：优先用户给的 > 音频实际时长 > 每句 3 秒
-    duration = float(job.get("duration") or 0)
-    if not duration and audio_path is not None:
-        duration = _probe_duration(audio_path)
-    per_line = 3.0
-    if not duration:
-        duration = max(6.0, per_line * len(lines))
-    else:
-        per_line = duration / max(1, len(lines))
-
-    # 逐句排时间轴：均分，最后留一点余量
-    entries = []
-    for index, line in enumerate(lines):
-        start = round(index * per_line, 2)
-        end = round(min(duration, start + per_line * 0.92), 2)
-        entries.append(f"  [{start}, {end}, {json.dumps(line, ensure_ascii=False)}],")
+    timed = any(entry[1] - entry[0] < 3.5 for entry in timeline)
+    entries = [
+        f"  [{start}, {end}, {json.dumps(text, ensure_ascii=False)}],"
+        for start, end, text in timeline
+    ]
     ly_block = "const LY = [\n" + "\n".join(entries) + "\n];"
 
     karaoke = project / "src" / "karaoke.js"
@@ -884,8 +890,13 @@ def _prepare_lyric_project(project: Path, job: dict) -> dict:
                 source = source[:start] + replacement + source[end + 2:]
                 config.write_text(source, encoding="utf-8")
 
-    return {"lines": len(lines), "duration": round(duration, 2),
-            "audio": str(audio_path) if audio_path else ""}
+    audio = str(job.get("audio") or "").strip()
+    return {
+        "lines": len(timeline),
+        "duration": duration,
+        "audio": audio if audio and Path(audio).exists() else "",
+        "lrc": bool(str(job.get("lrc") or "").strip()),
+    }
 
 
 def _mux_audio(video: str, audio: str) -> str:
@@ -906,3 +917,104 @@ def _mux_audio(video: str, audio: str) -> str:
     except Exception:  # noqa: BLE001
         logger.exception("混音失败（保留无声版）")
     return video
+
+#: 一行开头的时间戳（一行可能有多个，比如副歌重复）
+_LRC_STAMP = re.compile(r"^\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+_LRC_OFFSET = re.compile(r"\[offset:\s*(-?\d+)\]", re.IGNORECASE)
+_LRC_META = re.compile(r"^\[(ti|ar|al|by|re|ve|offset):", re.IGNORECASE)
+
+
+def parse_lrc(text: str) -> list[dict]:
+    """解析 LRC，返回 [{start, text}]（按时间排序）。
+
+    支持一行多个时间戳（`[00:05.20][00:12.00]同一句`）、`[offset:±ms]`；
+    没有时间戳的纯文本行放在最后，start 为 None。
+    """
+    raw = str(text or "")
+    offset = 0.0
+    match = _LRC_OFFSET.search(raw)
+    if match:
+        offset = float(match.group(1)) / 1000.0
+
+    timed: list[dict] = []
+    untimed: list[dict] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or _LRC_META.match(line):
+            continue
+
+        stamps: list[float] = []
+        rest = line
+        while True:
+            found = _LRC_STAMP.match(rest)
+            if not found:
+                break
+            minutes, seconds, fraction = found.groups()
+            value = int(minutes) * 60 + int(seconds)
+            if fraction:
+                value += int(fraction) / (10 ** len(fraction))
+            stamps.append(round(value + offset, 3))
+            rest = rest[found.end():]
+
+        content = rest.strip()
+        if not stamps:
+            if content:
+                untimed.append({"start": None, "text": content})
+            continue
+        for start in stamps:
+            timed.append({"start": start, "text": content})
+
+    timed.sort(key=lambda item: item["start"])
+    return timed + untimed
+
+
+def _lyric_timeline(job: dict) -> tuple[list[tuple[float, float, str]], float]:
+    """把歌词整理成 [(start, end, text)]，并给出总时长。
+
+    优先级：LRC 时间戳 > 音频时长均分 > 每句 3 秒均分。
+    """
+    lrc_text = str(job.get("lrc") or "").strip()
+    if not lrc_text:
+        lrc_path = str(job.get("lyrics_file") or "").strip()
+        if lrc_path and Path(lrc_path).is_file():
+            try:
+                lrc_text = Path(lrc_path).read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                lrc_text = ""
+
+    audio = str(job.get("audio") or "").strip()
+    audio_path = Path(audio) if audio and Path(audio).exists() else None
+    total = float(job.get("duration") or 0)
+    if not total and audio_path is not None:
+        total = _probe_duration(audio_path)
+
+    if lrc_text:
+        parsed = parse_lrc(lrc_text)
+        timed = [item for item in parsed if item["start"] is not None]
+        if timed:
+            result = []
+            for index, item in enumerate(timed):
+                start = float(item["start"])
+                if index + 1 < len(timed):
+                    end = float(timed[index + 1]["start"])
+                else:
+                    end = start + 3.0
+                # 收尾留一点，避免最后一句立刻消失
+                result.append((round(start, 3), round(max(start + 0.6, end - 0.12), 3),
+                               item["text"]))
+            if not total:
+                total = result[-1][1] + 2.0
+            return result, round(total, 3)
+
+    lines = _lyric_lines(job)
+    if not lines:
+        return [], round(total, 3)
+
+    per = (total / len(lines)) if total else 3.0
+    total = total or max(6.0, per * len(lines))
+    result = []
+    for index, line in enumerate(lines):
+        start = round(index * per, 3)
+        end = round(min(total, start + per * 0.92), 3)
+        result.append((start, end, line))
+    return result, round(total, 3)

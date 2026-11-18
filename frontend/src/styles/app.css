@@ -1069,3 +1069,59 @@ body.resizing-task {
   cursor: col-resize;
   user-select: none;
 }
+
+/* ---------- 歌词 MV 上传区 ---------- */
+.lyric-box {
+  border-radius: 10px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+  background: rgba(255, 255, 255, 0.7);
+  padding: 6px 10px;
+}
+
+.lyric-box > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.lyric-box > summary::-webkit-details-marker {
+  display: none;
+}
+
+.lyric-box[open] > summary {
+  margin-bottom: 8px;
+}
+
+.lyric-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lyric-file {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+}
+
+.lyric-file input[type="file"] {
+  font-size: 11px;
+}
+
+.lyric-prompt {
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.12));
+  background: #fff;
+}
+
+.lyric-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+  line-height: 1.5;
+}

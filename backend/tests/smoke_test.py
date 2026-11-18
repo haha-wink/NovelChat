@@ -2110,6 +2110,39 @@ def skill_checks() -> None:
           block[:40])
 
 
+def lrc_checks() -> None:
+    """LRC 时间轴：多时间戳、offset、按真实时间排 LY，不是均分。"""
+    import skills.work.animation.engine as animation
+
+    sample = (
+        "[ti:旧车站]\n[ar:测试]\n[offset:-200]\n"
+        "[00:01.50]月光落在旧车站\n"
+        "[00:05.20][00:12.00]风把伞吹歪了\n"
+        "[00:09.00]我还站在原地\n"
+    )
+    parsed = animation.parse_lrc(sample)
+    texts = [item["text"] for item in parsed]
+    check("LRC：忽略 ti/ar 元信息", "旧车站" not in texts, str(texts))
+    check("LRC：忽略 offset 标签", not any("offset" in item for item in texts), str(texts))
+    check("LRC：一行多时间戳拆成两条",
+          texts.count("风把伞吹歪了") == 2, str(texts))
+    check("LRC：offset 生效（01.50 - 0.2 = 1.30）",
+          any(abs(item["start"] - 1.30) < 0.01 for item in parsed), str(parsed))
+
+    timeline, duration = animation._lyric_timeline({"lrc": sample})
+    check("LRC：按真实时间排而不是均分",
+          abs(timeline[0][0] - 1.30) < 0.01 and abs(timeline[1][0] - 5.00) < 0.01,
+          str([(round(s, 2), t) for s, _e, t in timeline]))
+    check("LRC：总时长按最后一句算",
+          duration > timeline[-1][0], f"{duration} vs {timeline[-1][0]}")
+
+    # 纯文本歌词退回均分
+    plain, plain_duration = animation._lyric_timeline({"lyrics": "第一句\n第二句\n第三句"})
+    check("LRC：纯文本歌词退化为均分",
+          len(plain) == 3 and abs(plain[1][0] - 3.0) < 0.01,
+          str([(round(s, 2), t) for s, _e, t in plain]))
+
+
 def lyric_mv_checks() -> None:
     """歌词 MV：起任务要说明"先确认分镜"，确认后必须真的跑到完成。
 
@@ -2307,6 +2340,75 @@ def task_cleanup_checks() -> None:
     safe = animation_engine.cleanup(keep=9999, max_mb=999999)
     check("任务：上限给足时不误删",
           safe.get("ok") and not safe.get("removed"), str(safe))
+
+
+async def asset_upload_checks() -> None:
+    """素材上传：歌词/配乐能传、类型能挡、LRC 能读出时间轴。"""
+    transport = httpx.ASGITransport(app=app)
+    lrc = (
+        "[ti:旧车站]\n[00:02.00]月光落在旧车站\n"
+        "[00:06.50]风把伞吹歪了\n"
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        uploaded = await client.post(
+            "/api/animation/assets",
+            data={"kind": "lyrics"},
+            files={"file": ("test.lrc", lrc.encode("utf-8"), "text/plain")},
+        )
+        check("素材：LRC 上传成功", uploaded.status_code == 201, uploaded.text[:120])
+        payload = uploaded.json() if uploaded.status_code == 201 else {}
+        check("素材：认出带时间轴",
+              payload.get("timed") is True and payload.get("lines") == 2, str(payload))
+        check("素材：给出预览",
+              payload.get("preview") and "月光落在旧车站" in payload["preview"][0],
+              str(payload.get("preview")))
+
+        listing = await client.get("/api/animation/assets")
+        check("素材：列表里能看到刚传的",
+              listing.status_code == 200 and any(
+                  item["path"] == payload.get("path") for item in listing.json()),
+              str([item["name"] for item in listing.json()])[:100])
+
+        # 类型不对要被挡住
+        wrong = await client.post(
+            "/api/animation/assets",
+            data={"kind": "lyrics"},
+            files={"file": ("evil.exe", b"MZ", "application/octet-stream")},
+        )
+        check("素材：歌词不接受可执行文件", wrong.status_code == 400,
+              str(wrong.status_code))
+
+        bad_kind = await client.post(
+            "/api/animation/assets",
+            data={"kind": "video"},
+            files={"file": ("a.mp4", b"x", "video/mp4")},
+        )
+        check("素材：未知 kind 被拒", bad_kind.status_code == 400,
+              str(bad_kind.status_code))
+
+        empty = await client.post(
+            "/api/animation/assets",
+            data={"kind": "lyrics"},
+            files={"file": ("empty.lrc", b"", "text/plain")},
+        )
+        check("素材：空文件被拒", empty.status_code == 400, str(empty.status_code))
+
+        # 起任务用的是上传后的文件
+        started = await client.post("/api/animation/start", json={
+            "prompt": "帮我做一段歌词MV", "lyrics_file": payload.get("path"),
+        })
+        check("素材：能直接用上传的歌词起任务", started.status_code == 201,
+              started.text[:120])
+        if started.status_code == 201:
+            job = started.json()["job"]
+            check("素材：起任务后进等确认状态",
+                  job.get("requires_confirmation") is True, str(job.get("stage")))
+
+        missing = await client.post("/api/animation/start", json={
+            "prompt": "x", "lyrics_file": "/nope/not-exist.lrc",
+        })
+        check("素材：文件不存在时明确报错", missing.status_code == 400,
+              str(missing.status_code))
 
 
 async def video_route_checks() -> None:
@@ -6482,8 +6584,10 @@ def main() -> int:
     skill_checks()
     intent_checks()
     awaiting_checks()
+    lrc_checks()
     lyric_mv_checks()
     task_cleanup_checks()
+    asyncio.run(asset_upload_checks())
     asyncio.run(video_route_checks())
     fetch_script_checks()
     skill_vendor_checks()
