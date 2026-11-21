@@ -12,6 +12,8 @@
 - 前端：Vue 3 + Vite，单页应用
 - 本地小模型：RAG 嵌入（bge-small-zh）+ 情绪分类（Erlangshen，ONNX int8）
 
+> **项目交接/状态**：当前进度、环境、坑和常用命令都写在 [docs/project-status.md](docs/project-status.md)，新会话先读它。
+
 ---
 
 ## 目录结构
