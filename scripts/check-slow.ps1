@@ -21,7 +21,7 @@
 param(
     [string]$SessionRoot = "$env:USERPROFILE\.dsh\sessions",
     [string]$ProjCache   = "$env:USERPROFILE\.dsh\storages\session_projcache\sessions",
-    [string]$Workspace   = 'E:\NovelChat\_scratch',
+    [string]$Workspace   = 'E:\NovelChat\backend\data',   # _scratch 已于 2026-11-21 删除，改扫运行时数据目录
     [string]$Project     = 'E:\NovelChat',
     [string]$AnimDir     = 'E:\NovelChat\backend\data\animation',
     [switch]$NoDeepScan
