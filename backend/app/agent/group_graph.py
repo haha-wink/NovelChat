@@ -391,8 +391,14 @@ def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str, list[dict]]:
     extra = _skill_assets(state)
     mode = str(state.get("mode") or "chat")
     try:
-        result = skills.run_for(payload, mode=mode,
-                               extra={"user_id": state.get("user_id") or "", **extra})
+        if extra.get("lyrics_file") or extra.get("audio"):
+            # 用户传了歌词/配乐，意图已经很明确：直接跑 animation，
+            # 不要因为措辞没命中关键词就什么都不做
+            skill = skills.get("animation")
+            result = skill.run({**payload, **extra}) if skill else None
+        else:
+            result = skills.run_for(payload, mode=mode,
+                                    extra={"user_id": state.get("user_id") or "", **extra})
     except Exception:  # noqa: BLE001 - 技能失败不能挡住群聊
         logger.exception("群聊技能执行失败（已忽略）")
         return "", "", []

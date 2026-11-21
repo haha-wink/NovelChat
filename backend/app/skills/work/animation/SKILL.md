@@ -5,8 +5,8 @@ modes: [work]
 requires: [node, ffmpeg, chrome]
 external: true
 when:
-  keywords: [动画, 短片, 视频, 动图, gif, GIF, MV, mv, 渲染, 歌词]
-  action_words: [帮我做, 给我做, 做一个, 做一段, 生成, 剪一段, 做动画, 做成视频]
+  keywords: [动画, 短片, 视频, 动图, gif, GIF, MV, mv, 渲染, 歌词, 像素]
+  action_words: [帮我, 给我, 做一个, 做一段, 做个, 做, 生成, 剪, 来一段, 出一段, 拍一段, 为这首歌]
   not_crisis: true
   base: 0.55
   bonus: 0.3

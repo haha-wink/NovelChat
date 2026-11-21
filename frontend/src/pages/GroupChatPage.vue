@@ -167,7 +167,7 @@
             <input
               id="group-file-upload"
               type="file"
-              accept="image/png, image/jpeg, image/jpg"
+              accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,.lrc,.txt,.mp3,.wav,.m4a,.aac,.ogg,.flac"
               hidden
               @change="handleFileSelect"
             />
@@ -230,7 +230,7 @@
               <span>歌词文件（.lrc 有时间轴 / .txt 均分）</span>
               <input
                 type="file"
-                accept=".lrc,.txt"
+                accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,.lrc,.txt,.mp3,.wav,.m4a,.aac,.ogg,.flac"
                 @change="pickLyricsFile($event.target.files[0])"
               />
             </label>
@@ -243,7 +243,7 @@
               <span>配乐（可选，mp3 / wav / m4a）</span>
               <input
                 type="file"
-                accept=".mp3,.wav,.m4a,.aac,.ogg,.flac"
+                accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,.lrc,.txt,.mp3,.wav,.m4a,.aac,.ogg,.flac"
                 @change="pickAudioFile($event.target.files[0])"
               />
             </label>

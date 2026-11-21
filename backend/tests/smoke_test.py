@@ -2159,6 +2159,51 @@ def skill_asset_checks() -> None:
         check("素材上下文：像素模式也写了歌词",
               "第一句" in karaoke, "没写")
 
+    # 有素材时，就算措辞没命中关键词也要跑 animation
+    import asyncio as _asyncio
+    import random as _random
+
+    from agent import group as group_engine
+    from services.catalog import library as catalog_library
+
+    dbmod.init_db()
+    lib = dbmod.create_library("素材技能自检库", "临时")
+    shelf = dbmod.create_shelf(lib["id"], "素材技能架")
+    book = catalog_library.create_book(
+        title="素材技能书", source_name="s2.txt", source_type="txt",
+        text="x", shelf_id=shelf["id"],
+    )
+    dbmod.insert_character(book_id=book["id"], name="甲", personality=["温柔"], source="novel")
+    members = dbmod.ensure_shelf_members(shelf["id"])
+
+    started: list[str] = []
+
+    async def generate(member, transcript):
+        block = member.get("_skill_block") or ""
+        # 歌词 MV 的素材文案是"分镜我先写好了…"，不含"动画"二字
+        if "分镜" in block or "动画" in block or "任务" in block:
+            started.append(block)
+        yield "好。"
+
+    async def run_with_assets():
+        signals = dialogue.classify("帮我为这首歌像素风格的MV")
+        async for _event in group_engine.run_turn(
+            shelf_id=shelf["id"], user_id="u_asset", text="帮我为这首歌像素风格的MV",
+            generate=generate, members=members, signals=signals,
+            dialogue_plan=dialogue.plan(signals), mode="work",
+            assets=[{"kind": "lyrics", "path": "/tmp/not-exist.lrc"}],
+            rng=_random.Random(2),
+            tweaks={"max_speakers": 1, "max_rounds": 1, "threshold": 0.0,
+                    "all_threshold": 0.0, "cooldown_seconds": 0},
+        ):
+            pass
+
+    _asyncio.run(run_with_assets())
+    check("素材上下文：带素材时技能一定被触发", bool(started),
+          str([item[:40] for item in started]))
+    dbmod.delete_book(book["id"])
+    dbmod.delete_shelf(shelf["id"])
+
 
 def lrc_checks() -> None:
     """LRC 时间轴：多时间戳、offset、按真实时间排 LY，不是均分。"""

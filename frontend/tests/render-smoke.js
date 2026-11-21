@@ -92,6 +92,11 @@ function seed(app) {
   app.taskPanel.stats = { count: 2, total_mb: 25.4 }
   app.taskPanel.loading = false
 
+  // 待发送的歌词/配乐标签
+  const assetList = app.pendingAssets?.value || app.pendingAssets
+  assetList.length = 0
+  assetList.push({ kind: 'lyrics', path: '/tmp/a.lrc', name: '旧车站.lrc' })
+
   app.skillPanel.loaded = true
   app.skillPanel.checked = 7
   app.skillPanel.ok = true

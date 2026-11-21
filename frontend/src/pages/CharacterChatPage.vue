@@ -157,7 +157,7 @@
             <input
               id="file-upload"
               type="file"
-              accept="image/png, image/jpeg, image/jpg"
+              accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,.lrc,.txt,.mp3,.wav,.m4a,.aac,.ogg,.flac"
               hidden
               @change="handleFileSelect"
             />
@@ -208,6 +208,7 @@ const {
   chatContainer,
   textareaRef,
   pendingImages,
+  pendingAssets,
   conversations,
   editor,
   status,

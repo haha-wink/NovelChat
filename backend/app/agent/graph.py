@@ -268,7 +268,11 @@ async def skill_node(state: TurnState) -> dict:
     extra = {"style": style, "lyrics_file": lyrics_file, "audio": audio}
 
     try:
-        result = skills.run_for(payload, mode=mode, extra=extra)
+        if extra.get("lyrics_file") or extra.get("audio"):
+            skill = skills.get("animation")
+            result = skill.run({**payload, **extra}) if skill else None
+        else:
+            result = skills.run_for(payload, mode=mode, extra=extra)
     except Exception:  # noqa: BLE001 - 技能失败不能影响聊天
         logger.exception("技能执行失败（已忽略）")
         result = None
