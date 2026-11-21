@@ -495,6 +495,7 @@ def _run_job(job_id: str) -> None:
     project = Path(job.get("dir") or "") / "project"
 
     lyric_info: dict = {}
+    slot_held = False
     try:
         caps = capabilities()
 
@@ -504,8 +505,10 @@ def _run_job(job_id: str) -> None:
             if not _RENDER_SLOT.acquire(blocking=False):
                 _touch(job_id, STAGE_QUEUED, note="排队中（前面还有任务在渲染）")
                 _RENDER_SLOT.acquire()
+                slot_held = True
                 _touch(job_id, STAGE_SCAFFOLD, note="排到了，开始渲染")
             else:
+                slot_held = True
                 _touch(job_id, STAGE_SCAFFOLD)
         else:
             _touch(job_id, STAGE_SCAFFOLD)
@@ -556,6 +559,12 @@ def _run_job(job_id: str) -> None:
         # 歌词 MV：把歌词真正填进模板（不然渲染出来只是模板默认画面）
         lyric_info = _prepare_lyric_project(project, job)
 
+        # 非歌词任务也认时长：模板默认 11s，不写回去「前30s / 3秒」就永远被忽略
+        if not lyric_info.get("lines"):
+            wanted = float(job.get("duration") or 0)
+            if wanted > 0:
+                _write_project_duration(project, wanted)
+
         # 逐句场景：不再永远用 demo 的"小人+月亮"
         try:
             from skills.work.animation import scene_gen
@@ -599,13 +608,11 @@ def _run_job(job_id: str) -> None:
         logger.exception("动画任务失败：%s", job_id)
         _touch(job_id, STAGE_FAILED, error=str(exc)[:1800])
     finally:
-        if lyric_info.get("_locked"):
-            pass
-        try:
-            if _RENDER_SLOT._value == 0:   # 本任务确实持有才释放
+        if slot_held:
+            try:
                 _RENDER_SLOT.release()
-        except Exception:  # noqa: BLE001
-            pass
+            except Exception:  # noqa: BLE001
+                pass
 
 
 
@@ -1065,6 +1072,21 @@ def _probe_duration(path: Path) -> float:
     return 0.0
 
 
+def _write_project_duration(project: Path, duration: float) -> None:
+    """把时长写进 config.js 的 PROJECT.duration（保留 pixel 等其它字段）。"""
+    config = project / "src" / "config.js"
+    if not config.exists():
+        return
+    source = config.read_text(encoding="utf-8")
+    start = source.find("const PROJECT = {")
+    end = source.find("};", start) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return
+    block = re.sub(r"duration:\s*[\d.]+", f"duration: {float(duration):.2f}",
+                   source[start:end], count=1)
+    config.write_text(source[:start] + block + source[end:], encoding="utf-8")
+
+
 def _prepare_lyric_project(project: Path, job: dict) -> dict:
     """把歌词按**真实时间轴**写进 src/karaoke.js 的 LY，总时长写进 config.js。
 
@@ -1289,15 +1311,24 @@ def _encode_frames(job_id: str, project: Path, fps: int, audio: str = "") -> str
         raise RuntimeError("没有 ffmpeg，无法编码")
 
     out = project / "out" / "video.mp4"
+    has_audio = bool(audio) and Path(audio).is_file()
+    # ffmpeg 的选项绑定「下一个输入/输出」：所有输入写在一起，编码参数放后面。
+    # 以前把 -c:v libx264 夹在两个 -i 之间，它被当成第二个输入的解码器，
+    # 于是带配乐的任务必崩：Unknown decoder 'libx264' + Decoder not found。
     cmd = [
         ffmpeg, "-y", "-loglevel", "error",
         "-framerate", str(fps),
         "-i", "out/frames/f%05d.jpg",
+    ]
+    if has_audio:
+        cmd += ["-i", audio]
+    cmd += [
         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     ]
-    if audio and Path(audio).exists():
-        cmd += ["-i", audio, "-c:a", "aac", "-b:a", "192k", "-shortest"]
+    if has_audio:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0",
+                "-c:a", "aac", "-b:a", "192k", "-shortest"]
     cmd.append("out/video.mp4")
 
     _touch(job_id, STAGE_ENCODE, progress=0.98, note="编码视频")
