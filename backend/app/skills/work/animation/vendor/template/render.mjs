@@ -36,6 +36,18 @@ function playwrightChromes() {
 const CHROME = CHROMES.find(p => p && existsSync(p));
 if (!CHROME) { console.error('Chrome not found: pass --chrome=<path> or set CHROME_PATH'); process.exit(1); }
 const fps = +(args.fps || 24), FRAMES_DIR = 'out/frames';
+// 输出缩放：--w=1280 --h=720（快模式）。底层画布变 1280×720，构图不变。
+const BASE_W = 1920, BASE_H = 1080;
+const PD = (() => {
+  if (!args.w && !args.h) return 1;
+  const w = +(args.w || BASE_W), h = +(args.h || Math.round(w * BASE_H / BASE_W));
+  const pd = w / BASE_W;
+  if (!(pd > 0) || Math.abs(h / BASE_H - pd) > 0.01) {
+    console.error(`--w/--h 比例不对：${w}×${h}（要 16:9）`); process.exit(1);
+  }
+  return pd;
+})();
+if (PD !== 1) console.log(`render size ${Math.round(BASE_W * PD)}×${Math.round(BASE_H * PD)}`);
 const run = (cmd, a) => new Promise((ok, bad) => { const p = spawn(cmd, a, { stdio: 'inherit' }); p.on('close', c => c ? bad(new Error(cmd + ' exited ' + c)) : ok()); });
 const times = s => String(s).split(',').map(Number);
 const span = s => String(s).split(':').map(Number);
@@ -73,7 +85,8 @@ async function openPage(tag = '') {
   const page = await browser.newPage();
   page.on('console', m => { if (['error', 'warn'].includes(m.type())) console.log(`[page${tag}]`, m.text()); });
   page.on('pageerror', e => console.log(`[page error${tag}]`, e.message));
-  await page.goto(pathToFileURL(resolve('studio.html')).href + '?render', { waitUntil: 'networkidle0' });
+  await page.goto(pathToFileURL(resolve('studio.html')).href + '?render'
+    + (PD !== 1 ? `&pd=${PD}` : ''), { waitUntil: 'networkidle0' });
   await page.waitForFunction('window.ready === true', { timeout: 60000 });
   if (args.loop) {
     const ok = await page.evaluate(name => { if (!LOOPS[name]) return false; window.LOOP = LOOPS[name]; return true; }, args.loop);

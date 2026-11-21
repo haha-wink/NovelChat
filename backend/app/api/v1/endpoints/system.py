@@ -221,6 +221,7 @@ async def animation_start_job(payload: dict) -> dict:
             lyrics_file=lyrics_file,
             audio=audio,
             duration=duration,
+            quality=str(payload.get("quality") or "standard"),
         )
     )
     return {"ok": True, "job": job}

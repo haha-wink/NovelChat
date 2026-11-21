@@ -250,6 +250,13 @@
             <p v-if="lyricForm.audioName" class="lyric-note">{{ lyricForm.audioName }}</p>
 
             <input v-model="lyricForm.prompt" class="lyric-prompt" placeholder="一句话需求" />
+            <label class="lyric-file">
+              <span>画质</span>
+              <select v-model="lyricForm.quality" class="lyric-prompt">
+                <option value="standard">1080p 标准（最清晰，慢）</option>
+                <option value="fast">720p 快速（12fps，约 3 倍快）</option>
+              </select>
+            </label>
             <button
               class="primary small"
               :disabled="lyricForm.busy || !lyricForm.lyricsPath"

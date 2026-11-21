@@ -415,11 +415,13 @@ def _real_render(job_id: str, project: Path) -> str:
 
     job = job_status(job_id) or {}
     duration = float(job.get("duration") or 10)
-    # 长片子降帧率：帧数减半，渲染时间也减半，观感差别不大
-    fps = 12 if duration > 30 else 24
+    fast = _normalize_quality(job.get("quality")) == FAST_QUALITY
+    # 长片子降帧率：帧数减半，渲染时间也减半，观感差别不大；快模式一律 12fps
+    fps = 12 if (fast or duration > 30) else 24
     timeout = _render_timeout(duration, fps)
 
-    cmd = [node, "render.mjs", "--clip", "--out=out/video.mp4", f"--fps={fps}"]
+    size = ["--w=1280", "--h=720"] if fast else []
+    cmd = [node, "render.mjs", "--clip", "--out=out/video.mp4", f"--fps={fps}", *size]
     if chrome:
         cmd.append(f"--chrome={chrome}")
 
@@ -431,7 +433,7 @@ def _real_render(job_id: str, project: Path) -> str:
         for attempt in range(1, attempts + 1):
             try:
                 return _render_parallel(job_id, project, duration, fps,
-                                        str(job.get("audio") or ""))
+                                        str(job.get("audio") or ""), fast=fast)
             except RuntimeError as exc:
                 last_error = str(exc)
                 if attempt < attempts:
@@ -607,6 +609,19 @@ def _run_job(job_id: str) -> None:
 
 
 
+#: 画质档位：standard = 1080p；fast = 720p + 12fps
+STANDARD_QUALITY = "standard"
+FAST_QUALITY = "fast"
+
+
+def _normalize_quality(value) -> str:
+    """把用户/模型给的各种写法归一到两档；认不出就当 standard。"""
+    raw = str(value or "").strip().lower()
+    if raw in ("fast", "720p", "720", "quick", "快速"):
+        return FAST_QUALITY
+    return STANDARD_QUALITY
+
+
 def create_job(
     prompt: str,
     *,
@@ -618,6 +633,7 @@ def create_job(
     duration: float = 0.0,
     lrc: str = "",
     lyrics_file: str = "",
+    quality: str = "standard",
 ) -> dict:
     """起一个渲染任务，立刻返回（渲染在后台线程）。"""
     job_id = f"anim_{uuid.uuid4().hex[:12]}"
@@ -627,6 +643,8 @@ def create_job(
         "id": job_id,
         "prompt": str(prompt or "")[:2000],
         "style": str(style or "watercolor"),
+        #: standard = 1920×1080；fast = 1280×720 + 12fps（渲染约 3 倍快，画面略软）
+        "quality": _normalize_quality(quality),
         "user_id": str(user_id or ""),
         "stage": STAGE_QUEUED,
         "requires_confirmation": _needs_storyboard(prompt),
@@ -797,6 +815,7 @@ def _tool_start(args: dict) -> dict:
         lyrics_file=lyrics_file,
         audio=str(args.get("audio") or ""),
         duration=duration,
+        quality=str(args.get("quality") or "standard"),
     )
     label = _STAGE_LABELS.get(job["stage"], job["stage"])
 
@@ -848,6 +867,8 @@ tool_protocol.register(
                       "description": "配乐文件路径（可选），渲染完会混进成片"},
             "duration": {"type": "number",
                          "description": "时长秒（可选），不给就按音频时长/歌词行数估"},
+            "quality": {"type": "string",
+                        "description": "standard（1080p，默认）/ fast（720p + 12fps，约 3 倍快）"},
         },
         handler=_tool_start,
         required=("prompt",),
@@ -1290,7 +1311,7 @@ def _encode_frames(job_id: str, project: Path, fps: int, audio: str = "") -> str
 
 
 def _render_parallel(job_id: str, project: Path, duration: float, fps: int,
-                     audio: str = "") -> str:
+                     audio: str = "", fast: bool = False) -> str:
     """长片子：把时间轴切成几片，**起多个 render.mjs 进程**同时渲。
 
     注意 --workers 参数没用：多个 worker 共享同一个浏览器进程，
@@ -1318,6 +1339,8 @@ def _render_parallel(job_id: str, project: Path, duration: float, fps: int,
         end = duration if index == shards - 1 else (index + 1) * span
         cmd = [node, "render.mjs", "--frames", "--workers=1",
                f"--range={begin:.2f}:{end:.2f}", f"--fps={fps}"]
+        if fast:
+            cmd += ["--w=1280", "--h=720"]
         if chrome:
             cmd.append(f"--chrome={chrome}")
         logger.info("分片 %d/%d：%.1f~%.1f 秒", index + 1, shards, begin, end)
@@ -1369,50 +1392,3 @@ def _count_frames(project: Path) -> int:
     if not folder.exists():
         return 0
     return sum(1 for item in folder.glob("f*.jpg") if item.stat().st_size > 1000)
-
-
-tool_protocol.register(
-    tool_protocol.ToolSpec(
-        name="animation_start",
-        description="用户要一段动画/短片/动图时：起一个渲染任务（异步，立刻返回）",
-        parameters={
-            "prompt": {"type": "string", "description": "要做什么动画，用用户的原话"},
-            "style": {"type": "string",
-                      "description": "watercolor（手绘水彩，默认）/ pixel（像素风）"},
-            "lyrics": {"type": "string",
-                       "description": "歌词全文（多行）。歌词 MV 用，会逐句打在画面上"},
-            "lyrics_file": {"type": "string",
-                            "description": "歌词文件路径（.lrc 有真实时间轴，.txt 均分）"},
-            "audio": {"type": "string",
-                      "description": "配乐文件路径（可选），渲染完会混进成片"},
-            "duration": {"type": "number",
-                         "description": "时长秒（可选），不给就按音频时长/歌词行数估"},
-        },
-        handler=_tool_start,
-        required=("prompt",),
-        domain="media",
-    )
-)
-
-tool_protocol.register(
-    tool_protocol.ToolSpec(
-        name="animation_status",
-        description="查一个动画任务的进度和产物路径",
-        parameters={"job_id": {"type": "string", "description": "任务 id"}},
-        handler=_tool_status,
-        required=("job_id",),
-        domain="media",
-    )
-)
-
-tool_protocol.register(
-    tool_protocol.ToolSpec(
-        name="animation_capabilities",
-        description="这台机器能不能渲染动画（node / ffmpeg / Chrome 是否齐全）",
-        parameters={},
-        handler=_tool_capabilities,
-        domain="media",
-    )
-)
-
-

@@ -1143,6 +1143,7 @@ async function loadTasks() {
 //: 歌词 MV 表单（任务栏里的上传区）
 const lyricForm = reactive({
   prompt: '帮我做一段歌词MV',
+  quality: 'standard',
   lyricsPath: '',
   lyricsName: '',
   lyricsLines: 0,
@@ -1203,7 +1204,8 @@ async function startLyricJob() {
       body: {
         prompt: lyricForm.prompt || '帮我做一段歌词MV',
         lyrics_file: lyricForm.lyricsPath,
-        audio: lyricForm.audioPath
+        audio: lyricForm.audioPath,
+        quality: lyricForm.quality
       }
     })
     const job = result?.job || {}

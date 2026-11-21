@@ -1,6 +1,13 @@
 // core.js: constants, helpers, paper, paint wrapper, compositing and render hooks.
 // Length and rhythm come from PROJECT in config.js.
 const W = 1920, H = 1080;
+// 输出缩放：?pd=0.6667 → 底层画布 1280×720（快模式）。
+// 所有场景坐标仍按 1920×1080 走，p5 的 pixelDensity 负责整幅缩到目标像素，
+// 所以构图和 1080p 完全一致，只是像素少。
+const PD = (() => {
+  const v = parseFloat(new URLSearchParams(location.search).get('pd'));
+  return (v > 0 && v <= 2) ? v : 1;
+})();
 const BPM = PROJECT.bpm, BEAT = 60 / BPM, OFF = PROJECT.offset || 0, BOIL = 12, DUR = PROJECT.duration;
 const TAU = Math.PI * 2;
 const PAL = {
@@ -246,7 +253,8 @@ function flushLetters() {
 // ---------- paper ----------
 function lcg(seed) { let s = seed; return () => (s = (s * 16807) % 2147483647) / 2147483647; }
 function makePaper() {
-  const g = createGraphics(W, H); g.pixelDensity(1); const c = g.drawingContext, rnd = lcg(11);
+  const g = createGraphics(Math.round(W * PD), Math.round(H * PD)); g.pixelDensity(1);
+  const c = g.drawingContext, rnd = lcg(11);
   c.fillStyle = PAL.paper; c.fillRect(0, 0, W, H);
   for (let i = 0; i < 70; i++) { const x = rnd() * W, y = rnd() * H, r = 120 + rnd() * 380, gr = c.createRadialGradient(x, y, 0, x, y, r), a = .045 * rnd(); gr.addColorStop(0, `rgba(160,125,80,${a})`); gr.addColorStop(1, 'rgba(160,125,80,0)'); c.fillStyle = gr; c.fillRect(x - r, y - r, 2 * r, 2 * r); }
   c.lineWidth = 1;
@@ -255,12 +263,13 @@ function makePaper() {
 }
 // Static grain + vignette, multiplied over the painted frame so pigment sits "in" the paper.
 function makeGrain() {
-  const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const c = cv.getContext('2d'), rnd = lcg(5);
-  const id = c.createImageData(W, H), d = id.data;
+  const gw = Math.round(W * PD), gh = Math.round(H * PD);
+  const cv = document.createElement('canvas'); cv.width = gw; cv.height = gh; const c = cv.getContext('2d'), rnd = lcg(5);
+  const id = c.createImageData(gw, gh), d = id.data;
   for (let i = 0; i < d.length; i += 4) { const v = 255 - (rnd() < .55 ? rnd() * rnd() * 34 : 0); d[i] = v; d[i + 1] = v - 1; d[i + 2] = v - 3; d[i + 3] = 255; }
   c.putImageData(id, 0, 0);
-  const g = c.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, 'rgba(120,95,70,.35)');
-  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  const g = c.createRadialGradient(gw / 2, gh / 2, gh * .45, gw / 2, gh / 2, gh * 1.05); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, 'rgba(120,95,70,.35)');
+  c.fillStyle = g; c.fillRect(0, 0, gw, gh);
   return cv;
 }
 
@@ -273,10 +282,12 @@ function defineBrushes() {
 
 // ---------- frame ----------
 async function setup() {
-  createCanvas(W, H, WEBGL); pixelDensity(1); noLoop();
+  createCanvas(W, H, WEBGL); pixelDensity(PD); noLoop();
   brush.scaleBrushes(5); defineBrushes();
   paperG = makePaper(); grainC = makeGrain(); glowTex = makeGlowTex(); letG = createGraphics(W, H); letG.pixelDensity(1);
-  outC = document.getElementById('out'); outX = outC.getContext('2d');
+  outC = document.getElementById('out');
+  outC.width = Math.round(W * PD); outC.height = Math.round(H * PD);
+  outX = outC.getContext('2d');
   await Promise.all([document.fonts.load('100px "Permanent Marker"'), document.fonts.load('800 50px "Shantell Sans"'), ...(window.EXTRA_FONTS || []).map(([f, txt]) => document.fonts.load(f, txt))]);
   window.ready = true;
   if (!location.search.includes('render')) devUI();
@@ -286,18 +297,19 @@ function draw() {
   LETTERS = []; CAM = LAST_CAM = null;
   push(); translate(-W / 2, -H / 2);
   BOILN = Math.floor(T * BOIL); CLAWD_N = 0; boilSeed('frame'); noiseSeed(77);
-  if (!PROJECT.pixel) image(paperG, 0, 0);
+  if (!PROJECT.pixel) image(paperG, 0, 0, W, H);
   else background(0);
   drawWorld(T);
   pop();
 }
 function composite(t) {
   const c = outX;
+  c.setTransform(PD, 0, 0, PD, 0, 0);
   c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1;
   c.drawImage(drawingContext.canvas, 0, 0, W, H);
   drawLetters(c);
   if (!PROJECT.pixel) {
-    c.globalCompositeOperation = 'multiply'; c.drawImage(grainC, 0, 0);
+    c.globalCompositeOperation = 'multiply'; c.drawImage(grainC, 0, 0, W, H);
   }
   c.globalCompositeOperation = 'source-over';
   if (window.overlayHook) window.overlayHook(c, t);   // optional crisp 2D overlay on top of the grain (e.g. karaoke, see src/karaoke.js)
