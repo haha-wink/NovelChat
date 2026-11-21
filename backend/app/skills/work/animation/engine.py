@@ -423,6 +423,26 @@ def _real_render(job_id: str, project: Path) -> str:
     if chrome:
         cmd.append(f"--chrome={chrome}")
 
+    # 帧数多就走并行渲染（串行太慢：这块机器 1.1 秒/帧）
+    frames = int(duration * fps)
+    if frames > 240:
+        attempts = 2
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                return _render_parallel(job_id, project, duration, fps,
+                                        str(job.get("audio") or ""))
+            except RuntimeError as exc:
+                last_error = str(exc)
+                if attempt < attempts:
+                    logger.warning("并行渲染失败，重试：%s", last_error[:200])
+                    _kill_leftover_chrome()
+                    _touch(job_id, STAGE_SCAFFOLD, note="重试渲染（上次失败）")
+                    time.sleep(3)
+                    continue
+                raise
+        raise RuntimeError(last_error)
+
     target = project / "out" / "video.mp4"
     attempts = 2
     last_error = ""
@@ -533,6 +553,21 @@ def _run_job(job_id: str) -> None:
 
         # 歌词 MV：把歌词真正填进模板（不然渲染出来只是模板默认画面）
         lyric_info = _prepare_lyric_project(project, job)
+
+        # 逐句场景：不再永远用 demo 的"小人+月亮"
+        try:
+            from skills.work.animation import scene_gen
+
+            timeline = _lyric_timeline(job)[0]
+            if timeline:
+                info = scene_gen.install(project, timeline,
+                                         style=str(job.get("style") or "watercolor"))
+                logger.info("逐句场景：%d 个（替换 demo=%s）",
+                            info.get("scenes", 0), info.get("replaced_demo"))
+                _touch(job_id, STAGE_RENDER, scenes=info.get("scenes", 0),
+                       note=f"{info.get('scenes', 0)} 个镜头")
+        except Exception:  # noqa: BLE001 - 场景生成失败就退回 demo 画面
+            logger.exception("逐句场景生成失败（用 demo 兜底）")
         if lyric_info["lines"]:
             # 时长要写回任务：渲染阶段靠它算超时和帧率
             _touch(job_id, STAGE_RENDER, duration=lyric_info["duration"],
@@ -752,13 +787,16 @@ def _tool_start(args: dict) -> dict:
         except Exception:  # noqa: BLE001
             lrc = ""
 
+    # 时长：显式参数 > 从原话里抠（"前30s的MV"）
+    duration = float(args.get("duration") or 0) or _parse_duration(prompt)
+
     job = create_job(
         prompt, style=style, user_id=str(args.get("user_id") or ""),
         lyrics=lyrics,
         lrc=lrc,
         lyrics_file=lyrics_file,
         audio=str(args.get("audio") or ""),
-        duration=float(args.get("duration") or 0),
+        duration=duration,
     )
     label = _STAGE_LABELS.get(job["stage"], job["stage"])
 
@@ -1152,6 +1190,9 @@ def _lyric_timeline(job: dict) -> tuple[list[tuple[float, float, str]], float]:
     if lrc_text:
         parsed = parse_lrc(lrc_text)
         timed = [item for item in parsed if item["start"] is not None]
+        if timed and total:
+            # 用户要"前 30 秒"就只保留 30 秒内的句子
+            timed = [item for item in timed if float(item["start"]) < total]
         if timed:
             result = []
             for index, item in enumerate(timed):
@@ -1165,7 +1206,9 @@ def _lyric_timeline(job: dict) -> tuple[list[tuple[float, float, str]], float]:
                                item["text"]))
             if not total:
                 total = result[-1][1] + 2.0
-            return result, round(total, 3)
+            # 裁到用户要的时长
+            clipped = [(s, min(e, total), text) for s, e, text in result if s < total]
+            return clipped, round(total, 3)
 
     lines = _lyric_lines(job)
     if not lines:
@@ -1184,3 +1227,192 @@ def _lyric_timeline(job: dict) -> tuple[list[tuple[float, float, str]], float]:
         end = round(min(total, start + per * 0.92), 3)
         result.append((start, end, line))
     return result, round(total, 3)
+
+#: "30秒" / "1分30秒" / "2 分钟" / "前 30s"
+_DURATION_PATTERNS = (
+    # "30s的MV" 里 s 后面直接跟中文，所以不能用 \b
+    re.compile(r"(\d+(?:\.\d+)?)\s*(?:秒钟|秒|s(?![a-zA-Z0-9])|sec(?![a-zA-Z0-9]))"),
+    re.compile(r"(\d+(?:\.\d+)?)\s*(?:分钟|分|min\b)"),
+    re.compile(r"一分半"),
+)
+
+
+def _parse_duration(text: str) -> float:
+    """从用户原话里抠时长（"前30s的MV" -> 30.0）。抠不出来返回 0。"""
+    body = str(text or "")
+    if "一分半" in body:
+        return 90.0
+    seconds = 0.0
+    found = False
+    for match in _DURATION_PATTERNS[0].finditer(body):
+        seconds += float(match.group(1))
+        found = True
+    for match in _DURATION_PATTERNS[1].finditer(body):
+        seconds += float(match.group(1)) * 60
+        found = True
+    return round(seconds, 2) if found else 0.0
+
+def _workers() -> int:
+    """并行渲染用几个 worker。核多就多开，最多 6 个（再多人机都卡）。"""
+    try:
+        cores = os.cpu_count() or 4
+    except Exception:  # noqa: BLE001
+        cores = 4
+    return max(2, min(6, cores // 2))
+
+
+def _encode_frames(job_id: str, project: Path, fps: int, audio: str = "") -> str:
+    """把 out/frames/*.jpg 编成 mp4（顺带混音）。"""
+    ffmpeg = _which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("没有 ffmpeg，无法编码")
+
+    out = project / "out" / "video.mp4"
+    cmd = [
+        ffmpeg, "-y", "-loglevel", "error",
+        "-framerate", str(fps),
+        "-i", "out/frames/f%05d.jpg",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    ]
+    if audio and Path(audio).exists():
+        cmd += ["-i", audio, "-c:a", "aac", "-b:a", "192k", "-shortest"]
+    cmd.append("out/video.mp4")
+
+    _touch(job_id, STAGE_ENCODE, progress=0.98, note="编码视频")
+    completed = subprocess.run(cmd, cwd=str(project), capture_output=True,
+                               text=True, timeout=1800, env=_job_env(project))
+    if completed.returncode != 0:
+        raise RuntimeError(f"编码失败：{(completed.stderr or '')[-400:]}")
+    if not out.exists():
+        raise RuntimeError("编码结束但没找到 out/video.mp4")
+    return str(out)
+
+
+def _render_parallel(job_id: str, project: Path, duration: float, fps: int,
+                     audio: str = "") -> str:
+    """长片子：把时间轴切成几片，**起多个 render.mjs 进程**同时渲。
+
+    注意 --workers 参数没用：多个 worker 共享同一个浏览器进程，
+    JS/Cairo 是单线程的，实测没有提速。真正的并行要靠多进程。
+    """
+    node = _which("node")
+    if not node:
+        raise RuntimeError("没有 node，无法渲染")
+    chrome = _find_chrome()
+
+    # 每个进程约吃 500MB 内存，别开太多
+    try:
+        cores = os.cpu_count() or 4
+    except Exception:  # noqa: BLE001
+        cores = 4
+    shards = max(1, min(4, cores // 3))
+    span = duration / shards
+
+    timeout = _render_timeout(duration / shards, fps) * 2
+    processes = []
+    outputs: dict[int, list[str]] = {}
+
+    for index in range(shards):
+        begin = index * span
+        end = duration if index == shards - 1 else (index + 1) * span
+        cmd = [node, "render.mjs", "--frames", "--workers=1",
+               f"--range={begin:.2f}:{end:.2f}", f"--fps={fps}"]
+        if chrome:
+            cmd.append(f"--chrome={chrome}")
+        logger.info("分片 %d/%d：%.1f~%.1f 秒", index + 1, shards, begin, end)
+        processes.append(subprocess.Popen(
+            cmd, cwd=str(project), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+            errors="replace", env=_job_env(project),
+        ))
+        outputs[index] = []
+
+    import re as _re
+    deadline = time.time() + timeout
+    finished: dict[int, int] = {}
+
+    while any(p.poll() is None for p in processes):
+        for index, proc in enumerate(processes):
+            if proc.poll() is not None and index not in finished:
+                finished[index] = proc.returncode or 0
+        total_done = _count_frames(project)
+        total_frames = max(1, int(duration * fps))
+        _touch(job_id, STAGE_RENDER,
+               progress=round(min(0.97, total_done / total_frames), 3),
+               note=f"渲染 {total_done}/{total_frames} 帧（{shards} 个进程）")
+        if time.time() > deadline:
+            for proc in processes:
+                if proc.poll() is None:
+                    _kill_tree(proc.pid)
+            raise RuntimeError(f"渲染超时（{timeout}s）：把时长改短一些再试")
+        time.sleep(3)
+
+    for index, proc in enumerate(processes):
+        try:
+            tail, _ = proc.communicate(timeout=60)
+        except Exception:  # noqa: BLE001
+            tail = ""
+        code = proc.returncode or 0
+        if code != 0:
+            try:
+                (project / "out" / f"render-{index}.log").write_text(tail or "", encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(f"分片 {index} 渲染失败（退出码 {code}）：{(tail or '')[-300:]}")
+
+    return _encode_frames(job_id, project, fps, audio)
+
+
+def _count_frames(project: Path) -> int:
+    folder = project / "out" / "frames"
+    if not folder.exists():
+        return 0
+    return sum(1 for item in folder.glob("f*.jpg") if item.stat().st_size > 1000)
+
+
+tool_protocol.register(
+    tool_protocol.ToolSpec(
+        name="animation_start",
+        description="用户要一段动画/短片/动图时：起一个渲染任务（异步，立刻返回）",
+        parameters={
+            "prompt": {"type": "string", "description": "要做什么动画，用用户的原话"},
+            "style": {"type": "string",
+                      "description": "watercolor（手绘水彩，默认）/ pixel（像素风）"},
+            "lyrics": {"type": "string",
+                       "description": "歌词全文（多行）。歌词 MV 用，会逐句打在画面上"},
+            "lyrics_file": {"type": "string",
+                            "description": "歌词文件路径（.lrc 有真实时间轴，.txt 均分）"},
+            "audio": {"type": "string",
+                      "description": "配乐文件路径（可选），渲染完会混进成片"},
+            "duration": {"type": "number",
+                         "description": "时长秒（可选），不给就按音频时长/歌词行数估"},
+        },
+        handler=_tool_start,
+        required=("prompt",),
+        domain="media",
+    )
+)
+
+tool_protocol.register(
+    tool_protocol.ToolSpec(
+        name="animation_status",
+        description="查一个动画任务的进度和产物路径",
+        parameters={"job_id": {"type": "string", "description": "任务 id"}},
+        handler=_tool_status,
+        required=("job_id",),
+        domain="media",
+    )
+)
+
+tool_protocol.register(
+    tool_protocol.ToolSpec(
+        name="animation_capabilities",
+        description="这台机器能不能渲染动画（node / ffmpeg / Chrome 是否齐全）",
+        parameters={},
+        handler=_tool_capabilities,
+        domain="media",
+    )
+)
+
+

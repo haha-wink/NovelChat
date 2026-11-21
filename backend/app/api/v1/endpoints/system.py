@@ -208,6 +208,9 @@ async def animation_start_job(payload: dict) -> dict:
     if audio and not Path(audio).is_file():
         raise HTTPException(status_code=400, detail="音频文件不存在，请重新上传")
 
+    # 时长：显式给的优先，否则从原话里抠（"前30s的MV"）
+    duration = float(payload.get("duration") or 0) or animation_engine._parse_duration(prompt)
+
     job = await anyio.to_thread.run_sync(
         functools.partial(
             animation_engine.create_job,
@@ -217,7 +220,7 @@ async def animation_start_job(payload: dict) -> dict:
             lrc=lrc,
             lyrics_file=lyrics_file,
             audio=audio,
-            duration=float(payload.get("duration") or 0),
+            duration=duration,
         )
     )
     return {"ok": True, "job": job}
