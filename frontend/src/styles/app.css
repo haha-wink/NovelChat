@@ -1141,3 +1141,59 @@ body.resizing-task {
   background: rgba(90, 120, 200, 0.12);
   color: var(--accent, #4a6fd4);
 }
+
+/* ---------- 动画卡片：进度反馈 ---------- */
+.anim-spin {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--accent, #4a6fd4);
+  animation: anim-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes anim-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+.anim-progress {
+  margin: 4px 0 2px;
+}
+
+.anim-bar {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(90, 120, 200, 0.16);
+}
+
+.anim-bar span {
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent, #4a6fd4);
+  animation: anim-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes anim-slide {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
+
+.anim-hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+}
+
+.anim-stage.stage-stale,
+.task-stage.stage-stale {
+  background: rgba(180, 69, 60, 0.14);
+  color: #b4453c;
+}

@@ -292,7 +292,9 @@
           <li v-for="job in taskPanel.jobs" :key="job.id" class="task-item">
             <div class="task-title">{{ job.prompt || '（没有描述）' }}</div>
             <div class="task-meta">
-              <span class="task-stage" :class="'stage-' + job.stage">{{ job.stage }}</span>
+              <span class="task-stage" :class="'stage-' + (job.stale ? 'stale' : job.stage)">
+                {{ job.stale ? '已中断' : job.stage }}
+              </span>
               <span class="task-time">{{ formatTime(job.created_at) }}</span>
             </div>
             <div class="task-buttons">
@@ -406,6 +408,8 @@ const {
   confirmTask,
   deleteTask,
   loadTasks,
+  ensureTaskPolling,
+  runningTasks,
   taskPanel,
   newConversation,
   switchConversation,
@@ -489,6 +493,9 @@ const sidebarStyle = computed(() => {
 onMounted(() => {
   restoreSidebarWidth()
   restoreTaskWidth()
-  loadTasks()
+  loadTasks().then(() => {
+    // 打开页面时如果有任务在跑，自己开始轮询
+    if (runningTasks().length) ensureTaskPolling()
+  })
 })
 </script>

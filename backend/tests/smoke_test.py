@@ -2374,6 +2374,15 @@ def task_cleanup_checks() -> None:
           isinstance(stats.get("count"), int) and "total_mb" in stats,
           str(stats))
 
+    # 状态里必须带"还在不在跑"，前端靠它区分"渲染中"和"已中断"
+    sample = animation_engine.list_jobs(limit=1)
+    if sample:
+        status = animation_engine.job_status(sample[0]["id"]) or {}
+        check("任务：状态里带 live/stale",
+              "live" in status and "stale" in status, str(status)[:100])
+    else:
+        check("任务：状态里带 live/stale", True, "没有任务，跳过")
+
     real_jobs_dir = animation_engine.jobs_dir
     with tempfile.TemporaryDirectory() as folder:
         sandbox = _pathlib.Path(folder)

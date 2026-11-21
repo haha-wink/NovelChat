@@ -1272,6 +1272,29 @@ async function cleanupTasks() {
   }
 }
 
+//: 有任务在跑时每 5 秒刷新一次任务栏，跑完自动停
+let taskTimer = null
+
+function runningTasks() {
+  const busy = ['queued', 'scaffold', 'storyboard', 'render', 'encode']
+  return taskPanel.jobs.filter((job) => busy.includes(job.stage))
+}
+
+function ensureTaskPolling() {
+  if (taskTimer) return
+  taskTimer = setInterval(async () => {
+    await loadTasks()
+    if (!runningTasks().length) stopTaskPolling()
+  }, 5000)
+}
+
+function stopTaskPolling() {
+  if (taskTimer) {
+    clearInterval(taskTimer)
+    taskTimer = null
+  }
+}
+
 function toggleTaskPanel() {
   taskPanel.open = !taskPanel.open
 }
@@ -1811,6 +1834,9 @@ async function readGroupStream(response) {
         content: ''
       })
       scrollGroupBottom()
+      // 新任务立刻出现在右侧任务栏，并开启轮询（否则用户以为没生成）
+      loadTasks()
+      ensureTaskPolling()
       return
     }
     if (event.type === 'speaker_drop') {
@@ -2013,6 +2039,9 @@ const state = {
   cleanupTasks,
   clearAllTasks,
   toggleTaskPanel,
+  ensureTaskPolling,
+  runningTasks,
+  stopTaskPolling,
   restoreTaskWidth,
   currentTaskWidth,
   startTaskResize,

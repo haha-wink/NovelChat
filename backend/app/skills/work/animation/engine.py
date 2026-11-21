@@ -79,6 +79,8 @@ STORYBOARD_GATE_HINTS = ("歌词", "mv", "MV", "音乐", "歌曲", "配上歌")
 
 _LOCK = threading.Lock()
 _JOBS: dict[str, dict] = {}
+#: 同一时刻只允许一个渲染任务跑：Chrome / ffmpeg / npm 并发会互相打死
+_RENDER_SLOT = threading.Semaphore(1)
 
 
 # ---------------------------------------------------------------------------
@@ -360,9 +362,19 @@ def _run_job(job_id: str) -> None:
 
     lyric_info: dict = {}
     try:
-        _touch(job_id, STAGE_SCAFFOLD)
-
         caps = capabilities()
+
+        # 排队：真渲染才需要（Chrome/ffmpeg 并发会互相打死）；
+        # 假渲染器是毫秒级的，排队只会拖慢测试
+        if caps["renderer"] != "fake":
+            if not _RENDER_SLOT.acquire(blocking=False):
+                _touch(job_id, STAGE_QUEUED, note="排队中（前面还有任务在渲染）")
+                _RENDER_SLOT.acquire()
+                _touch(job_id, STAGE_SCAFFOLD, note="排到了，开始渲染")
+            else:
+                _touch(job_id, STAGE_SCAFFOLD)
+        else:
+            _touch(job_id, STAGE_SCAFFOLD)
         if caps["renderer"] == "fake":
             project.mkdir(parents=True, exist_ok=True)
         else:
@@ -434,7 +446,16 @@ def _run_job(job_id: str) -> None:
 
     except Exception as exc:  # noqa: BLE001 - 任务失败要让用户能查到原因
         logger.exception("动画任务失败：%s", job_id)
-        _touch(job_id, STAGE_FAILED, error=str(exc)[:400])
+        _touch(job_id, STAGE_FAILED, error=str(exc)[:1800])
+    finally:
+        if lyric_info.get("_locked"):
+            pass
+        try:
+            if _RENDER_SLOT._value == 0:   # 本任务确实持有才释放
+                _RENDER_SLOT.release()
+        except Exception:  # noqa: BLE001
+            pass
+
 
 
 def create_job(
@@ -483,17 +504,35 @@ def create_job(
     return job_status(job_id) or job
 
 
+#: 这些状态说明还有后台线程在干活
+RUNNING_STAGES = (STAGE_QUEUED, STAGE_SCAFFOLD, STAGE_STORYBOARD,
+                  STAGE_RENDER, STAGE_ENCODE)
+
+
+def _annotate(job: dict, *, live: bool) -> dict:
+    """补两个现场字段：live（本进程真有线程吗）/ stale（是不是重启留下的）。
+
+    注意：live 必须由调用方在**持锁时**取好再传进来。
+    这里不能再抢 _LOCK——threading.Lock 不可重入，会直接把整个进程卡死。
+    """
+    stage = str(job.get("stage") or "")
+    running = stage in RUNNING_STAGES
+    job["live"] = live
+    job["stale"] = running and not live
+    return job
+
+
 def job_status(job_id: str) -> Optional[dict]:
     with _LOCK:
         job = _JOBS.get(job_id)
         if job is not None:
-            return dict(job)
-    # 进程重启后从磁盘读
+            return _annotate(dict(job), live=True)
+    # 进程重启后从磁盘读：内存里没有 -> live=False（僵尸或已完成）
     path = jobs_dir() / str(job_id) / "status.json"
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return _annotate(json.loads(path.read_text(encoding="utf-8")), live=False)
     except Exception:  # noqa: BLE001
         return None
 
