@@ -20,7 +20,7 @@ param(
     [switch]$Force,
     [switch]$SkipTests,
     [string]$Mirror = "",
-    [string]$VenvName = "ai-agent-cyber-town.venv"
+    [string]$VenvName = ".venv"
 )
 
 $ErrorActionPreference = "Stop"

@@ -9,7 +9,7 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $root "ai-agent-cyber-town.venv\Scripts\python.exe"
+$python = Join-Path $root ".venv\Scripts\python.exe"
 
 if (-not (Test-Path $python)) {
     Write-Host "找不到虚拟环境里的 python：$python" -ForegroundColor Red

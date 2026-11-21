@@ -21,9 +21,9 @@
 param(
     [string]$SessionRoot = "$env:USERPROFILE\.dsh\sessions",
     [string]$ProjCache   = "$env:USERPROFILE\.dsh\storages\session_projcache\sessions",
-    [string]$Workspace   = 'E:\ai-breakup-fullstack',
-    [string]$Project     = 'E:\ai-agent-cyber-town',
-    [string]$AnimDir     = 'E:\ai-agent-cyber-town\backend\data\animation',
+    [string]$Workspace   = 'E:\NovelChat\_scratch',
+    [string]$Project     = 'E:\NovelChat',
+    [string]$AnimDir     = 'E:\NovelChat\backend\data\animation',
     [switch]$NoDeepScan
 )
 

@@ -14,7 +14,7 @@
 services:
   backend:
     build: ./backend
-    image: novel-roleplay-backend
+    image: novelchat-backend
     env_file:
       - ./backend/.env
     # 数据库、原文、模型、贴纸都在 data 里：挂出来，升级镜像不丢数据
@@ -26,7 +26,7 @@ services:
 
   frontend:
     build: ./frontend
-    image: novel-roleplay-frontend
+    image: novelchat-frontend
     depends_on:
       - backend
     ports:

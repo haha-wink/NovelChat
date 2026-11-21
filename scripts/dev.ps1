@@ -27,7 +27,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$venvPython = Join-Path $root 'ai-agent-cyber-town.venv\Scripts\python.exe'
+$venvPython = Join-Path $root '.venv\Scripts\python.exe'
 if (-not (Test-Path $venvPython)) {
   Write-Warning "未找到虚拟环境 $venvPython，回退到系统 python"
   $venvPython = 'python'

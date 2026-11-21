@@ -10,7 +10,7 @@
 ### 0.1 备份数据（**必做**）
 
 ```powershell
-cd E:\ai-agent-cyber-town
+cd E:\NovelChat
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 New-Item -ItemType Directory -Force backend\data\backups | Out-Null
 Copy-Item backend\data\workspace\app.db "backend\data\backups\$stamp-before-test.db"
@@ -37,7 +37,7 @@ Test-Path backend\data\models\erlangshen-sentiment\onnx\model_quantized.onnx  # 
 ### 0.3 启动
 
 ```powershell
-cd E:\ai-agent-cyber-town
+cd E:\NovelChat
 .\scripts\dev.ps1
 ```
 
@@ -99,7 +99,7 @@ cd E:\ai-agent-cyber-town
 ### 1.5 全量自检（可选，约 60 秒）
 
 ```powershell
-$py = "ai-agent-cyber-town.venv\Scripts\python.exe"
+$py = ".venv\Scripts\python.exe"
 & $py backend\tests\smoke_test.py
 ```
 

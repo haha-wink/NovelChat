@@ -105,7 +105,7 @@ NAME_ENGINE=builtin   # 只用内置规则（完全不依赖第三方库）
 ## 常见问题
 
 **装完还是 builtin？**
-1. 确认装到了项目的虚拟环境：`.\ai-agent-cyber-town.venv\Scripts\python.exe -m pip install jieba`
+1. 确认装到了项目的虚拟环境：`.\.venv\Scripts\python.exe -m pip install jieba`
 2. 重启后端（引擎是进程内单例）
 3. `python scripts\check_nlp.py` 再看一次
 

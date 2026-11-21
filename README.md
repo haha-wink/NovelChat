@@ -84,7 +84,7 @@
 
 # 2. 取本地模型（一次性，约 190MB）
 .\scripts\fetch_model.ps1
-.\ai-agent-cyber-town.venv\Scripts\python.exe .\scripts\fetch_emotion_model.py
+.\.venv\Scripts\python.exe .\scripts\fetch_emotion_model.py
 
 # 3. 配置密钥
 copy backend\.env.example backend\.env   # 填 DEEPSEEK_API_KEY
@@ -101,7 +101,7 @@ copy backend\.env.example backend\.env   # 填 DEEPSEEK_API_KEY
 
 ```powershell
 # 后端：685 项
-.\ai-agent-cyber-town.venv\Scripts\python.exe backend\tests\smoke_test.py
+.\.venv\Scripts\python.exe backend\tests\smoke_test.py
 
 # 前端：静态结构 + 绑定完整性（不跑浏览器）
 node scripts\check-frontend.cjs

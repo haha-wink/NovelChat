@@ -422,6 +422,10 @@ def _real_render(job_id: str, project: Path) -> str:
 
     size = ["--w=1280", "--h=720"] if fast else []
     cmd = [node, "render.mjs", "--clip", "--out=out/video.mp4", f"--fps={fps}", *size]
+    song = str(job.get("audio") or "")
+    if song and Path(song).is_file():
+        # 短片走 --clip（不经过 _encode_frames），配乐得直接交给 render.mjs 混
+        cmd.append(f"--audio={song}")
     if chrome:
         cmd.append(f"--chrome={chrome}")
 
@@ -433,7 +437,7 @@ def _real_render(job_id: str, project: Path) -> str:
         for attempt in range(1, attempts + 1):
             try:
                 return _render_parallel(job_id, project, duration, fps,
-                                        str(job.get("audio") or ""), fast=fast)
+                                        "", fast=fast)
             except RuntimeError as exc:
                 last_error = str(exc)
                 if attempt < attempts:
@@ -592,10 +596,12 @@ def _run_job(job_id: str) -> None:
             _ensure_node_modules(job_id, project)
             _touch(job_id, STAGE_RENDER, note="逐帧渲染")
             video = _real_render(job_id, project)
+            # 配乐统一在渲染之后混一次：短片 --clip 自带音轨，_mux_audio 会覆盖成单条
+            song = str(job.get("audio") or "")
+            if song and Path(song).is_file() and Path(video).exists():
+                video = _mux_audio(video, song)
 
         _touch(job_id, STAGE_ENCODE)
-        if lyric_info.get("audio"):
-            video = _mux_audio(video, lyric_info["audio"])
         size = Path(video).stat().st_size if Path(video).exists() else 0
         _touch(
             job_id, STAGE_DONE,

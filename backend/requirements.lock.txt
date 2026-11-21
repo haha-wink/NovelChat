@@ -2,7 +2,7 @@
 # 精确锁文件：当前这套「已验证可跑」环境的完整快照（含间接依赖，共 125 个包）
 # 用途：环境坏了想 100% 复现时用这个；想看意图/注释用 requirements.txt
 # 安装：
-#   .\ai-agent-cyber-town.venv\Scripts\python.exe -m pip install -r requirements.lock.txt
+#   .\.venv\Scripts\python.exe -m pip install -r requirements.lock.txt
 # 注意：只适用于 64 位 Windows + Python 3.13（换平台/换大版本就别用锁文件）
 # =============================================================================
 

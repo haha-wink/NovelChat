@@ -34,7 +34,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$venvPython = Join-Path $root "ai-agent-cyber-town.venv\Scripts\python.exe"
+$venvPython = Join-Path $root ".venv\Scripts\python.exe"
 $tempDir = Join-Path $root ".pytemp"
 
 if (-not (Test-Path $venvPython)) {
