@@ -1186,6 +1186,16 @@ body.resizing-task {
   100% { left: 100%; }
 }
 
+.anim-bar-fill {
+  position: static;
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent, #4a6fd4);
+  transition: width 0.4s ease;
+  animation: none;
+}
+
 .anim-hint {
   margin: 4px 0 0;
   font-size: 11px;

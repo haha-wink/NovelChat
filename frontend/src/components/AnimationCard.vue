@@ -12,8 +12,12 @@
 
     <!-- 进行中：给出能判断"还在动"的证据（阶段 + 已用时 + 任务号） -->
     <div v-if="running" class="anim-progress">
-      <div class="anim-bar"><span></span></div>
+      <div class="anim-bar">
+        <span v-if="progress > 0" class="anim-bar-fill" :style="{ width: Math.round(progress * 100) + '%' }"></span>
+        <span v-else></span>
+      </div>
       <p class="anim-hint">
+        <template v-if="progress > 0">渲染 {{ Math.round(progress * 100) }}% · </template>
         已跑 {{ elapsedText }} · {{ jobId }}
       </p>
     </div>
@@ -75,6 +79,7 @@ const stage = ref('queued')
 const state = ref('running')
 const error = ref('')
 const stale = ref(false)
+const progress = ref(0)
 const confirming = ref(false)
 const deleting = ref(false)
 const startedAt = ref(Date.now())
@@ -110,6 +115,7 @@ async function poll() {
     }
     stage.value = job.stage || stage.value
     stale.value = Boolean(job.stale)
+    if (typeof job.progress === 'number') progress.value = job.progress
 
     if (job.stage === 'awaiting_confirmation') {
       state.value = 'awaiting'

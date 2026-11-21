@@ -77,6 +77,9 @@ ANIMATION_HINTS = (
 #: 需要先确认分镜的类型（技能包里的硬门禁）
 STORYBOARD_GATE_HINTS = ("歌词", "mv", "MV", "音乐", "歌曲", "配上歌")
 
+#: 自动推算的片长上限（秒）：再长这台机器渲不完
+MAX_AUTO_DURATION = 90.0
+
 _LOCK = threading.Lock()
 _JOBS: dict[str, dict] = {}
 #: 同一时刻只允许一个渲染任务跑：Chrome / ffmpeg / npm 并发会互相打死
@@ -315,33 +318,142 @@ def _ensure_node_modules(job_id: str, project: Path) -> None:
         raise RuntimeError(f"npm install 失败（{completed.returncode}）：{tail}")
 
 
+def _kill_tree(pid: int) -> None:
+    """杀掉整棵进程树（Windows 上 Chrome 会留一堆子进程，不杀干净下次更慢）。"""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=60)
+        else:
+            import signal
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001
+        logger.warning("清理渲染进程失败（pid=%s）", pid)
+
+
+def _render_timeout(duration: float, fps: int) -> int:
+    """按帧数估算超时：这台机器实测约 1.1s/帧，留 1.2 倍余量。"""
+    frames = max(1, int(float(duration or 10) * fps))
+    estimated = frames * 1.2 + 120
+    return int(min(7200, max(600, estimated)))
+
+
+def _kill_leftover_chrome() -> None:
+    """清掉上次残留的 headless chrome（占内存，还会拖慢下一次）。"""
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/IM", "chrome-headless-shell.exe", "/F", "/T"],
+                capture_output=True, timeout=60,
+            )
+        else:
+            subprocess.run(["pkill", "-f", "chrome-headless-shell"],
+                           capture_output=True, timeout=60)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _render_once(job_id: str, project: Path, cmd: list[str], timeout: int) -> tuple[int, str]:
+    """跑一次渲染，边跑边把"第几帧"写回任务状态（用户能看见进度）。"""
+    import re as _re
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(project),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_job_env(project),
+    )
+
+    expired = threading.Event()
+
+    def watchdog() -> None:
+        if process.poll() is None:
+            expired.set()
+            _kill_tree(process.pid)
+
+    guard = threading.Timer(timeout, watchdog)
+    guard.daemon = True
+    guard.start()
+
+    lines: list[str] = []
+    truncated = False
+    try:
+        for line in process.stdout:  # type: ignore[union-attr]
+            lines.append(line.rstrip("\n"))
+            if len(lines) > 400:
+                del lines[:200]
+            match = _re.search(r"frame\s+(\d+)\s*/\s*(\d+)", line)
+            if match:
+                done, total = int(match.group(1)), int(match.group(2))
+                # 注意用 STAGE_RENDER：写成 SCAFFOLD 会让界面从"逐帧渲染"退回去
+                _touch(job_id, STAGE_RENDER, progress=round(done / max(1, total), 3),
+                       note=f"渲染 {done}/{total} 帧")
+        process.wait(timeout=60)
+    except Exception:  # noqa: BLE001
+        truncated = True
+    finally:
+        guard.cancel()
+
+    if expired.is_set():
+        raise RuntimeError(
+            f"渲染超时（{timeout}s）：这台机器一帧约 1.1 秒，"
+            f"按当前片长算渲不完。把时长改短，或减少歌词行数。"
+        )
+    return process.returncode or 0, "\n".join(lines)
+
+
 def _real_render(job_id: str, project: Path) -> str:
-    """真渲染：调技能包里的 render.mjs。"""
+    """真渲染：调技能包里的 render.mjs。失败重试一次（headless 偶尔会崩）。"""
     node = _which("node")
     if not node:
         raise RuntimeError("没有 node，无法渲染")
     chrome = _find_chrome()
-    cmd = [node, "render.mjs", "--clip", "--out=out/video.mp4"]
+
+    job = job_status(job_id) or {}
+    duration = float(job.get("duration") or 10)
+    # 长片子降帧率：帧数减半，渲染时间也减半，观感差别不大
+    fps = 12 if duration > 30 else 24
+    timeout = _render_timeout(duration, fps)
+
+    cmd = [node, "render.mjs", "--clip", "--out=out/video.mp4", f"--fps={fps}"]
     if chrome:
         cmd.append(f"--chrome={chrome}")
-    logger.info("开始渲染：%s", " ".join(cmd))
-    completed = subprocess.run(
-        cmd,
-        cwd=str(project),
-        capture_output=True,
-        text=True,
-        timeout=int(get_settings().animation_render_timeout or 900),
-        env=_job_env(project),
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"render.mjs 退出码 {completed.returncode}："
-            f"{(completed.stderr or completed.stdout or '')[-400:]}"
-        )
+
     target = project / "out" / "video.mp4"
-    if not target.exists():
-        raise RuntimeError("渲染结束但没找到 out/video.mp4")
-    return str(target)
+    attempts = 2
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        logger.info("开始渲染（第 %d/%d 次）：时长 %.1fs，%dfps，超时 %ds",
+                    attempt, attempts, duration, fps, timeout)
+        try:
+            code, output = _render_once(job_id, project, cmd, timeout)
+        except RuntimeError as exc:
+            last_error = str(exc)
+            if attempt < attempts:
+                _kill_leftover_chrome()
+                _touch(job_id, STAGE_SCAFFOLD, note="重试渲染（上次中断）")
+                time.sleep(3)
+                continue
+            raise
+        if code == 0 and target.exists():
+            return str(target)
+
+        last_error = f"render.mjs 退出码 {code}：{(output or '')[-500:]}"
+        try:
+            (project / "out" / "render.log").write_text(output or "", encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        if attempt < attempts:
+            logger.warning("渲染失败，重试一次：%s", last_error[:200])
+            _kill_leftover_chrome()
+            _touch(job_id, STAGE_SCAFFOLD, note="重试渲染（上次失败）")
+            time.sleep(3)
+
+    raise RuntimeError(last_error or "渲染失败")
 
 
 def _run_job(job_id: str) -> None:
@@ -422,8 +534,10 @@ def _run_job(job_id: str) -> None:
         # 歌词 MV：把歌词真正填进模板（不然渲染出来只是模板默认画面）
         lyric_info = _prepare_lyric_project(project, job)
         if lyric_info["lines"]:
-            _touch(job_id, STAGE_RENDER,
+            # 时长要写回任务：渲染阶段靠它算超时和帧率
+            _touch(job_id, STAGE_RENDER, duration=lyric_info["duration"],
                    note=f"填入 {lyric_info['lines']} 行歌词（{lyric_info['duration']}s）")
+            job["duration"] = lyric_info["duration"]
 
         _touch(job_id, STAGE_RENDER)
         if caps["renderer"] == "fake":
@@ -1057,8 +1171,13 @@ def _lyric_timeline(job: dict) -> tuple[list[tuple[float, float, str]], float]:
     if not lines:
         return [], round(total, 3)
 
+    # 时长封顶：行数多的时候默认每行会被压到 1.2s 以上，别让片子长到渲不完
     per = (total / len(lines)) if total else 3.0
     total = total or max(6.0, per * len(lines))
+    if not float(job.get("duration") or 0) and total > MAX_AUTO_DURATION:
+        per = MAX_AUTO_DURATION / max(1, len(lines))
+        per = max(1.2, per)
+        total = per * len(lines)
     result = []
     for index, line in enumerate(lines):
         start = round(index * per, 3)
