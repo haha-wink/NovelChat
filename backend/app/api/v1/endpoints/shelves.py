@@ -314,6 +314,12 @@ async def clear_shelf_history(
     * ``mode=purge``：连记忆一起删（这段对话蒸馏出的 fact），彻底重来。
     """
     session = resolve_session(token, request)
+    # 把工作记忆一起带进蒸馏：否则工作模式下“这次任务的约束/进度”就随对话删没了
+    digest = ""
+    if conversation_id:
+        digest = await anyio.to_thread.run_sync(
+            functools.partial(db.working_memory_text, conversation_id)
+        )
     result = await anyio.to_thread.run_sync(
         functools.partial(
             chat_memory.clear_conversation,
@@ -322,6 +328,7 @@ async def clear_shelf_history(
             summarizer=_summarizer_for_clear(),
             mode=mode,
             conversation_id=conversation_id or None,
+            working_digest=digest,
         )
     )
     return result
@@ -329,33 +336,39 @@ async def clear_shelf_history(
 
 @router.get("/shelves/{shelf_id}/conversations")
 async def list_conversations(
-    shelf_id: str, request: Request, token: str = "", limit: int = 100
+    shelf_id: str, request: Request, token: str = "", limit: int = 100, mode: str = ""
 ) -> list[dict]:
-    """列出我在这个书架的所有对话（最近活跃在前）。"""
+    """列出我在这个书架的所有对话（最近活跃在前）；mode 给了就只看该模式窗口。"""
     session = resolve_session(token, request)
     conversations = await anyio.to_thread.run_sync(
-        functools.partial(db.list_conversations, shelf_id, session.user_id, limit=limit)
+        functools.partial(
+            db.list_conversations, shelf_id, session.user_id,
+            limit=limit, mode=(mode or None),
+        )
     )
-    if not conversations:
+    if not conversations and mode != "work":
         # 老数据：这个用户的流水还没有归属任何对话，先归到「之前的对话」再列
         await anyio.to_thread.run_sync(
             functools.partial(db.ensure_default_conversation, shelf_id, session.user_id)
         )
         conversations = await anyio.to_thread.run_sync(
-            functools.partial(db.list_conversations, shelf_id, session.user_id, limit=limit)
+            functools.partial(
+                db.list_conversations, shelf_id, session.user_id,
+                limit=limit, mode=(mode or None),
+            )
         )
     return conversations
 
 
 @router.post("/shelves/{shelf_id}/conversations", status_code=201)
 async def create_conversation(
-    shelf_id: str, request: Request, token: str = "", title: str = ""
+    shelf_id: str, request: Request, token: str = "", title: str = "", mode: str = "chat"
 ) -> dict:
-    """开一个新对话。"""
+    """开一个新对话；mode=work 时是工作模式窗口（记忆与聊天窗口隔离）。"""
     session = resolve_session(token, request)
     return await anyio.to_thread.run_sync(
         functools.partial(
-            db.create_conversation, shelf_id, session.user_id, title=title
+            db.create_conversation, shelf_id, session.user_id, title=title, mode=mode
         )
     )
 

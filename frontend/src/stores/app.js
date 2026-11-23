@@ -130,7 +130,22 @@ function setMode(next) {
 }
 
 function toggleMode() {
-  setMode(mode.value === 'work' ? 'chat' : 'work')
+  return switchMode(mode.value === 'work' ? 'chat' : 'work')
+}
+
+/** 切模式 = 换一个只属于该模式的对话窗口（记忆/任务都不串）。 */
+async function switchMode(next) {
+  const wanted = next === 'work' ? 'work' : 'chat'
+  if (mode.value === wanted) return
+  setMode(wanted)
+  // 聊天 / 工作各看各的窗口：消息、任务栏、当前对话全部重新拉
+  stopTaskPolling()
+  group.messages = []
+  group.conversations = []
+  group.conversationId = ''
+  taskPanel.jobs = []
+  taskPanel.conversationId = ''
+  if (group.shelfId) await ensureConversation()
 }
 
 function restoreMode() {
@@ -381,6 +396,10 @@ async function enterGroup(shelfId, title, book = null) {
   }
   await loadGroupMembers()
   await ensureConversation()
+  // 任务栏跟着对话走：进群/切书架时重新拉当前对话的任务
+  stopTaskPolling()
+  await loadTasks()
+  if (runningTasks().length) ensureTaskPolling()
 }
 
 // ---------------- 作品 / 角色 ----------------
@@ -1116,27 +1135,67 @@ const taskPanel = reactive({
   open: true,
   loading: false,
   error: '',
-  //: [{id, prompt, stage, video, note, created_at}]
+  //: 任务栏只看当前对话：一个对话一个任务栏
+  conversationId: '',
+  //: [{id, prompt, stage, video, quality, note, created_at}]
   jobs: [],
-  //: {count, total_mb}
+  //: {count, total_mb}（全局占用，界面上只当参考）
   stats: { count: 0, total_mb: 0 },
+  //: 新任务的画质偏好，存在本地
+  quality: 'standard',
   width: 0,
   dragging: false,
   busy: ''
 })
 
-async function loadTasks() {
-  taskPanel.loading = true
+async function loadTasks(conversationId = group.conversationId) {
+  const cid = conversationId || ''
+  taskPanel.conversationId = cid
   taskPanel.error = ''
+  if (!cid) {
+    // 还没建对话（或正在切换）时不要拉全库任务，否则又变成“大杂烩”
+    taskPanel.jobs = []
+    taskPanel.loading = false
+    return
+  }
+  taskPanel.loading = true
   try {
-    const jobs = await api('/api/animation?limit=30')
+    const jobs = await api(
+      `/api/animation?limit=30&conversation_id=${encodeURIComponent(cid)}`
+    )
+    // 切对话时旧请求可能后到：对不上就丢掉
+    if (taskPanel.conversationId !== cid) return
     taskPanel.jobs = Array.isArray(jobs) ? jobs : []
     const stat = await api('/api/animation/stats').catch(() => null)
-    if (stat) taskPanel.stats = stat
+    if (stat && taskPanel.conversationId === cid) taskPanel.stats = stat
   } catch (failure) {
-    taskPanel.error = failure.message
+    if (taskPanel.conversationId === cid) taskPanel.error = failure.message
   } finally {
-    taskPanel.loading = false
+    if (taskPanel.conversationId === cid) taskPanel.loading = false
+  }
+}
+
+const TASK_QUALITY_KEY = 'novelchat.taskQuality'
+
+function restoreTaskQuality() {
+  try {
+    const saved = localStorage.getItem(TASK_QUALITY_KEY)
+    if (saved === 'fast' || saved === 'standard') {
+      taskPanel.quality = saved
+      lyricForm.quality = saved
+    }
+  } catch {
+    // 隐私模式忽略
+  }
+}
+
+function setTaskQuality(value) {
+  taskPanel.quality = value === 'fast' ? 'fast' : 'standard'
+  lyricForm.quality = taskPanel.quality
+  try {
+    localStorage.setItem(TASK_QUALITY_KEY, taskPanel.quality)
+  } catch {
+    // 忽略
   }
 }
 
@@ -1205,13 +1264,12 @@ async function startLyricJob() {
         prompt: lyricForm.prompt || '帮我做一段歌词MV',
         lyrics_file: lyricForm.lyricsPath,
         audio: lyricForm.audioPath,
-        quality: lyricForm.quality
+        quality: lyricForm.quality,
+        conversation_id: group.conversationId || ''
       }
     })
     const job = result?.job || {}
-    lyricForm.message = job.stage === 'awaiting_confirmation'
-      ? '分镜写好了，确认一下就开始渲染'
-      : `已开做（${job.stage || '排队中'}）`
+    lyricForm.message = `已开做（${job.stage || '排队中'}），进度和成片在右侧任务栏`
     await loadTasks()
     return job
   } catch (failure) {
@@ -1236,9 +1294,34 @@ async function confirmTask(jobId) {
 async function deleteTask(jobId) {
   taskPanel.busy = jobId
   try {
-    await api(`/api/animation/${jobId}`, { method: 'DELETE' })
+    const result = await api(`/api/animation/${jobId}`, { method: 'DELETE' })
+    if (result && result.ok === false) {
+      taskPanel.error = result.error || '删除失败（文件可能还被占用，稍后再试）'
+      return
+    }
     taskPanel.jobs = taskPanel.jobs.filter((job) => job.id !== jobId)
     await loadTasks()
+  } catch (failure) {
+    taskPanel.error = failure.message
+  } finally {
+    taskPanel.busy = ''
+  }
+}
+
+async function rerenderTask(jobId, quality) {
+  taskPanel.busy = jobId
+  taskPanel.error = ''
+  try {
+    const result = await api(
+      `/api/animation/${jobId}/quality?quality=${encodeURIComponent(quality)}`,
+      { method: 'POST' }
+    )
+    if (result && result.ok === false) {
+      taskPanel.error = result.error || '换画质失败'
+      return
+    }
+    await loadTasks()
+    ensureTaskPolling()
   } catch (failure) {
     taskPanel.error = failure.message
   } finally {
@@ -1415,11 +1498,13 @@ async function ensureConversation() {
     const token = await ensureGroupToken()
     let list = await api(
       `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`
+      + `&mode=${encodeURIComponent(mode.value)}`
     )
     if (!Array.isArray(list)) list = []
     if (!list.length) {
       const created = await api(
-        `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`,
+        `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`
+        + `&mode=${encodeURIComponent(mode.value)}`,
         { method: 'POST' }
       )
       list = [created]
@@ -1434,6 +1519,7 @@ async function ensureConversation() {
     group.conversationsLoading = false
   }
   await loadGroupHistory()
+  await loadTasks()
 }
 
 /** 只刷新会话列表（标题/条数），不动当前消息 */
@@ -1443,6 +1529,7 @@ async function refreshConversations() {
     const token = await ensureGroupToken()
     const list = await api(
       `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`
+      + `&mode=${encodeURIComponent(mode.value)}`
     )
     if (Array.isArray(list)) group.conversations = list
   } catch (failure) {
@@ -1456,7 +1543,8 @@ async function newConversation() {
   try {
     const token = await ensureGroupToken()
     const created = await api(
-      `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`,
+      `/api/shelves/${group.shelfId}/conversations?token=${encodeURIComponent(token)}`
+      + `&mode=${encodeURIComponent(mode.value)}`,
       { method: 'POST' }
     )
     group.conversations = [created, ...group.conversations]
@@ -1464,6 +1552,8 @@ async function newConversation() {
     group.messages = []
     group.error = ''
     scrollGroupBottom()
+    stopTaskPolling()
+    await loadTasks()
   } catch (failure) {
     group.error = failure.message
   }
@@ -1475,6 +1565,9 @@ async function switchConversation(conversationId) {
   group.conversationId = conversationId
   group.messages = []
   await loadGroupHistory()
+  stopTaskPolling()
+  await loadTasks()
+  if (runningTasks().length) ensureTaskPolling()
 }
 
 /** 删掉一个对话 */
@@ -1500,6 +1593,7 @@ async function deleteConversation(conversationId) {
       if (group.conversations.length) {
         group.conversationId = group.conversations[0].id
         await loadGroupHistory()
+        await loadTasks()
       } else {
         await ensureConversation()
       }
@@ -2038,6 +2132,9 @@ const state = {
   startLyricJob,
   confirmTask,
   deleteTask,
+  rerenderTask,
+  setTaskQuality,
+  restoreTaskQuality,
   cleanupTasks,
   clearAllTasks,
   toggleTaskPanel,
@@ -2054,6 +2151,7 @@ const state = {
   modeLabel,
   setMode,
   toggleMode,
+  switchMode,
   restoreMode,
   currentSidebarWidth,
   startSidebarResize,

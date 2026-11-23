@@ -142,11 +142,37 @@ async def prepare_node(state: GroupState) -> dict:
         )
         conversation_id = conversation["id"]
 
+    # 【工作记忆】只在工作模式记，而且只活在这个对话里：
+    # 聊天模式不写工作记忆，切模式时前端会新建对话，两边不串味。
+    mode = str(state.get("mode") or "chat")
+    if mode == "work":
+        try:
+            from services.memory import working_memory
+
+            working_memory.remember(
+                conversation_id, text, shelf_id=shelf_id,
+                user_id=state.get("user_id") or "", kind="user", mode=mode,
+            )
+        except Exception:  # noqa: BLE001 - 工作记忆写失败不能挡住群聊
+            logger.exception("写工作记忆失败（已忽略）")
+
     # 【技能层】群聊一轮跑一次：命中技能后把素材放进 state，
     # 所有发言人共享（否则工作模式在群里等于没开）
-    skill_block, skill_name, skill_jobs = _run_skill(state, shelf_id)
+    skill_block, skill_name, skill_jobs = _run_skill(state, shelf_id, conversation_id)
     for job in skill_jobs:
         _emit({"type": "skill_job", "skill": skill_name, **job})
+        if mode == "work" and job.get("job_id"):
+            try:
+                from services.memory import working_memory
+
+                working_memory.remember(
+                    conversation_id,
+                    f"任务 {job.get('job_id')}：{job.get('prompt') or state.get('text') or ''}",
+                    shelf_id=shelf_id, user_id=state.get("user_id") or "",
+                    kind="job", mode=mode,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("写工作记忆（任务）失败（已忽略）")
 
     plan = state.get("dialogue_plan")
     db.add_chat_turn(
@@ -376,8 +402,12 @@ def _skill_assets(state: GroupState) -> dict:
     }
 
 
-def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str, list[dict]]:
-    """按当前模式跑一次技能层，返回 (素材块, 技能名, 起了的任务)。"""
+def _run_skill(state: GroupState, shelf_id: str, conversation_id: str = "") -> tuple[str, str, list[dict]]:
+    """按当前模式跑一次技能层，返回 (素材块, 技能名, 起了的任务)。
+
+    ``conversation_id`` 要带进去：工作模式起的动画任务按对话归属，
+    任务栏才能「一个对话一个任务栏」。
+    """
     import skills
 
     signals = state.get("signals")
@@ -391,6 +421,7 @@ def _run_skill(state: GroupState, shelf_id: str) -> tuple[str, str, list[dict]]:
         "crisis": getattr(signals, "crisis", False),
     }
     extra = _skill_assets(state)
+    extra["conversation_id"] = conversation_id
     mode = str(state.get("mode") or "chat")
     try:
         if extra.get("lyrics_file") or extra.get("audio"):

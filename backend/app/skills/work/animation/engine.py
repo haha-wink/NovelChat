@@ -258,6 +258,29 @@ def _needs_storyboard(prompt: str) -> bool:
     return any(hint in text for hint in STORYBOARD_GATE_HINTS)
 
 
+#: 连续几次几乎相同的需求 = 卡住了（不问用户不换思路就会一直重复同样的画面）
+STUCK_REPEAT_LIMIT = 3
+
+
+def _prompt_fingerprint(prompt: str) -> str:
+    """需求指纹：去空白后取 sha1 前 16 位（空白/标点差异不算新需求）。"""
+    import hashlib
+
+    text = re.sub(r"\s+", "", str(prompt or ""))[:400]
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _repeat_count(conversation_id: str, fingerprint: str) -> int:
+    """同一个对话里、同一个需求指纹之前起过几次（用于“卡住”判定）。"""
+    if not conversation_id:
+        return 0
+    try:
+        recent = list_jobs(limit=10, conversation_id=conversation_id, prune=False)
+    except Exception:  # noqa: BLE001 - 列表失败不能阻止起任务
+        return 0
+    return sum(1 for job in recent if job.get("fingerprint") == fingerprint)
+
+
 def _fake_render(job_id: str, project: Path, seconds: float = 0.6) -> str:
     """测试用渲染器：不碰 node/ffmpeg，产出占位文件。"""
     out = project / "out"
@@ -561,10 +584,7 @@ def _run_job(job_id: str) -> None:
                 encoding="utf-8",
             )
 
-        if job.get("requires_confirmation"):
-            _touch(job_id, STAGE_AWAITING,
-                   note="歌词/MV 类需要先确认分镜，确认后再渲染")
-            return
+        # 自动开渲：分镜写下来只作记录，不再停下来等用户点确认。
 
         # 歌词 MV：把歌词真正填进模板（不然渲染出来只是模板默认画面）
         lyric_info = _prepare_lyric_project(project, job)
@@ -680,11 +700,15 @@ def create_job(
     lyrics_file: str = "",
     quality: str = "standard",
     section: str = "",
+    conversation_id: str = "",
 ) -> dict:
     """起一个渲染任务，立刻返回（渲染在后台线程）。"""
     job_id = f"anim_{uuid.uuid4().hex[:12]}"
     folder = jobs_dir() / job_id
     folder.mkdir(parents=True, exist_ok=True)
+    fingerprint = _prompt_fingerprint(prompt)
+    previous = _repeat_count(conversation_id, fingerprint)
+    stuck = previous >= STUCK_REPEAT_LIMIT - 1
     job = {
         "id": job_id,
         "prompt": str(prompt or "")[:2000],
@@ -692,8 +716,11 @@ def create_job(
         #: standard = 1920×1080；fast = 1280×720 + 12fps（渲染约 3 倍快，画面略软）
         "quality": _normalize_quality(quality),
         "user_id": str(user_id or ""),
+        #: 属于哪个对话：任务栏按对话隔离，不再全局混在一起
+        "conversation_id": str(conversation_id or ""),
         "stage": STAGE_QUEUED,
-        "requires_confirmation": _needs_storyboard(prompt),
+        #: 不再等用户手动确认：起任务就直接渲染（confirm 接口保留兼容）
+        "requires_confirmation": False,
         "dir": str(folder),
         "video": "",
         "error": "",
@@ -702,6 +729,10 @@ def create_job(
         "lyrics_file": str(lyrics_file or ""),
         "audio": str(audio or ""),
         "section": str(section or ""),
+        #: 需求指纹 + 这是第几次：连续相似时提示 agent 换思路，而不是重做一遍
+        "fingerprint": fingerprint,
+        "repeat_count": previous + 1,
+        "stuck": stuck,
         "duration": float(duration or 0),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -751,17 +782,60 @@ def job_status(job_id: str) -> Optional[dict]:
         return None
 
 
-def list_jobs(limit: int = 20) -> list[dict]:
+def list_jobs(limit: int = 20, conversation_id: Optional[str] = None,
+              *, prune: bool = True) -> list[dict]:
+    """任务列表；``conversation_id`` 给了就只看这个对话的。
+
+    ``prune=True`` 时顺手清掉永远不会再动的垃圾，免得任务栏每次打开都翻出陈年旧账：
+
+    * 进程重启后停在「渲染中」、本进程没有线程的僵尸（stale）
+    * 重启后还停在「等确认分镜」的（没人会确认了）
+    * 失败超过 6 小时的
+
+    只删该删的，正在跑的和刚失败（留给用户看原因）的一律保留。
+    """
+    now = time.time()
+    items: list[dict] = []
     with _LOCK:
-        items = [dict(job) for job in _JOBS.values()]
-    if not items:
-        for folder in sorted(jobs_dir().glob("anim_*"), reverse=True)[:limit]:
+        live_ids = set(_JOBS)
+        live_copies = {job_id: dict(job) for job_id, job in _JOBS.items()}
+
+    for folder in jobs_dir().glob("anim_*"):
+        if not folder.is_dir():
+            continue
+        job_id = folder.name
+        if job_id in live_copies:
+            job = live_copies[job_id]
+            age = now - now  # 内存里的任务就是「活的」，不按磁盘时间判僵尸
+        else:
             path = folder / "status.json"
-            if path.exists():
-                try:
-                    items.append(json.loads(path.read_text(encoding="utf-8")))
-                except Exception:  # noqa: BLE001
-                    continue
+            if not path.exists():
+                continue
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+                age = now - path.stat().st_mtime
+            except Exception:  # noqa: BLE001
+                continue
+        stage = str(job.get("stage") or "")
+        stale = (stage in RUNNING_STAGES and job_id not in live_ids and age > 1800)
+        abandoned = (stage == STAGE_AWAITING and job_id not in live_ids)
+        old_failed = (stage == STAGE_FAILED and age > 6 * 3600)
+        if prune and (stale or abandoned or old_failed):
+            logger.info("任务栏自动清理：%s（%s）", job_id, stage)
+            delete_job(job_id)
+            continue
+        if conversation_id is not None and str(job.get("conversation_id") or "") != conversation_id:
+            continue
+        items.append(job)
+
+    # 内存里刚起、还没落盘的任务（正常都会写，这里兜底）
+    for job_id, job in live_copies.items():
+        if any(item.get("id") == job_id for item in items):
+            continue
+        if conversation_id is not None and str(job.get("conversation_id") or "") != conversation_id:
+            continue
+        items.append(dict(job))
+
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
 
@@ -862,9 +936,8 @@ def _tool_start(args: dict) -> dict:
         if embedded.strip():
             lrc, lyrics_source = embedded, source
 
-    needs_confirm = (_needs_storyboard(prompt) or bool(lyrics)
-                     or bool(lrc.strip()))
     section = str(args.get("section") or "").strip() or parse_section(prompt)
+    conversation_id = str(args.get("conversation_id") or "").strip()
 
     # 时长：显式参数 > 从原话里抠（"前30s的MV"）
     duration = float(args.get("duration") or 0) or _parse_duration(prompt)
@@ -878,19 +951,15 @@ def _tool_start(args: dict) -> dict:
         duration=duration,
         quality=str(args.get("quality") or "standard"),
         section=section,
+        conversation_id=conversation_id,
     )
     label = _STAGE_LABELS.get(job["stage"], job["stage"])
-
-    # 注意：create_job 是异步起线程的，这里 stage 通常还是 scaffold。
-    # 所以要按 prompt 提前判断"会不会停在等确认"，否则用户以为已经在做了，
-    # 结果永远停在 awaiting_confirmation（歌词 MV 就是这么卡住的）
-    if needs_confirm or job["stage"] == STAGE_AWAITING:
-        text = (f"分镜我先写好了（任务 {job['id']}），你确认一下我再开始渲染。"
-                "在右侧任务栏点「确认分镜」就行。")
-    elif job["stage"] == STAGE_FAILED:
+    if job["stage"] == STAGE_FAILED:
         return {"ok": False, "error": job.get("error") or "渲染失败", "job_id": job["id"]}
-    else:
-        text = f"动画已经开做了（任务 {job['id']}，当前：{label}），好了我把成片发你。"
+    text = f"动画已经开做了（任务 {job['id']}，当前：{label}），好了我把成片发你。"
+    if job.get("stuck"):
+        text += (f"（同一个需求已经起过 {int(job.get('repeat_count') or 0)} 次，画面很可能不会变："
+                 "换个风格 / 换组镜头 / 拆成小段再做，或者明说这次具体要改哪一处，别重复做同款。）")
     hints: list[str] = []
     if audio_path and not lyrics and not lrc.strip():
         hints.append("这首歌里没找到内嵌歌词，也没传 .lrc；要逐句歌词就把歌词贴我或传 .lrc")
@@ -1010,6 +1079,35 @@ def _job_folders() -> list[tuple[str, float, Path]]:
     return items
 
 
+def _remove_folder(folder: Path) -> tuple[bool, str]:
+    """可靠删目录：Windows 上 node_modules / chrome 可能短暂占用文件。
+
+    以前直接 ``shutil.rmtree(ignore_errors=True)``，删不掉也当成功——
+    用户重启后任务又冒出来，就是这里骗了自己。现在重试 + 改名兜底 + 回读验证。
+    """
+    if not folder.exists():
+        return True, ""
+    last = ""
+    for attempt in range(3):
+        try:
+            shutil.rmtree(folder)
+        except Exception as exc:  # noqa: BLE001
+            last = str(exc)[:200]
+        if not folder.exists():
+            return True, ""
+        time.sleep(0.4 * (attempt + 1))
+    # 改名挪开再删：即使进程还开着句柄，至少原目录名不再出现在任务列表
+    trash = folder.with_name(f".trash_{folder.name}_{int(time.time())}")
+    try:
+        folder.rename(trash)
+        shutil.rmtree(trash, ignore_errors=True)
+        if not folder.exists():
+            return True, ""
+    except Exception as exc:  # noqa: BLE001
+        last = str(exc)[:200]
+    return False, last or "目录删不掉（文件可能还被渲染进程占用）"
+
+
 def delete_job(job_id: str) -> dict:
     """删掉一个任务（状态 + 整个项目目录）。正在跑的拒绝删。"""
     job = job_status(job_id)
@@ -1020,25 +1118,56 @@ def delete_job(job_id: str) -> dict:
     live = job_id in _JOBS
     recent = False
     if live:
-        stamp_path = Path(str(job.get("dir") or "")) / "status.json"
+        stamp_path = jobs_dir() / job_id / "status.json"
         stamp = stamp_path.stat().st_mtime if stamp_path.exists() else 0.0
         recent = (time.time() - stamp) < 10 * 60
     if live and recent and job.get("stage") not in ("done", "failed"):
         return {"ok": False, "error": "任务还在跑，等它结束再删"}
 
-    folder = Path(str(job.get("dir") or "")) or (jobs_dir() / job_id)
-    try:
-        if folder.exists():
-            shutil.rmtree(folder, ignore_errors=True)
-        else:
-            shutil.rmtree(jobs_dir() / job_id, ignore_errors=True)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"删除失败：{exc}"}
+    removed, reason = _remove_folder(jobs_dir() / job_id)
+    if not removed:
+        return {"ok": False, "error": f"删除失败：{reason}（稍后再试）"}
 
     with _LOCK:
         _JOBS.pop(job_id, None)
     logger.info("动画任务已删除：%s", job_id)
     return {"ok": True, "job_id": job_id}
+
+
+def rerender(job_id: str, quality: str = "fast") -> dict:
+    """换个画质重渲（项目、歌词、风格都不变）。
+
+    任务栏的「720p / 1080p」就是调它：已经渲完或失败的任务可以重来一遍，
+    真在跑的（10 分钟内还在动）拒绝，避免两个渲染抢 Chrome。
+    """
+    job = job_status(job_id)
+    if not job:
+        return {"ok": False, "error": "任务不存在"}
+    wanted = _normalize_quality(quality)
+    with _LOCK:
+        live = _JOBS.get(job_id)
+        if live is not None:
+            stamp_path = jobs_dir() / job_id / "status.json"
+            stamp = stamp_path.stat().st_mtime if stamp_path.exists() else 0.0
+            moving = live.get("stage") in RUNNING_STAGES and (time.time() - stamp) < 10 * 60
+            if moving:
+                return {"ok": False, "error": "任务还在跑，等它结束再换画质"}
+            live = dict(live)
+        else:
+            live = dict(job)
+        live.update({
+            "quality": wanted,
+            "stage": STAGE_QUEUED,
+            "error": "",
+            "video": "",
+            "requires_confirmation": False,
+            "note": f"换画质重渲（{wanted}）",
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        _JOBS[job_id] = live
+        _write_status(live)
+    threading.Thread(target=_run_job, args=(job_id,), daemon=True).start()
+    return {"ok": True, "job": job_status(job_id)}
 
 
 def cleanup(keep: int = 10, max_mb: int = 2000, stale_hours: float = 6.0) -> dict:

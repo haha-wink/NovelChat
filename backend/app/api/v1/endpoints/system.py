@@ -80,12 +80,19 @@ async def animation_capabilities() -> dict:
 
 
 @router.get("/animation")
-async def animation_jobs(limit: int = 20) -> list[dict]:
-    """任务列表（附磁盘占用统计，界面右侧任务栏用）。"""
+async def animation_jobs(limit: int = 20, conversation_id: str = "") -> list[dict]:
+    """任务列表（附磁盘占用统计，界面右侧任务栏用）。
+
+    ``conversation_id`` 给了就只看这个对话的任务：一个对话一个任务栏，
+    打开群聊时不会翻出别的对话（甚至别的书架）的陈年任务。
+    """
     import skills.work.animation.engine as animation_engine
 
     return await anyio.to_thread.run_sync(
-        functools.partial(animation_engine.list_jobs, limit=limit)
+        functools.partial(
+            animation_engine.list_jobs, limit=limit,
+            conversation_id=(conversation_id or None),
+        )
     )
 
 
@@ -222,9 +229,23 @@ async def animation_start_job(payload: dict) -> dict:
             audio=audio,
             duration=duration,
             quality=str(payload.get("quality") or "standard"),
+            section=str(payload.get("section") or ""),
+            conversation_id=str(payload.get("conversation_id") or ""),
         )
     )
     return {"ok": True, "job": job}
+
+
+@router.post("/animation/{job_id}/quality")
+async def animation_quality(job_id: str, quality: str = "fast") -> dict:
+    """换画质重渲：fast = 720p/12fps，standard = 1080p。项目与风格不变。"""
+    import skills.work.animation.engine as animation_engine
+
+    if not _JOB_ID.match(job_id):
+        raise HTTPException(status_code=400, detail="任务号不合法")
+    return await anyio.to_thread.run_sync(
+        functools.partial(animation_engine.rerender, job_id, quality)
+    )
 
 
 @router.post("/animation/assets", status_code=201)

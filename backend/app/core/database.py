@@ -232,11 +232,28 @@ CREATE TABLE IF NOT EXISTS conversations (
     shelf_id    TEXT NOT NULL DEFAULT '',
     user_id     TEXT NOT NULL DEFAULT '',
     title       TEXT NOT NULL DEFAULT '',
+    mode        TEXT NOT NULL DEFAULT 'chat',        -- chat 聊天模式 | work 工作模式（隔离记忆）
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_conv_shelf ON conversations(shelf_id, user_id, updated_at);
+
+-- 工作记忆：只活在一个对话里、只属于当前任务的临时笔记（工作模式专用）。
+-- 不参与 RAG 检索，也不会自动变成长期记忆；清空对话时跟聊天流水一起蒸馏进长期记忆。
+CREATE TABLE IF NOT EXISTS working_memory (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL DEFAULT '',
+    shelf_id        TEXT NOT NULL DEFAULT '',
+    user_id         TEXT NOT NULL DEFAULT '',
+    mode            TEXT NOT NULL DEFAULT 'work',
+    kind            TEXT NOT NULL DEFAULT 'note',     -- user 要求 | job 任务 | note 笔记
+    content         TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wm_conv ON working_memory(conversation_id, created_at);
 """
 
 #: 老库迁移时自动创建的书库 / 书架名称
@@ -432,6 +449,19 @@ def init_db() -> None:
         if "distilled" not in turn_columns:
             conn.execute(
                 "ALTER TABLE chat_turns ADD COLUMN distilled INTEGER NOT NULL DEFAULT 0"
+            )
+
+        # 对话加模式：聊天 / 工作分窗，互不串记忆
+        conversation_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()
+        }
+        if "mode" not in conversation_columns:
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'chat'"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conv_mode"
+                " ON conversations(shelf_id, user_id, mode, updated_at)"
             )
 
         _ensure_default_shelf(conn)
@@ -2056,46 +2086,64 @@ def _conversation_title(text: str) -> str:
 
 
 def create_conversation(
-    shelf_id: str, user_id: str, *, title: str = "", conversation_id: Optional[str] = None
+    shelf_id: str, user_id: str, *, title: str = "", conversation_id: Optional[str] = None,
+    mode: str = "chat",
 ) -> dict:
-    """开一个新对话。title 为空时叫"新对话"，第一句话进来后自动改名。"""
+    """开一个新对话。title 为空时叫"新对话"，第一句话进来后自动改名。
+
+    ``mode``：chat（聊天模式）/ work（工作模式）。切换模式时前端会新建一个对话，
+    这样工作记忆和聊天记忆天然隔离，不会互相串。
+    """
     now = _now()
     cid = conversation_id or new_id("conv")
+    wanted = "work" if str(mode or "").strip().lower() == "work" else "chat"
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO conversations (id, shelf_id, user_id, title, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO conversations (id, shelf_id, user_id, title, mode, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (cid, shelf_id, user_id, (title or "新对话")[:60], now, now),
+            (cid, shelf_id, user_id, (title or "新对话")[:60], wanted, now, now),
         )
     return {
         "id": cid,
         "shelf_id": shelf_id,
         "user_id": user_id,
         "title": (title or "新对话")[:60],
+        "mode": wanted,
         "created_at": now,
         "updated_at": now,
         "turn_count": 0,
     }
 
 
-def list_conversations(shelf_id: str, user_id: str, *, limit: int = 100) -> list[dict]:
-    """列出这个用户在该书架的所有对话，最近活跃的在前。"""
+def list_conversations(
+    shelf_id: str, user_id: str, *, limit: int = 100, mode: Optional[str] = None
+) -> list[dict]:
+    """列出这个用户在该书架的所有对话，最近活跃的在前。
+
+    ``mode`` 给了就只列该模式的对话（聊天 / 工作各看各的窗口）。
+    """
+    clause = ""
+    params: list[Any] = [shelf_id, user_id]
+    if mode in ("chat", "work"):
+        clause = " AND COALESCE(c.mode, 'chat') = ?"
+        params.append(mode)
+    params.append(int(limit))
     with connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT c.*,
                    (SELECT COUNT(*) FROM chat_turns t WHERE t.conversation_id = c.id)
                        AS turn_count,
                    (SELECT MAX(t.created_at) FROM chat_turns t WHERE t.conversation_id = c.id)
                        AS last_turn_at
             FROM conversations c
-            WHERE c.shelf_id = ? AND c.user_id = ?
+            WHERE c.shelf_id = ? AND c.user_id = ?{clause}
             ORDER BY c.updated_at DESC
             LIMIT ?
             """,
-            (shelf_id, user_id, int(limit)),
+            tuple(params),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -2141,14 +2189,83 @@ def rename_conversation(conversation_id: str, title: str) -> Optional[dict]:
 
 
 def delete_conversation(conversation_id: str) -> int:
-    """删对话，连同里面的流水一起删。返回删掉的流水条数。"""
+    """删对话，连同里面的流水和工作记忆一起删。返回删掉的流水条数。"""
     with connect() as conn:
         cursor = conn.execute(
             "DELETE FROM chat_turns WHERE conversation_id = ?", (conversation_id,)
         )
         removed = cursor.rowcount
+        conn.execute("DELETE FROM working_memory WHERE conversation_id = ?", (conversation_id,))
         conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
     return removed
+
+
+# ---------------------------------------------------------------------------
+# 工作记忆（work 模式专用：一个对话里当前任务的笔记）
+# ---------------------------------------------------------------------------
+def add_working_memory(
+    conversation_id: str,
+    content: str,
+    *,
+    shelf_id: str = "",
+    user_id: str = "",
+    mode: str = "work",
+    kind: str = "note",
+) -> Optional[dict]:
+    """记一条工作记忆。内容去重压平，单条最长 2000 字（不是长期记忆，别囤）。"""
+    text = " ".join(str(content or "").split())[:2000]
+    if not conversation_id or not text:
+        return None
+    mid = new_id("wm")
+    now = _now()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO working_memory"
+            " (id, conversation_id, shelf_id, user_id, mode, kind, content, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mid, conversation_id, shelf_id, user_id, mode, kind, text, now, now),
+        )
+    return {
+        "id": mid, "conversation_id": conversation_id, "kind": kind,
+        "content": text, "created_at": now, "updated_at": now,
+    }
+
+
+def list_working_memory(conversation_id: str, *, limit: int = 50) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM working_memory WHERE conversation_id = ?"
+            " ORDER BY created_at ASC LIMIT ?",
+            (conversation_id, int(limit)),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def clear_working_memory(conversation_id: str) -> int:
+    with connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM working_memory WHERE conversation_id = ?", (conversation_id,)
+        )
+    return cursor.rowcount
+
+
+def delete_working_memory(memory_id: str) -> bool:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM working_memory WHERE id = ?", (memory_id,))
+    return cursor.rowcount > 0
+
+
+def working_memory_text(conversation_id: str, *, limit: int = 40) -> str:
+    """把工作记忆拼成一段文本：给蒸馏用，也可给提示词当"这次任务的笔记"。"""
+    rows = list_working_memory(conversation_id, limit=limit)
+    if not rows:
+        return ""
+    labels = {"user": "用户要求", "job": "任务", "note": "笔记"}
+    lines = [
+        f"- [{labels.get(str(row.get('kind') or ''), '记录')}] {row.get('content') or ''}"
+        for row in rows
+    ]
+    return "\n".join(lines)[:4000]
 
 
 def ensure_default_conversation(shelf_id: str, user_id: str) -> dict:

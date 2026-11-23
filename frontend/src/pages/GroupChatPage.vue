@@ -216,10 +216,25 @@
         :style="taskWidthPx() ? { width: taskWidthPx() } : {}"
       >
         <div class="task-head">
-          <strong>任务</strong>
+          <div class="task-title-block">
+            <strong>任务</strong>
+            <span class="task-sub">{{ currentConversationTitle }}</span>
+          </div>
           <span class="task-stats">
-            {{ taskPanel.stats.count }} 个 · {{ taskPanel.stats.total_mb }} MB
+            {{ taskPanel.jobs.length }} 个 · {{ taskPanel.stats.total_mb }} MB
           </span>
+        </div>
+
+        <div class="task-quality">
+          <span>画质</span>
+          <select
+            :value="taskPanel.quality"
+            @change="setTaskQuality($event.target.value)"
+          >
+            <option value="fast">720p 快速（12fps，约 3 倍快）</option>
+            <option value="standard">1080p 标准（最清晰，慢）</option>
+          </select>
+          <span class="task-hint">新任务用这个；已有任务可单独重渲</span>
         </div>
 
         <!-- 歌词 MV：直接上传歌词 + 配乐，不用在群里拼文本 -->
@@ -250,12 +265,8 @@
             <p v-if="lyricForm.audioName" class="lyric-note">{{ lyricForm.audioName }}</p>
 
             <input v-model="lyricForm.prompt" class="lyric-prompt" placeholder="一句话需求" />
-            <label class="lyric-file">
-              <span>画质</span>
-              <select v-model="lyricForm.quality" class="lyric-prompt">
-                <option value="standard">1080p 标准（最清晰，慢）</option>
-                <option value="fast">720p 快速（12fps，约 3 倍快）</option>
-              </select>
+            <label class="lyric-file lyric-quality-row">
+              <span>画质：{{ taskPanel.quality === 'fast' ? '720p 快速' : '1080p 标准' }}（上面切换）</span>
             </label>
             <button
               class="primary small"
@@ -292,54 +303,68 @@
 
         <p v-if="taskPanel.error" class="error">{{ taskPanel.error }}</p>
         <p v-else-if="!taskPanel.jobs.length" class="conv-hint">
-          还没有任务。工作模式下让它做个动画，这里会出现进度和成片。
+          这个对话还没有任务。工作模式下说一句要做什么，任务会出现在这里。
         </p>
 
-        <ul class="task-list">
-          <li v-for="job in taskPanel.jobs" :key="job.id" class="task-item">
-            <div class="task-title">{{ job.prompt || '（没有描述）' }}</div>
-            <div class="task-meta">
-              <span class="task-stage" :class="'stage-' + (job.stale ? 'stale' : job.stage)">
-                {{ job.stale ? '已中断' : job.stage }}
-              </span>
-              <span class="task-time">{{ formatTime(job.created_at) }}</span>
-            </div>
-            <div class="task-buttons">
-              <button
-                v-if="job.stage === 'awaiting_confirmation'"
-                class="primary small"
-                :disabled="taskPanel.busy === job.id"
-                title="确认分镜，开始渲染"
-                @click="confirmTask(job.id)"
-              >
-                确认分镜
-              </button>
-              <a
-                v-if="job.video"
-                class="ghost small"
-                :href="`/api/animation/${job.id}/video`"
-                target="_blank"
-                rel="noreferrer"
-              >
-                看
-              </a>
-              <a
-                v-if="job.video"
-                class="ghost small"
-                :href="`/api/animation/${job.id}/video?download=1`"
-              >
-                下载
-              </a>
-              <button
-                class="ghost small danger"
-                :disabled="taskPanel.busy === job.id"
-                @click="deleteTask(job.id)"
-              >
-                删除
-              </button>
-            </div>
-          </li>
-        </ul>
+        <div
+          v-for="bucket in taskBuckets"
+          :key="bucket.key"
+          class="task-group"
+        >
+          <p class="task-group-head">
+            {{ bucket.label }} <span>{{ bucket.jobs.length }}</span>
+          </p>
+          <ul class="task-list">
+            <li v-for="job in bucket.jobs" :key="job.id" class="task-item">
+              <div class="task-title">{{ job.prompt || '（没有描述）' }}</div>
+              <div class="task-meta">
+                <span class="task-stage" :class="'stage-' + (job.stale ? 'stale' : job.stage)">
+                  {{ stageLabel(job) }}
+                </span>
+                <span class="task-quality-tag">{{ job.quality === 'fast' ? '720p' : '1080p' }}</span>
+                <span class="task-time">{{ formatTime(job.created_at) }}</span>
+              </div>
+              <p v-if="job.error" class="task-error">{{ job.error }}</p>
+              <div class="task-buttons">
+                <a
+                  v-if="job.video"
+                  class="ghost small"
+                  :href="`/api/animation/${job.id}/video`"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  看
+                </a>
+                <a
+                  v-if="job.video"
+                  class="ghost small"
+                  :href="`/api/animation/${job.id}/video?download=1`"
+                >
+                  下载
+                </a>
+                <button
+                  v-if="job.stage === 'done' || job.stage === 'failed'"
+                  class="ghost small"
+                  :disabled="taskPanel.busy === job.id"
+                  :title="`按 ${job.quality === 'fast' ? '1080p' : '720p'} 重新渲染（项目、歌词、风格不变）`"
+                  @click="rerenderTask(job.id, job.quality === 'fast' ? 'standard' : 'fast')"
+                >
+                  重渲 {{ job.quality === 'fast' ? '1080p' : '720p' }}
+                </button>
+                <button
+                  class="ghost small danger"
+                  :disabled="taskPanel.busy === job.id"
+                  @click="deleteTask(job.id)"
+                >
+                  删除
+                </button>
+              </div>
+            </li>
+          </ul>
+          <p v-if="bucket.key === 'failed'" class="task-hint">
+            失败任务 6 小时后自动清掉；想现在删就点删除。
+          </p>
+        </div>
       </aside>
     </main>
 </template>
@@ -414,6 +439,9 @@ const {
   startLyricJob,
   confirmTask,
   deleteTask,
+  rerenderTask,
+  setTaskQuality,
+  restoreTaskQuality,
   loadTasks,
   ensureTaskPolling,
   runningTasks,
@@ -497,9 +525,49 @@ const sidebarStyle = computed(() => {
   }
 })
 
+//: 任务状态中文名（模板里只显示中文，不再把内部 stage 暴露给用户）
+const STAGE_LABELS = {
+  queued: '排队中',
+  scaffold: '搭项目',
+  storyboard: '写分镜',
+  awaiting_confirmation: '等确认',
+  render: '逐帧渲染',
+  encode: '编码',
+  done: '完成',
+  failed: '失败'
+}
+
+function stageLabel(job) {
+  if (job.stale) return '已中断'
+  return STAGE_LABELS[job.stage] || job.stage || '未知'
+}
+
+const currentConversationTitle = computed(() => {
+  const conv = group.conversations.find((item) => item.id === group.conversationId)
+  return conv?.title || '当前对话'
+})
+
+//: 任务按状态分组：进行中 / 已完成 / 失败，不再一锅炖
+const taskBuckets = computed(() => {
+  const active = []
+  const done = []
+  const failed = []
+  for (const job of taskPanel.jobs) {
+    if (job.stage === 'failed') failed.push(job)
+    else if (job.stage === 'done') done.push(job)
+    else active.push(job)
+  }
+  return [
+    { key: 'active', label: '进行中', jobs: active },
+    { key: 'done', label: '已完成', jobs: done },
+    { key: 'failed', label: '失败', jobs: failed }
+  ].filter((bucket) => bucket.jobs.length)
+})
+
 onMounted(() => {
   restoreSidebarWidth()
   restoreTaskWidth()
+  restoreTaskQuality()
   loadTasks().then(() => {
     // 打开页面时如果有任务在跑，自己开始轮询
     if (runningTasks().length) ensureTaskPolling()

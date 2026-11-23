@@ -11,12 +11,16 @@ when:
   base: 0.55
   bonus: 0.3
 steps:
-  - [animation_start, {prompt: $text, style: $style, lyrics_file: $lyrics_file, audio: $audio}]
+  - [animation_start, {prompt: $text, style: $style, lyrics_file: $lyrics_file, audio: $audio, conversation_id: $conversation_id}]
 ---
 长任务：起任务立刻返回，渲染在后台线程跑。
 
 **不要**在回复里假装成片已经好了——说"正在做，好了发你"就够。
-歌词/MV 类任务会停在"等确认分镜"，需要用户确认后才开始渲染。
+歌词/MV 类任务**不再等确认**：起了任务就直接渲染，进度看右侧任务栏；画质可随时换。
+任务做不了 / 缺条件时，直说缺什么、为什么做不了，不要假装在做；
+一次做不完的大任务拆成几个小任务分别起，做完一个再说下一个。
+同一个需求已经起过 3 次、画面没变化时，先停下来说明卡住了，换风格 / 换镜头 / 拆段，
+不要重复起同款；真要改已渲好的成片，在任务栏点 720p / 1080p 重渲，或说明这次改哪一处。
 
 风格：watercolor 水彩（默认）/ pixel 像素 / ink 水墨 / neon 赛博朋克 / film 胶片 /
 noir 黑白 / pastel 小清新 / anime 动漫 / sunset 日落；用户说「水墨风 / 赛博朋克 / 胶片感」也能认。

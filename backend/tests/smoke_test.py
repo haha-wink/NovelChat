@@ -2239,7 +2239,7 @@ def lrc_checks() -> None:
 
 
 def lyric_mv_checks() -> None:
-    """歌词 MV：起任务要说明"先确认分镜"，确认后必须真的跑到完成。
+    """歌词 MV：起任务就直接开渲（不用点确认），并且必须真的跑到完成。
 
     用假渲染器 + 临时任务目录，不碰真实数据、不碰 node/ffmpeg。
     """
@@ -2262,35 +2262,32 @@ def lyric_mv_checks() -> None:
     animation.jobs_dir = lambda: _pathlib.Path(sandbox.name)
 
     job_id = ""
+    plain_id = ""
+    stuck_jobs: list[str] = []
     try:
         started = tool_protocol.execute(
-            "animation_start", {"prompt": "帮我做一段歌词 MV，配这首歌"})
+            "animation_start",
+            {"prompt": "帮我做一段歌词 MV，配这首歌", "conversation_id": "conv-smoke"})
         check("歌词MV：起了任务", started.get("ok") and started.get("job_id"),
               str(started))
         job_id = started.get("job_id") or ""
-        # 关键：文案必须提前说明"要确认"，否则用户以为已经在渲染
-        check("歌词MV：起任务时就说明要先确认分镜",
-              "确认" in str(started.get("text")), str(started.get("text"))[:80])
+        # 关键：不再要求用户先点「确认分镜」，起任务就开渲
+        check("歌词MV：起任务时直接开渲、不再要求确认",
+              "确认" not in str(started.get("text")), str(started.get("text"))[:80])
 
-        for _ in range(40):
-            if animation.job_status(job_id)["stage"] == "awaiting_confirmation":
-                break
-            _time.sleep(0.2)
-        check("歌词MV：停在等确认",
-              animation.job_status(job_id)["stage"] == "awaiting_confirmation",
-              str(animation.job_status(job_id)["stage"]))
-
-        confirmed = animation.confirm(job_id)
-        check("歌词MV：确认被接受", confirmed.get("ok"), str(confirmed))
-
-        for _ in range(60):
+        for _ in range(80):
             if animation.job_status(job_id)["stage"] in ("done", "failed"):
                 break
             _time.sleep(0.2)
         final = animation.job_status(job_id)
-        check("歌词MV：确认后真的跑完", final["stage"] == "done",
+        check("歌词MV：不点确认也能自动跑完", final["stage"] == "done",
               f"{final['stage']} {final.get('error') or ''}"[:120])
         check("歌词MV：产出了成片", bool(final.get("video")), str(final.get("video")))
+        check("歌词MV：任务记在哪个对话里",
+              final.get("conversation_id") == "conv-smoke",
+              str(final.get("conversation_id")))
+        check("歌词MV：已完成的任务不再需要确认",
+              animation.confirm(job_id).get("ok") is False, "confirm 应被拒绝")
 
         # ---- 歌词真的填进模板了 ----
         import shutil as _shutil
@@ -2338,15 +2335,31 @@ def lyric_mv_checks() -> None:
         plain = tool_protocol.execute(
             "animation_start", {"prompt": "帮我做一段动画：星空下的小人"})
         plain_id = plain.get("job_id") or ""
-        for _ in range(40):
+        for _ in range(60):
             if animation.job_status(plain_id)["stage"] in ("done", "failed"):
                 break
             _time.sleep(0.2)
         check("歌词MV：普通动画不需要确认就能完成",
               animation.job_status(plain_id)["stage"] == "done",
               str(animation.job_status(plain_id)["stage"]))
+        current_ids = [j["id"] for j in animation.list_jobs(conversation_id="conv-smoke")]
+        check("任务栏：只列当前对话的任务",
+              job_id in current_ids and plain_id not in current_ids, str(current_ids))
+
+        # 同款需求连续起 3 次 -> 判定卡住，要提示换思路而不是重做一遍
+        for _index in range(3):
+            started_same = tool_protocol.execute("animation_start", {
+                "prompt": "同一个小人在雨里走路",
+                "conversation_id": "conv-stuck",
+            })
+            stuck_jobs.append(started_same.get("job_id") or "")
+        last_stuck = animation.job_status(stuck_jobs[-1]) or {}
+        check("卡住检测：连续 3 次相似需求会提示换思路",
+              bool(last_stuck.get("stuck"))
+              and int(last_stuck.get("repeat_count") or 0) >= 3,
+              str(last_stuck.get("repeat_count")))
     finally:
-        for leftover in (job_id,):
+        for leftover in [job_id, plain_id, *stuck_jobs]:
             if leftover:
                 try:
                     animation.delete_job(leftover)
@@ -2775,8 +2788,8 @@ async def asset_upload_checks() -> None:
               started.text[:120])
         if started.status_code == 201:
             job = started.json()["job"]
-            check("素材：起任务后进等确认状态",
-                  job.get("requires_confirmation") is True, str(job.get("stage")))
+            check("素材：起任务后直接开渲、不再等确认",
+                  job.get("requires_confirmation") is False, str(job.get("stage")))
 
         missing = await client.post("/api/animation/start", json={
             "prompt": "x", "lyrics_file": "/nope/not-exist.lrc",
@@ -3211,17 +3224,17 @@ def animation_checks() -> None:
         check("动画：状态查询能拿到产物路径",
               status["ok"] and "video" in str(status.get("text")), str(status)[:120])
 
-        # --- 歌词 MV 要先确认分镜 ---
+        # --- 歌词 MV 也不需要手动确认，直接跑完 ---
         gated = tool_protocol.execute(
             "animation_start", {"prompt": "给我做一段歌词 MV，配这首歌"})
         gated_final = None
-        for _ in range(40):
+        for _ in range(80):
             _time.sleep(0.1)
             gated_final = animation.job_status(gated["job_id"])
-            if gated_final and gated_final["stage"] in ("awaiting_confirmation", "done", "failed"):
+            if gated_final and gated_final["stage"] in ("done", "failed"):
                 break
-        check("动画：歌词 MV 停在等确认分镜",
-              bool(gated_final) and gated_final["stage"] == "awaiting_confirmation",
+        check("动画：歌词 MV 不点确认也能跑完",
+              bool(gated_final) and gated_final["stage"] == "done",
               str(gated_final and gated_final.get("stage")))
     finally:
         animation.capabilities = original_caps
@@ -3298,6 +3311,33 @@ def conversation_checks() -> None:
     check("对话：第一句话自动成了标题",
           any("第一句" in str(item["title"]) for item in listed),
           str([item["title"] for item in listed]))
+
+    # 模式隔离：chat / work 各有各的窗口（切换模式不串对话）
+    work_conv = dbmod.create_conversation(shelf["id"], uid, mode="work")
+    chat_list = dbmod.list_conversations(shelf["id"], uid, mode="chat")
+    work_list = dbmod.list_conversations(shelf["id"], uid, mode="work")
+    check("对话：聊天/工作模式窗口隔离",
+          work_conv["mode"] == "work"
+          and [item["id"] for item in work_list] == [work_conv["id"]]
+          and all(item.get("mode") == "chat" for item in chat_list),
+          f"chat={len(chat_list)} work={len(work_list)}")
+
+    # 工作记忆：work 模式的任务笔记，按对话隔离，不进 RAG
+    wm = dbmod.add_working_memory(
+        work_conv["id"], "要 720p、副歌、赛博朋克",
+        shelf_id=shelf["id"], user_id=uid, kind="user",
+    )
+    dbmod.add_working_memory(
+        first["id"], "聊天窗口不该有工作记忆",
+        shelf_id=shelf["id"], user_id=uid, kind="note",
+    )
+    wm_text = dbmod.working_memory_text(work_conv["id"])
+    check("工作记忆：按对话隔离且能拼成文本",
+          bool(wm) and "720p" in wm_text and "聊天窗口" not in wm_text,
+          wm_text[:60])
+    dbmod.delete_conversation(work_conv["id"])
+    check("工作记忆：删对话一并清掉",
+          dbmod.working_memory_text(work_conv["id"]) == "", "残留")
 
     turn_a = dbmod.list_chat_turns(shelf["id"], user_id=uid, conversation_id=first["id"])
     turn_b = dbmod.list_chat_turns(shelf["id"], user_id=uid, conversation_id=second["id"])
@@ -3411,6 +3451,18 @@ def clear_conversation_checks() -> None:
           bool(facts_c) and "用户最近分手" in str(facts_c[-1].get("content", "")),
           str(facts_c[-1].get("content", ""))[:50] if facts_c else "空")
 
+    # ---- B3. 工作记忆随对话一起蒸馏进长期记忆 ----
+    lib_d, shelf_d, book_d, members_d = build("工作记忆")
+    talk(shelf_d, members_d, "u_wm_d")
+    chat_memory.clear_conversation(
+        shelf_d["id"], user_id="u_wm_d", mode="distill",
+        working_digest="- [用户要求] 做副歌 MV，720p，赛博朋克",
+    )
+    facts_d = agent_memory.items(members_d[0]["character_id"], kind="fact")
+    check("工作记忆：清空对话时一起蒸馏进长期记忆",
+          bool(facts_d) and "720p" in str(facts_d[-1].get("content", "")),
+          str(facts_d[-1].get("content", ""))[:60] if facts_d else "空")
+
     # ---- C. 不再有固定阈值 ----
     from core.config import get_settings
 
@@ -3420,7 +3472,9 @@ def clear_conversation_checks() -> None:
     check("清空：maybe_distill 在阈值 0 时不再自动跑",
           chat_memory.maybe_distill(shelf_b["id"], members_b[0]["character_id"]) is None)
 
-    for shelf, book in ((shelf_a, book_a), (shelf_b, book_b)):
+    for shelf, book in (
+        (shelf_a, book_a), (shelf_b, book_b), (shelf_c, book_c), (shelf_d, book_d)
+    ):
         dbmod.delete_book(book["id"])
         dbmod.delete_shelf(shelf["id"])
 

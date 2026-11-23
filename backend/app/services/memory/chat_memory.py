@@ -212,6 +212,7 @@ def clear_conversation(
     summarizer=None,
     mode: str = "distill",
     conversation_id: Optional[str] = None,
+    working_digest: str = "",
 ) -> dict:
     """清空对话。两种语义：
 
@@ -252,6 +253,11 @@ def clear_conversation(
             f"{turn.get('content') or ''}"
             for turn in turns
         )[:6000]
+        # 工作模式的任务笔记一起蒸馏：否则“这次要求过 720p / 副歌 / 赛博朋克”
+        # 这些约束会随对话删掉，下次又要重新说一遍
+        note = " ".join(str(working_digest or "").split())
+        if note:
+            transcript = f"【这次工作对话记下的任务笔记】\n{note}\n\n{transcript}"[:7000]
 
         summary = None
         if summarizer is not None:
@@ -267,6 +273,9 @@ def clear_conversation(
         mood = _mood_digest(turns)
         if mood:
             text = f"{text}\n[本轮情绪] {mood}"
+        # 本地压缩（没有模型）时也要留下任务笔记：模型摘要失败是常态兜底
+        if note:
+            text = f"{text}\n[任务笔记] {note}"[:MAX_SUMMARY_CHARS + 300]
 
         for cid in speakers:
             try:
@@ -312,6 +321,15 @@ def clear_conversation(
     # ---- 3. 删流水（原文同时是聊天记录，清空就该消失）----
     db.mark_turns_distilled([turn["id"] for turn in turns])
     result["removed"] = db.delete_chat_turns([turn["id"] for turn in turns])
+
+    # ---- 4. 工作记忆：已经蒸馏进长期记忆，草稿纸清掉 ----
+    if conversation_id:
+        try:
+            from services.memory import working_memory
+
+            result["working_cleared"] = working_memory.clear(conversation_id)
+        except Exception:  # noqa: BLE001 - 清不掉不影响主流程
+            logger.exception("清工作记忆失败（已忽略）")
 
     agent_log.log(
         "chat_history_cleared",
