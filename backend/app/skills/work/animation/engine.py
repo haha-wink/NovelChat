@@ -563,11 +563,14 @@ def _run_job(job_id: str) -> None:
         # 歌词 MV：把歌词真正填进模板（不然渲染出来只是模板默认画面）
         lyric_info = _prepare_lyric_project(project, job)
 
-        # 非歌词任务也认时长：模板默认 11s，不写回去「前30s / 3秒」就永远被忽略
+        # 非歌词任务也认时长和风格：模板默认 11s，不写回去「前30s / 3秒」就永远被忽略
+        style = str(job.get("style") or "watercolor")
         if not lyric_info.get("lines"):
             wanted = float(job.get("duration") or 0)
             if wanted > 0:
                 _write_project_duration(project, wanted)
+            # 像素风以前只有歌词 MV 会套配置，非歌词任务不写等于没设
+            _apply_style_config(project, style)
 
         # 逐句场景：不再永远用 demo 的"小人+月亮"
         try:
@@ -583,6 +586,23 @@ def _run_job(job_id: str) -> None:
                        note=f"{info.get('scenes', 0)} 个镜头")
         except Exception:  # noqa: BLE001 - 场景生成失败就退回 demo 画面
             logger.exception("逐句场景生成失败（用 demo 兜底）")
+
+        # 非歌词 + 像素风：模板 demo 是水彩笔刷，光打开 pixel 只会得到「黑底水彩」，
+        # 所以按 prompt 生成一个覆盖全片的像素镜头，像素风才真的成立
+        if not lyric_info.get("lines") and style.strip().lower() == "pixel":
+            try:
+                from skills.work.animation import scene_gen
+
+                span = float(job.get("duration") or 0) or _project_duration(project)
+                info = scene_gen.install(
+                    project, [(0.0, span, str(job.get("prompt") or ""))],
+                    style="pixel",
+                )
+                logger.info("像素风单镜：%s（%ss）", info.get("file"), span)
+                _touch(job_id, STAGE_RENDER, scenes=info.get("scenes", 0),
+                       note="像素风单镜")
+            except Exception:  # noqa: BLE001 - 生成失败就退回 demo 画面
+                logger.exception("像素风单镜生成失败（用 demo 兜底）")
         if lyric_info["lines"]:
             # 时长要写回任务：渲染阶段靠它算超时和帧率
             _touch(job_id, STAGE_RENDER, duration=lyric_info["duration"],
@@ -1093,6 +1113,45 @@ def _write_project_duration(project: Path, duration: float) -> None:
     config.write_text(source[:start] + block + source[end:], encoding="utf-8")
 
 
+def _project_duration(project: Path) -> float:
+    """读 config.js 里 PROJECT.duration（读不出来就用模板默认的 11s）。"""
+    try:
+        source = (project / "src" / "config.js").read_text(encoding="utf-8")
+    except OSError:
+        return 11.0
+    match = re.search(r"duration:\s*([\d.]+)", source)
+    return float(match.group(1)) if match else 11.0
+
+
+#: 像素风的 PROJECT 字段（与模板 config.js 注释里的示例一致）
+_PIXEL_FIELDS = "  pixel: true, pixelGrid: [320, 180], lyricUI: 'rpgBox',"
+
+
+def _apply_style_config(project: Path, style: str) -> None:
+    """把风格写进 config.js 的 PROJECT：像素风补 pixel / pixelGrid / lyricUI，其它风格清掉。
+
+    只动 PROJECT 块里没被注释的字段；模板里 `//   pixel: true,` 这类示例行原样保留。
+    歌词 MV 和非歌词任务都走这里，避免两套写法以后再跑偏。
+    """
+    config = project / "src" / "config.js"
+    if not config.exists():
+        return
+    source = config.read_text(encoding="utf-8")
+    start = source.find("const PROJECT = {")
+    end = source.find("};", start) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return
+    block = source[start:end]
+    # 先摘掉已有三项（重复调用也不会插两遍）
+    stripped = re.sub(r"(?m)^[ \t]*(?:pixel|pixelGrid|lyricUI)\s*:[^\n]*\n", "", block)
+    if str(style or "").strip().lower() == "pixel":
+        stripped = stripped.replace(
+            "const PROJECT = {", "const PROJECT = {\n" + _PIXEL_FIELDS, 1
+        )
+    if stripped != block:
+        config.write_text(source[:start] + stripped + source[end:], encoding="utf-8")
+
+
 def _prepare_lyric_project(project: Path, job: dict) -> dict:
     """把歌词按**真实时间轴**写进 src/karaoke.js 的 LY，总时长写进 config.js。
 
@@ -1122,21 +1181,15 @@ def _prepare_lyric_project(project: Path, job: dict) -> dict:
     config = project / "src" / "config.js"
     if config.exists():
         source = config.read_text(encoding="utf-8")
-        style = str(job.get("style") or "watercolor").lower()
-        if style == "pixel":
-            # 像素歌词模式：跳过水彩纸纹，歌词画成 RPG 对话框
-            replacement = (
-                f"const PROJECT = {{\n  duration: {duration:.2f}, bpm: 120, offset: 0,\n"
-                f"  pixel: true, pixelGrid: [320, 180], lyricUI: 'rpgBox',\n}};"
-            )
-        else:
-            replacement = f"const PROJECT = {{\n  duration: {duration:.2f}, bpm: 120, offset: 0,\n}};"
+        replacement = f"const PROJECT = {{\n  duration: {duration:.2f}, bpm: 120, offset: 0,\n}};"
         start = source.find("const PROJECT = {")
         if start >= 0:
             end = source.find("};", start)
             if end > start:
                 source = source[:start] + replacement + source[end + 2:]
                 config.write_text(source, encoding="utf-8")
+        # 像素歌词模式：补 pixel / pixelGrid / lyricUI（跳过水彩纸纹，歌词画成 RPG 对话框）
+        _apply_style_config(project, str(job.get("style") or "watercolor"))
 
     audio = str(job.get("audio") or "").strip()
     return {

@@ -2357,6 +2357,115 @@ def lyric_mv_checks() -> None:
         sandbox.cleanup()
 
 
+def pixel_style_checks() -> None:
+    """非歌词 pixel 任务：config.js 要带 pixel 三项，并且真的换成像素镜头。
+
+    以前只有歌词 MV 会套像素配置，普通「像素风短片」只写时长，
+    渲染出来是「黑底水彩」——这条专防那个回退。
+    """
+    import pathlib as _pathlib
+    import re as _re
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import time as _time
+
+    from core.config import get_settings
+    from core.tools import protocol as tool_protocol
+
+    import skills.work.animation.engine as animation
+    from skills.work.animation import scene_gen
+
+    template = animation.skill_dir() / "template"
+
+    with _tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+        project = _pathlib.Path(folder) / "p"
+        _shutil.copytree(template, project)
+        config_path = project / "src" / "config.js"
+        active_pixel = _re.compile(r"(?m)^[ \t]*pixel: true,")
+        active_grid = _re.compile(r"(?m)^[ \t]*pixelGrid: \[320")
+
+        check("像素风：_project_duration 读模板默认 11s",
+              abs(animation._project_duration(project) - 11.0) < 0.01,
+              str(animation._project_duration(project)))
+
+        animation._apply_style_config(project, "pixel")
+        config = config_path.read_text(encoding="utf-8")
+        check("像素风：非歌词任务也把三项写进 config",
+              bool(active_pixel.search(config))
+              and "pixelGrid: [320, 180]" in config
+              and "lyricUI: 'rpgBox'" in config,
+              config[config.find("const PROJECT"):][:200])
+        check("像素风：模板里注释的示例原样保留",
+              config.count("// pixel: true,") == 1,
+              str(config.count("// pixel: true,")))
+
+        animation._apply_style_config(project, "pixel")
+        again = config_path.read_text(encoding="utf-8")
+        check("像素风：重复套配置不会写两遍",
+              len(active_pixel.findall(again)) == 1,
+              str(len(active_pixel.findall(again))))
+
+        animation._apply_style_config(project, "watercolor")
+        cleaned = config_path.read_text(encoding="utf-8")
+        check("像素风：换回水彩时摘掉三项",
+              not active_pixel.search(cleaned)
+              and not _re.search(r"(?m)^[ \t]*lyricUI:", cleaned),
+              cleaned[cleaned.find("const PROJECT"):][:200])
+
+        animation._write_project_duration(project, 5)
+        check("像素风：时长还是照旧写进去",
+              "duration: 5.00" in config_path.read_text(encoding="utf-8"), "没写")
+
+        # 非歌词分支里那两次调用：config + 一个覆盖全片的像素镜头
+        animation._apply_style_config(project, "pixel")
+        info = scene_gen.install(project, [(0.0, 5.0, "星空下的像素小人")],
+                                 style="pixel")
+        source = (project / "src" / "scenes" / "generated.js").read_text(
+            encoding="utf-8")
+        check("像素风：生成了一个覆盖全片的像素镜头",
+              info.get("scenes") == 1 and 'const STYLE = "pixel"' in source,
+              source[:120])
+        check("像素风：studio.html 改成加载 generated.js",
+              info.get("replaced_demo")
+              and "src/scenes/generated.js"
+              in (project / "studio.html").read_text(encoding="utf-8"), str(info))
+
+    # 端到端：假渲染器起一个非歌词 pixel 任务，确认那条分支真的被执行
+    settings = get_settings()
+    original_renderer = settings.animation_renderer
+    settings.animation_renderer = "fake"
+    sandbox = _tempfile.TemporaryDirectory(prefix="pixel-test-",
+                                           ignore_cleanup_errors=True)
+    real_jobs_dir = animation.jobs_dir
+    animation.jobs_dir = lambda: _pathlib.Path(sandbox.name)
+    job_id = ""
+    try:
+        started = tool_protocol.execute("animation_start", {
+            "prompt": "星空下的像素小人", "style": "pixel", "duration": 4,
+        })
+        job_id = started.get("job_id") or ""
+        for _ in range(60):
+            if animation.job_status(job_id)["stage"] in ("done", "failed"):
+                break
+            _time.sleep(0.2)
+        final = animation.job_status(job_id)
+        check("像素风：非歌词任务不用确认就能跑完", final["stage"] == "done",
+              f"{final['stage']} {final.get('error') or ''}"[:120])
+        job_project = _pathlib.Path(str(final.get("dir") or "")) / "project"
+        check("像素风：任务目录里也落了像素镜头",
+              (job_project / "src" / "scenes" / "generated.js").exists(),
+              str(job_project))
+    finally:
+        if job_id:
+            try:
+                animation.delete_job(job_id)
+            except Exception:  # noqa: BLE001
+                pass
+        animation.jobs_dir = real_jobs_dir
+        settings.animation_renderer = original_renderer
+        sandbox.cleanup()
+
+
 def task_cleanup_checks() -> None:
     """任务清理：删单个 / 全删 / 僵尸 / 在跑的保护。
 
@@ -6691,6 +6800,7 @@ def main() -> int:
     skill_asset_checks()
     lrc_checks()
     lyric_mv_checks()
+    pixel_style_checks()
     task_cleanup_checks()
     asyncio.run(asset_upload_checks())
     asyncio.run(video_route_checks())
