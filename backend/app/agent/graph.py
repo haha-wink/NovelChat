@@ -255,7 +255,9 @@ async def skill_node(state: TurnState) -> dict:
 
     # 本轮附带的上传素材：风格看原话，歌词/配乐用路径
     text = str(state.get("text") or "")
-    style = "pixel" if ("像素" in text or "pixel" in text.lower()) else "watercolor"
+    from skills.work.animation.styles import resolve_style as resolve_animation_style
+
+    style = resolve_animation_style(text)
     lyrics_file = ""
     audio = ""
     for asset in state.get("assets") or []:

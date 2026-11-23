@@ -48,6 +48,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -55,6 +56,11 @@ from typing import Optional
 from core.tools import protocol as tool_protocol
 from core.config import get_settings
 from core.paths import DATA_DIR, PROJECT_ROOT
+
+try:  # 同包内的风格目录（单独跑 engine.py 时退回绝对导入）
+    from . import styles as style_catalog
+except ImportError:  # pragma: no cover
+    from skills.work.animation import styles as style_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -540,7 +546,7 @@ def _run_job(job_id: str) -> None:
             storyboard.write_text(
                 "# 分镜（草稿）\n\n"
                 f"- 需求：{job.get('prompt') or ''}\n"
-                f"- 风格：{job.get('style') or 'watercolor'}\n"
+                f"- 风格：{style_catalog.style_label(str(job.get('style') or ''))}（{job.get('style') or 'watercolor'}）\n"
                 f"- 歌词：{len(lyric_lines)} 行\n\n"
                 "| 时间 | 歌词 | 画面事件 |\n|------|------|----------|\n"
                 + table + "\n",
@@ -550,7 +556,7 @@ def _run_job(job_id: str) -> None:
             storyboard.write_text(
                 "# 分镜（草稿）\n\n"
                 f"- 需求：{job.get('prompt') or ''}\n"
-                f"- 风格：{job.get('style') or 'watercolor'}\n"
+                f"- 风格：{style_catalog.style_label(str(job.get('style') or ''))}（{job.get('style') or 'watercolor'}）\n"
                 "- 说明：由 animation 技能自动生成，逐镜细节需要人工补充。\n",
                 encoding="utf-8",
             )
@@ -589,14 +595,15 @@ def _run_job(job_id: str) -> None:
 
         # 非歌词 + 像素风：模板 demo 是水彩笔刷，光打开 pixel 只会得到「黑底水彩」，
         # 所以按 prompt 生成一个覆盖全片的像素镜头，像素风才真的成立
-        if not lyric_info.get("lines") and style.strip().lower() == "pixel":
+        if (not lyric_info.get("lines")
+                and style_catalog.resolve_style(style) != "watercolor"):
             try:
                 from skills.work.animation import scene_gen
 
                 span = float(job.get("duration") or 0) or _project_duration(project)
                 info = scene_gen.install(
                     project, [(0.0, span, str(job.get("prompt") or ""))],
-                    style="pixel",
+                    style=style,
                 )
                 logger.info("像素风单镜：%s（%ss）", info.get("file"), span)
                 _touch(job_id, STAGE_RENDER, scenes=info.get("scenes", 0),
@@ -608,6 +615,7 @@ def _run_job(job_id: str) -> None:
             _touch(job_id, STAGE_RENDER, duration=lyric_info["duration"],
                    note=f"填入 {lyric_info['lines']} 行歌词（{lyric_info['duration']}s）")
             job["duration"] = lyric_info["duration"]
+            job["clip_start"] = float(lyric_info.get("offset") or 0.0)
 
         _touch(job_id, STAGE_RENDER)
         if caps["renderer"] == "fake":
@@ -619,7 +627,11 @@ def _run_job(job_id: str) -> None:
             # 配乐统一在渲染之后混一次：短片 --clip 自带音轨，_mux_audio 会覆盖成单条
             song = str(job.get("audio") or "")
             if song and Path(song).is_file() and Path(video).exists():
-                video = _mux_audio(video, song)
+                video = _mux_audio(
+                    video, song,
+                    start=float(job.get("clip_start") or 0.0),
+                    duration=float(job.get("duration") or 0.0),
+                )
 
         _touch(job_id, STAGE_ENCODE)
         size = Path(video).stat().st_size if Path(video).exists() else 0
@@ -667,6 +679,7 @@ def create_job(
     lrc: str = "",
     lyrics_file: str = "",
     quality: str = "standard",
+    section: str = "",
 ) -> dict:
     """起一个渲染任务，立刻返回（渲染在后台线程）。"""
     job_id = f"anim_{uuid.uuid4().hex[:12]}"
@@ -675,7 +688,7 @@ def create_job(
     job = {
         "id": job_id,
         "prompt": str(prompt or "")[:2000],
-        "style": str(style or "watercolor"),
+        "style": style_catalog.resolve_style(str(style or "")),
         #: standard = 1920×1080；fast = 1280×720 + 12fps（渲染约 3 倍快，画面略软）
         "quality": _normalize_quality(quality),
         "user_id": str(user_id or ""),
@@ -688,6 +701,7 @@ def create_job(
         "lrc": str(lrc or "")[:20000],
         "lyrics_file": str(lyrics_file or ""),
         "audio": str(audio or ""),
+        "section": str(section or ""),
         "duration": float(duration or 0),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -817,7 +831,10 @@ def _tool_start(args: dict) -> dict:
             "missing": caps["missing"],
         }
 
-    style = str(args.get("style") or "watercolor")
+    # 风格：参数 > 原话里的词（水墨 / 赛博朋克 / 胶片 / 黑白 / 动漫 / 小清新 / 日落…）
+    style = style_catalog.resolve_style(
+        str(args.get("style") or "") + " " + prompt
+    )
 
     # 歌词可以从参数给，也可以直接写在 prompt 里（"…配这首歌" 后面换行开始）
     lyrics = str(args.get("lyrics") or "").strip()
@@ -830,13 +847,24 @@ def _tool_start(args: dict) -> dict:
     # 上传的歌词文件优先（LRC 有真实时间轴）
     lyrics_file = str(args.get("lyrics_file") or "").strip()
 
-    needs_confirm = _needs_storyboard(prompt) or bool(lyrics) or bool(lyrics_file)
     lrc = ""
     if lyrics_file and Path(lyrics_file).is_file():
         try:
             lrc = Path(lyrics_file).read_text(encoding="utf-8", errors="replace")
         except Exception:  # noqa: BLE001
             lrc = ""
+
+    # 只给了歌：先看歌里有没有内嵌歌词（ID3 USLT / MP4 ©lyr / FLAC，或同名 .lrc）
+    audio_path = str(args.get("audio") or "").strip()
+    lyrics_source = "歌词文件" if lrc.strip() else ""
+    if not lrc.strip() and not lyrics and audio_path:
+        embedded, source = read_audio_lyrics(audio_path)
+        if embedded.strip():
+            lrc, lyrics_source = embedded, source
+
+    needs_confirm = (_needs_storyboard(prompt) or bool(lyrics)
+                     or bool(lrc.strip()))
+    section = str(args.get("section") or "").strip() or parse_section(prompt)
 
     # 时长：显式参数 > 从原话里抠（"前30s的MV"）
     duration = float(args.get("duration") or 0) or _parse_duration(prompt)
@@ -849,6 +877,7 @@ def _tool_start(args: dict) -> dict:
         audio=str(args.get("audio") or ""),
         duration=duration,
         quality=str(args.get("quality") or "standard"),
+        section=section,
     )
     label = _STAGE_LABELS.get(job["stage"], job["stage"])
 
@@ -862,7 +891,18 @@ def _tool_start(args: dict) -> dict:
         return {"ok": False, "error": job.get("error") or "渲染失败", "job_id": job["id"]}
     else:
         text = f"动画已经开做了（任务 {job['id']}，当前：{label}），好了我把成片发你。"
-    return {"ok": True, "text": text, "job_id": job["id"], "stage": job["stage"]}
+    hints: list[str] = []
+    if audio_path and not lyrics and not lrc.strip():
+        hints.append("这首歌里没找到内嵌歌词，也没传 .lrc；要逐句歌词就把歌词贴我或传 .lrc")
+    elif lyrics_source:
+        hints.append(f"歌词来源：{lyrics_source}")
+    if section in ("chorus", "verse"):
+        hints.append("只做" + ("副歌" if section == "chorus" else "主歌"))
+    if hints:
+        text += "（" + "；".join(hints) + "）"
+    return {"ok": True, "text": text, "job_id": job["id"], "stage": job["stage"],
+            "style": style, "section": section,
+            "lyrics_source": lyrics_source}
 
 
 def _tool_status(args: dict) -> dict:
@@ -891,7 +931,9 @@ tool_protocol.register(
         parameters={
             "prompt": {"type": "string", "description": "要做什么动画，用用户的原话"},
             "style": {"type": "string",
-                      "description": "watercolor（手绘水彩，默认）/ pixel（像素风）"},
+                      "description": "画面风格：watercolor 水彩（默认）/ pixel 像素 / "
+                                     "ink 水墨 / neon 赛博朋克 / film 胶片 / "
+                                     "noir 黑白 / pastel 小清新 / anime 动漫 / sunset 日落"},
             "lyrics": {"type": "string",
                        "description": "歌词全文（多行）。歌词 MV 用，会逐句打在画面上"},
             "lyrics_file": {"type": "string",
@@ -900,6 +942,9 @@ tool_protocol.register(
                       "description": "配乐文件路径（可选），渲染完会混进成片"},
             "duration": {"type": "number",
                          "description": "时长秒（可选），不给就按音频时长/歌词行数估"},
+            "section": {"type": "string",
+                        "description": "只做一段：full 整首（默认）/ chorus 副歌（重复最多的那段）/ "
+                                       "verse 主歌（第一段）"},
             "quality": {"type": "string",
                         "description": "standard（1080p，默认）/ fast（720p + 12fps，约 3 倍快）"},
         },
@@ -1072,6 +1117,295 @@ def stats() -> dict:
 # 歌词 MV：把歌词真正填进模板的 karaoke.js / config.js
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# 歌词来源：用户贴的 / 上传的 .lrc / 音频里内嵌的歌词
+# ---------------------------------------------------------------------------
+
+#: 音频标签里可能放歌词的键（规范化后比较）
+_LYRIC_TAG_KEYS = frozenset({"lyrics", "unsyncedlyrics", "syncedlyrics", "lyric"})
+
+
+def _decode_tag(raw: bytes, encoding: int = 3) -> str:
+    """ID3 文本解码（0 latin1 / 1 utf-16(BOM) / 2 utf-16be / 3 utf-8）。"""
+    if not raw:
+        return ""
+    if encoding == 0:
+        return raw.decode("latin-1", "replace")
+    if encoding == 1:
+        return raw.decode("utf-16", "replace")
+    if encoding == 2:
+        return raw.decode("utf-16-be", "replace")
+    return raw.decode("utf-8", "replace")
+
+
+def _norm_tag(text: str) -> str:
+    return re.sub(r"[^a-z]", "", str(text or "").lower())
+
+
+def _id3_lyrics(path: Path) -> str:
+    """MP3：从 ID3v2 的 USLT / TXXX:LYRICS 取歌词（多数音乐软件下载时会写）。"""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    if len(data) < 10 or data[:3] != b"ID3":
+        return ""
+    major = int(data[3])
+    flags = int(data[5])
+    size = ((data[6] & 0x7F) << 21) | ((data[7] & 0x7F) << 14) \
+        | ((data[8] & 0x7F) << 7) | (data[9] & 0x7F)
+    body = data[10:10 + size]
+    if flags & 0x40 and len(body) >= 4:  # 扩展头
+        ext = int.from_bytes(body[:4], "big")
+        body = body[4 + ext:]
+    if major < 3:  # v2.2 的三字符帧 id 太少见了
+        return ""
+
+    def frame_size(raw: bytes) -> int:
+        if major >= 4:
+            return ((raw[0] & 0x7F) << 21) | ((raw[1] & 0x7F) << 14) \
+                | ((raw[2] & 0x7F) << 7) | (raw[3] & 0x7F)
+        return int.from_bytes(raw, "big")
+
+    pos = 0
+    while pos + 10 <= len(body):
+        frame_id = body[pos:pos + 4]
+        length = frame_size(body[pos + 4:pos + 8])
+        pos += 10
+        payload = body[pos:pos + length]
+        pos += length
+        if length <= 0 or not frame_id[:1].isalpha():
+            continue
+        if frame_id == b"USLT" and len(payload) > 4:
+            # USLT 正文前还有一段「内容描述符」，用 NUL 跟正文隔开
+            decoded = _decode_tag(payload[4:], payload[0])
+            text = decoded.split("\x00", 1)[1] if "\x00" in decoded else decoded
+            text = text.strip().lstrip("\ufeff")
+            if text:
+                return text
+        elif frame_id == b"TXXX" and payload:
+            decoded = _decode_tag(payload[1:], payload[0])
+            desc, _, value = decoded.partition("\x00")
+            if _norm_tag(desc) in _LYRIC_TAG_KEYS and value.strip():
+                return value.strip()
+    return ""
+
+
+def _mp4_lyrics(path: Path) -> str:
+    """M4A/MP4：读 ©lyr 原子（Apple / QQ 音乐常见）。"""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    containers = {b"moov", b"udta", b"trak", b"mdia", b"minf", b"stbl", b"ilst"}
+
+    def walk(offset: int, end: int) -> str:
+        while offset + 8 <= end:
+            size = int.from_bytes(data[offset:offset + 4], "big")
+            kind = data[offset + 4:offset + 8]
+            header = 8
+            if size == 1 and offset + 16 <= end:
+                size = int.from_bytes(data[offset + 8:offset + 16], "big")
+                header = 16
+            elif size == 0:
+                size = end - offset
+            if size < header or offset + size > end:
+                return ""
+            start = offset + header
+            if kind in containers:
+                found = walk(start, offset + size)
+            elif kind == b"meta":
+                found = walk(start + 4, offset + size)
+            elif kind in (b"\xa9lyr", b"\xa9LYR"):
+                found = walk(start, offset + size)
+            elif kind == b"data":
+                raw = data[start + 8:offset + size]
+                return raw.rstrip(b"\x00").decode("utf-8", "replace")
+            else:
+                found = ""
+            if found:
+                return found
+            offset += size
+        return ""
+
+    return walk(0, len(data)).strip()
+
+
+def _flac_lyrics(path: Path) -> str:
+    """FLAC：Vorbis comment 里的 LYRICS / UNSYNCEDLYRICS。"""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    if data[:4] != b"fLaC":
+        return ""
+    pos = 4
+    while pos + 4 <= len(data):
+        block_type = data[pos] & 0x7F
+        last = bool(data[pos] & 0x80)
+        length = int.from_bytes(data[pos + 1:pos + 4], "big")
+        block = data[pos + 4:pos + 4 + length]
+        pos += 4 + length
+        if block_type == 4 and len(block) > 8:
+            vendor = int.from_bytes(block[:4], "little")
+            cursor = 4 + vendor
+            if cursor + 4 > len(block):
+                return ""
+            count = int.from_bytes(block[cursor:cursor + 4], "little")
+            cursor += 4
+            for _ in range(min(count, 512)):
+                if cursor + 4 > len(block):
+                    break
+                size = int.from_bytes(block[cursor:cursor + 4], "little")
+                cursor += 4
+                raw = block[cursor:cursor + size]
+                cursor += size
+                key, _, value = raw.decode("utf-8", "replace").partition("=")
+                if _norm_tag(key) in _LYRIC_TAG_KEYS and value.strip():
+                    return value.strip()
+        if last:
+            break
+    return ""
+
+
+def _sidecar_lyrics(path: Path) -> str:
+    """音频旁边的同名 .lrc / .txt（用户经常把歌词和歌一起放）。"""
+    for suffix in (".lrc", ".txt"):
+        probe = path.with_suffix(suffix)
+        if not probe.is_file():
+            continue
+        try:
+            text = probe.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if text.strip():
+            return text.strip()
+    return ""
+
+
+def read_audio_lyrics(audio: str) -> tuple[str, str]:
+    """从音频里找歌词：返回 (歌词文本, 来源)；找不到返回 ("", "")。"""
+    path = Path(str(audio or ""))
+    if not path.is_file():
+        return "", ""
+    suffix = path.suffix.lower()
+    readers = {
+        ".mp3": [(_id3_lyrics, "ID3 内嵌歌词")],
+        ".m4a": [(_mp4_lyrics, "MP4 ©lyr 内嵌歌词")],
+        ".mp4": [(_mp4_lyrics, "MP4 ©lyr 内嵌歌词")],
+        ".aac": [(_mp4_lyrics, "MP4 ©lyr 内嵌歌词")],
+        ".flac": [(_flac_lyrics, "FLAC 内嵌歌词")],
+    }.get(suffix, [
+        (_id3_lyrics, "ID3 内嵌歌词"),
+        (_mp4_lyrics, "MP4 内嵌歌词"),
+        (_flac_lyrics, "FLAC 内嵌歌词"),
+    ])
+    for reader, label in readers:
+        try:
+            text = reader(path)
+        except Exception:  # noqa: BLE001 - 坏标签不能挡住整个任务
+            text = ""
+        if str(text or "").strip():
+            return str(text).strip(), label
+    text = _sidecar_lyrics(path)
+    if text:
+        return text, "同名 .lrc/.txt"
+    return "", ""
+
+
+def _job_lyrics_text(job: dict) -> tuple[str, str]:
+    """任务里的歌词：显式 LRC > 上传的歌词文件 > 音频内嵌 / 同名 .lrc。"""
+    lrc = str(job.get("lrc") or "").strip()
+    if lrc:
+        return lrc, "歌词"
+    file = str(job.get("lyrics_file") or "").strip()
+    if file and Path(file).is_file():
+        try:
+            text = Path(file).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        if text.strip():
+            return text.strip(), "歌词文件"
+    return read_audio_lyrics(str(job.get("audio") or ""))
+
+
+#: 用户可能说的段落词 → 段落键
+_SECTION_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("chorus", ("副歌", "高潮", "最抓耳", "爆点", "chorus", "hook", "记忆点")),
+    ("verse", ("主歌", "verse", "第一段", "开头段", "前段")),
+)
+
+
+def parse_section(text: str) -> str:
+    """从原话里认出要哪一段：chorus（副歌）/ verse（主歌）；认不出返回空。"""
+    body = str(text or "")
+    for key, words in _SECTION_WORDS:
+        if any(word in body for word in words):
+            return key
+    return ""
+
+
+def _norm_line(text: str) -> str:
+    return re.sub(r"[\s\u3000\W_]+", "", str(text or "")).lower()
+
+
+def _chorus_runs(timed: list[dict]) -> list[list[dict]]:
+    """把「反复出现的那几句」按连续成段切开（每段是一个候选副歌）。"""
+    counts = Counter(_norm_line(item["text"]) for item in timed if _norm_line(item["text"]))
+    repeated = {text for text, count in counts.items() if count >= 2 and len(text) >= 2}
+    if not repeated:
+        return []
+    runs: list[list[dict]] = []
+    current: list[dict] = []
+    for item in timed:
+        if _norm_line(item["text"]) in repeated:
+            current.append(item)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _chorus_span(timed: list[dict], end_all: float) -> Optional[tuple[float, float]]:
+    """副歌：最长的那段重复行（并列时取靠后的）。"""
+    runs = _chorus_runs(timed)
+    if not runs:
+        return None
+    best = max(runs, key=lambda run: (len(run), float(run[-1]["start"])))
+    index = timed.index(best[-1])
+    start = float(best[0]["start"])
+    if index + 1 < len(timed):
+        end = float(timed[index + 1]["start"])
+    else:
+        end = min(float(best[-1]["start"]) + 4.0, end_all)
+    return (start, max(start + 0.8, end))
+
+
+def _pick_lines(lines: list[str], request: str) -> tuple[list[str], str]:
+    """没有时间戳的纯文本歌词：按重复行猜主歌/副歌。"""
+    if request not in ("chorus", "verse"):
+        return lines, "full"
+    counts = Counter(_norm_line(line) for line in lines)
+    repeated = {text for text, count in counts.items() if count >= 2 and len(text) >= 2}
+    if request == "chorus":
+        picked = [line for line in lines if _norm_line(line) in repeated]
+        if picked:
+            return picked, "chorus"
+        return lines[-max(2, len(lines) // 3):], "chorus"
+    split = 0
+    for index, line in enumerate(lines):
+        if _norm_line(line) in repeated:
+            split = index
+            break
+    if split >= 2:
+        return lines[:split], "verse"
+    return lines[:max(2, len(lines) // 2)], "verse"
+
+
+
 def _lyric_lines(job: dict) -> list[str]:
     """从任务里取歌词行（用户给的多行文本）。"""
     raw = str(job.get("lyrics") or "").strip()
@@ -1128,40 +1462,51 @@ _PIXEL_FIELDS = "  pixel: true, pixelGrid: [320, 180], lyricUI: 'rpgBox',"
 
 
 def _apply_style_config(project: Path, style: str) -> None:
-    """把风格写进 config.js 的 PROJECT：像素风补 pixel / pixelGrid / lyricUI，其它风格清掉。
+    """把风格写进 config.js 的 PROJECT。
 
-    只动 PROJECT 块里没被注释的字段；模板里 `//   pixel: true,` 这类示例行原样保留。
-    歌词 MV 和非歌词任务都走这里，避免两套写法以后再跑偏。
+    像素风补 pixel / pixelGrid / lyricUI；其它非默认风格写一行 ``style: '<键>'``，
+    由 scene_gen 注入的 STYLE_PACK 在浏览器里调色。只动未注释字段，
+    模板里 `//   pixel: true,` 这类示例行原样保留。
     """
     config = project / "src" / "config.js"
     if not config.exists():
         return
+    key = style_catalog.resolve_style(str(style or ""))
     source = config.read_text(encoding="utf-8")
     start = source.find("const PROJECT = {")
     end = source.find("};", start) if start >= 0 else -1
     if start < 0 or end < 0:
         return
     block = source[start:end]
-    # 先摘掉已有三项（重复调用也不会插两遍）
-    stripped = re.sub(r"(?m)^[ \t]*(?:pixel|pixelGrid|lyricUI)\s*:[^\n]*\n", "", block)
-    if str(style or "").strip().lower() == "pixel":
+    # 先摘掉已有字段（重复调用也不会插两遍）
+    stripped = re.sub(
+        r"(?m)^[ \t]*(?:pixel|pixelGrid|lyricUI|style)\s*:[^\n]*\n", "", block
+    )
+    if key == "pixel":
         stripped = stripped.replace(
             "const PROJECT = {", "const PROJECT = {\n" + _PIXEL_FIELDS, 1
+        )
+    elif key != "watercolor":
+        line = "  style: '" + key + "',"
+        stripped = stripped.replace(
+            "const PROJECT = {", "const PROJECT = {\n" + line, 1
         )
     if stripped != block:
         config.write_text(source[:start] + stripped + source[end:], encoding="utf-8")
 
 
 def _prepare_lyric_project(project: Path, job: dict) -> dict:
-    """把歌词按**真实时间轴**写进 src/karaoke.js 的 LY，总时长写进 config.js。
+    """把歌词按**真实时间轴**写进 src/karaoke.js 的 LY，总时长/风格写进 config.js。
 
-    LRC 给到时间戳就按 LRC，否则按音频时长均分，再否则每句 3 秒。
+    只做副歌/主歌时时间轴会平移到 0，offset（音频起点）回报给调用方去截音频。
     """
-    timeline, duration = _lyric_timeline(job)
+    plan = _lyric_plan(job)
+    timeline, duration = plan["timeline"], plan["duration"]
     if not timeline:
-        return {"lines": 0, "duration": 0, "audio": "", "lrc": False}
+        return {"lines": 0, "duration": 0, "audio": "", "lrc": False,
+                "offset": 0.0, "section": plan.get("section") or "full",
+                "source": plan.get("source") or ""}
 
-    timed = any(entry[1] - entry[0] < 3.5 for entry in timeline)
     entries = [
         f"  [{start}, {end}, {json.dumps(text, ensure_ascii=False)}],"
         for start, end, text in timeline
@@ -1181,14 +1526,14 @@ def _prepare_lyric_project(project: Path, job: dict) -> dict:
     config = project / "src" / "config.js"
     if config.exists():
         source = config.read_text(encoding="utf-8")
-        replacement = f"const PROJECT = {{\n  duration: {duration:.2f}, bpm: 120, offset: 0,\n}};"
+        replacement = (f"const PROJECT = {{\n  duration: {duration:.2f}, "
+                       f"bpm: 120, offset: 0,\n}};")
         start = source.find("const PROJECT = {")
         if start >= 0:
             end = source.find("};", start)
             if end > start:
                 source = source[:start] + replacement + source[end + 2:]
                 config.write_text(source, encoding="utf-8")
-        # 像素歌词模式：补 pixel / pixelGrid / lyricUI（跳过水彩纸纹，歌词画成 RPG 对话框）
         _apply_style_config(project, str(job.get("style") or "watercolor"))
 
     audio = str(job.get("audio") or "").strip()
@@ -1196,24 +1541,35 @@ def _prepare_lyric_project(project: Path, job: dict) -> dict:
         "lines": len(timeline),
         "duration": duration,
         "audio": audio if audio and Path(audio).exists() else "",
-        "lrc": bool(str(job.get("lrc") or "").strip()),
+        "lrc": bool(plan.get("source")),
+        "offset": float(plan.get("offset") or 0.0),
+        "section": plan.get("section") or "full",
+        "source": plan.get("source") or "",
     }
 
 
-def _mux_audio(video: str, audio: str) -> str:
-    """把配乐混进成片；失败就保留无声版（不掩盖画面成果）。"""
+
+def _mux_audio(video: str, audio: str, *, start: float = 0.0,
+               duration: float = 0.0) -> str:
+    """把配乐混进成片；失败就保留无声版（不掩盖画面成果）。
+
+    start/duration 对齐「只做副歌/主歌」：从音频的 start 秒开始取 duration 秒。
+    """
     ffmpeg = _which("ffmpeg")
     if not ffmpeg or not audio or not Path(audio).exists():
         return video
     target = str(Path(video).with_name("video_with_audio.mp4"))
+    cmd = [ffmpeg, "-y", "-loglevel", "error", "-i", video]
+    if start > 0.01:
+        cmd += ["-ss", f"{start:.3f}"]
+    cmd += ["-i", audio, "-c:v", "copy", "-c:a", "aac", "-shortest"]
+    if duration > 0.01:
+        cmd += ["-t", f"{duration:.3f}"]
+    cmd.append(target)
     try:
-        subprocess.run(
-            [ffmpeg, "-y", "-loglevel", "error", "-i", video, "-i", audio,
-             "-c:v", "copy", "-c:a", "aac", "-shortest", target],
-            capture_output=True, text=True, timeout=600,
-        )
+        subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if Path(target).exists() and Path(target).stat().st_size > 0:
-            logger.info("已混入配乐：%s", target)
+            logger.info("已混入配乐：%s（起点 %.2fs）", target, start)
             return target
     except Exception:  # noqa: BLE001
         logger.exception("混音失败（保留无声版）")
@@ -1269,66 +1625,92 @@ def parse_lrc(text: str) -> list[dict]:
     return timed + untimed
 
 
-def _lyric_timeline(job: dict) -> tuple[list[tuple[float, float, str]], float]:
-    """把歌词整理成 [(start, end, text)]，并给出总时长。
+def _lyric_plan(job: dict) -> dict:
+    """歌词 → 镜头时间轴，并按「副歌 / 主歌」截取。
 
-    优先级：LRC 时间戳 > 音频时长均分 > 每句 3 秒均分。
+    返回的 offset 是截取起点（秒）：混音时要按它对音频做 -ss，否则声画对不上。
     """
-    lrc_text = str(job.get("lrc") or "").strip()
-    if not lrc_text:
-        lrc_path = str(job.get("lyrics_file") or "").strip()
-        if lrc_path and Path(lrc_path).is_file():
-            try:
-                lrc_text = Path(lrc_path).read_text(encoding="utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                lrc_text = ""
-
-    audio = str(job.get("audio") or "").strip()
+    text, source = _job_lyrics_text(job)
+    audio = str(job.get("audio") or "")
     audio_path = Path(audio) if audio and Path(audio).exists() else None
-    total = float(job.get("duration") or 0)
-    if not total and audio_path is not None:
-        total = _probe_duration(audio_path)
+    probe = float(job.get("duration") or 0)
+    if not probe and audio_path is not None:
+        probe = _probe_duration(audio_path)
 
-    if lrc_text:
-        parsed = parse_lrc(lrc_text)
-        timed = [item for item in parsed if item["start"] is not None]
-        if timed and total:
-            # 用户要"前 30 秒"就只保留 30 秒内的句子
-            timed = [item for item in timed if float(item["start"]) < total]
-        if timed:
-            result = []
-            for index, item in enumerate(timed):
-                start = float(item["start"])
-                if index + 1 < len(timed):
-                    end = float(timed[index + 1]["start"])
+    request = parse_section(str(job.get("section") or "")) \
+        or parse_section(str(job.get("prompt") or ""))
+    section = request or "full"
+
+    entries = parse_lrc(text) if text else []
+    timed = [item for item in entries if item["start"] is not None]
+    if timed:
+        start_all = float(timed[0]["start"])
+        end_all = float(timed[-1]["start"]) + 3.0
+        if probe:
+            end_all = max(end_all, probe)
+        span_start, span_end = 0.0, end_all  # full：保留原时间轴，前奏不剪
+        if request:
+            runs = _chorus_runs(timed)
+            chorus = _chorus_span(timed, end_all)
+            if request == "chorus":
+                if chorus:
+                    span_start, span_end = chorus
                 else:
-                    end = start + 3.0
-                # 收尾留一点，避免最后一句立刻消失
-                result.append((round(start, 3), round(max(start + 0.6, end - 0.12), 3),
-                               item["text"]))
-            if not total:
-                total = result[-1][1] + 2.0
-            # 裁到用户要的时长
-            clipped = [(s, min(e, total), text) for s, e, text in result if s < total]
-            return clipped, round(total, 3)
+                    # 没识别出重复段：最后三分之一通常是副歌，给一段总比空手强
+                    span_start = max(start_all, end_all * 0.62)
+                    span_end = end_all
+            elif request == "verse":
+                if runs:
+                    # 主歌 = 第一段副歌之前（不是「最长那段副歌」之前）
+                    span_start, span_end = start_all, float(runs[0][0]["start"])
+                else:
+                    span_start = start_all
+                    span_end = start_all + (end_all - start_all) * 0.5
+        limit = float(job.get("duration") or 0)
+        if limit > 0:
+            span_end = min(span_end, span_start + limit)
 
-    lines = _lyric_lines(job)
+        picked = [item for item in timed
+                  if span_start <= float(item["start"]) < span_end]
+        shifted: list[tuple[float, float, str]] = []
+        for index, item in enumerate(picked):
+            begin = float(item["start"]) - span_start
+            if index + 1 < len(picked):
+                finish = float(picked[index + 1]["start"]) - span_start
+            else:
+                finish = span_end - span_start
+            shifted.append((round(begin, 3),
+                            round(max(begin + 0.6, finish - 0.12), 3),
+                            item["text"]))
+        total = round(span_end - span_start, 3)
+        return {"timeline": shifted, "duration": total,
+                "offset": round(span_start, 3), "section": section,
+                "source": source, "lines": len(shifted)}
+
+    lines = [item["text"] for item in entries] or _lyric_lines(job)
     if not lines:
-        return [], round(total, 3)
-
-    # 时长封顶：行数多的时候默认每行会被压到 1.2s 以上，别让片子长到渲不完
-    per = (total / len(lines)) if total else 3.0
-    total = total or max(6.0, per * len(lines))
+        return {"timeline": [], "duration": round(probe, 3), "offset": 0.0,
+                "section": section, "source": source, "lines": 0}
+    picked_lines, picked_section = _pick_lines(lines, request)
+    per = (probe / len(picked_lines)) if probe else 3.0
+    total = probe or max(6.0, per * len(picked_lines))
     if not float(job.get("duration") or 0) and total > MAX_AUTO_DURATION:
-        per = MAX_AUTO_DURATION / max(1, len(lines))
-        per = max(1.2, per)
-        total = per * len(lines)
-    result = []
-    for index, line in enumerate(lines):
-        start = round(index * per, 3)
-        end = round(min(total, start + per * 0.92), 3)
-        result.append((start, end, line))
-    return result, round(total, 3)
+        per = max(1.2, MAX_AUTO_DURATION / max(1, len(picked_lines)))
+        total = per * len(picked_lines)
+    timeline = []
+    for index, line in enumerate(picked_lines):
+        begin = round(index * per, 3)
+        finish = round(min(total, begin + per * 0.92), 3)
+        timeline.append((begin, finish, line))
+    return {"timeline": timeline, "duration": round(total, 3), "offset": 0.0,
+            "section": picked_section if request else section,
+            "source": source, "lines": len(timeline)}
+
+
+def _lyric_timeline(job: dict) -> tuple[list[tuple[float, float, str]], float]:
+    """兼容旧调用：返回 (时间轴, 总时长)。"""
+    plan = _lyric_plan(job)
+    return plan["timeline"], float(plan["duration"])
 
 #: "30秒" / "1分30秒" / "2 分钟" / "前 30s"
 _DURATION_PATTERNS = (

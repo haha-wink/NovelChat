@@ -2466,6 +2466,167 @@ def pixel_style_checks() -> None:
         sandbox.cleanup()
 
 
+def lyric_section_checks() -> None:
+    """主歌/副歌：从 LRC 的重复行里认出副歌，只做一段时时间轴平移到 0。"""
+    import skills.work.animation.engine as animation
+
+    lrc = (
+        "[00:00.00]前奏\n"
+        "[00:05.00]主歌一\n"
+        "[00:10.00]主歌二\n"
+        "[00:15.00]副歌一\n"
+        "[00:20.00]副歌二\n"
+        "[00:25.00]主歌三\n"
+        "[00:30.00]副歌一\n"
+        "[00:35.00]副歌二\n"
+    )
+    base = {"prompt": "歌词MV", "lrc": lrc, "lyrics": "", "duration": 0}
+
+    full = animation._lyric_plan({**base, "section": ""})
+    check("段落：整首保留原时间轴",
+          full["offset"] == 0 and full["lines"] == 8,
+          f'{full["offset"]} / {full["lines"]}')
+    chorus = animation._lyric_plan({**base, "section": "chorus"})
+    check("段落：副歌只留重复的那几句",
+          chorus["offset"] >= 15 and chorus["lines"] == 2,
+          f'{chorus["offset"]} / {chorus["lines"]}')
+    check("段落：副歌时间轴平移到 0",
+          bool(chorus["timeline"]) and chorus["timeline"][0][0] == 0.0,
+          str(chorus["timeline"][:1]))
+    verse = animation._lyric_plan({**base, "section": "verse"})
+    check("段落：主歌 = 第一段副歌之前",
+          verse["offset"] == 0 and all("副歌" not in t for _s, _e, t in verse["timeline"]),
+          str([t for _s, _e, t in verse["timeline"]]))
+    prompt = animation._lyric_plan({**base, "section": "",
+                                    "prompt": "帮我做副歌高潮那一段的MV"})
+    check("段落：从原话认副歌", prompt["section"] == "chorus", prompt["section"])
+
+    text = "主歌一\n主歌二\n副歌一\n副歌二\n主歌三\n副歌一\n副歌二"
+    plain = animation._lyric_plan({"prompt": "MV", "lyrics": text, "lrc": "",
+                                   "duration": 0, "section": "chorus"})
+    check("段落：没有时间戳也能挑副歌",
+          plain["lines"] == 4 and all("副歌" in t for _s, _e, t in plain["timeline"]),
+          str([t for _s, _e, t in plain["timeline"]]))
+
+
+def embedded_lyric_checks() -> None:
+    """音频里的歌词：ID3 USLT / 同名 .lrc / MP4 ©lyr。"""
+    import pathlib as _pathlib
+    import struct as _struct
+    import tempfile as _tempfile
+
+    import skills.work.animation.engine as animation
+
+    with _tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+        root = _pathlib.Path(folder)
+        lines = "[00:01.00]第一句\n[00:05.00]第二句"
+
+        payload = b"\x03" + b"eng" + b"desc\x00" + lines.encode("utf-8")
+        frame = b"USLT" + len(payload).to_bytes(4, "big") + b"\x00\x00" + payload
+        header = b"ID3\x03\x00\x00" + bytes([
+            (len(frame) >> 21) & 0x7F, (len(frame) >> 14) & 0x7F,
+            (len(frame) >> 7) & 0x7F, len(frame) & 0x7F])
+        mp3 = root / "song.mp3"
+        mp3.write_bytes(header + frame)
+        text, source = animation.read_audio_lyrics(str(mp3))
+        check("歌词提取：MP3 的 USLT", lines in text and "ID3" in source,
+              source + " | " + text[:40])
+
+        side = root / "tone.mp3"
+        side.write_bytes(b"not-a-real-mp3")
+        (root / "tone.lrc").write_text(lines, encoding="utf-8")
+        text, source = animation.read_audio_lyrics(str(side))
+        check("歌词提取：同名 .lrc", text == lines and ".lrc" in source, source)
+
+        def atom(kind, body):
+            return _struct.pack(">I", len(body) + 8) + kind + body
+
+        data = atom(b"data", _struct.pack(">I", 1) + b"\x00\x00\x00\x00"
+                    + "mp4 歌词".encode("utf-8"))
+        meta = atom(b"meta", b"\x00\x00\x00\x00" + atom(b"hdlr", b"\x00" * 33)
+                    + atom(b"ilst", atom(b"\xa9lyr", data)))
+        m4a = root / "song.m4a"
+        m4a.write_bytes(atom(b"moov", atom(b"udta", meta)))
+        text, source = animation.read_audio_lyrics(str(m4a))
+        check("歌词提取：MP4 的 ©lyr", text == "mp4 歌词", source)
+
+        empty = root / "nothing.wav"
+        empty.write_bytes(b"RIFF")
+        text, source = animation.read_audio_lyrics(str(empty))
+        check("歌词提取：没有歌词时如实返回空",
+              text == "" and source == "", source)
+
+
+def style_catalog_checks() -> None:
+    """风格目录：认词 → 键；config 写风格；generated.js 带 STYLE_PACK。"""
+    import pathlib as _pathlib
+    import re as _re
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    import skills.work.animation.engine as animation
+    from skills.work.animation import scene_gen, styles
+
+    cases = {"水墨风": "ink", "赛博朋克": "neon", "胶片感": "film", "黑白": "noir",
+             "动漫": "anime", "小清新": "pastel", "日落": "sunset", "像素": "pixel",
+             "说不上来": "watercolor"}
+    for word, key in cases.items():
+        check(f"风格：认出「{word}」", styles.resolve_style(word) == key,
+              styles.resolve_style(word))
+
+    template = animation.skill_dir() / "template"
+    with _tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+        project = _pathlib.Path(folder) / "p"
+        _shutil.copytree(template, project)
+        config = project / "src" / "config.js"
+
+        animation._apply_style_config(project, "ink")
+        text = config.read_text(encoding="utf-8")
+        check("风格：config 写入非像素风格",
+              bool(_re.search(r"(?m)^[ \t]*style: 'ink',$", text)), text[-200:])
+
+        animation._apply_style_config(project, "watercolor")
+        text = config.read_text(encoding="utf-8")
+        check("风格：换回水彩时摘掉 style",
+              not _re.search(r"(?m)^[ \t]*style:", text), text[-200:])
+
+        animation._apply_style_config(project, "pixel")
+        text = config.read_text(encoding="utf-8")
+        check("风格：像素风仍写 pixel 三项",
+              "pixel: true" in text and "rpgBox" in text, text[-200:])
+
+    ink = scene_gen.build_scene([(0.0, 3.0, "雨夜的车站")], style="ink")
+    check("风格：generated.js 带 STYLE_PACK", "const STYLE_PACK = {" in ink, "缺")
+    check("风格：风格键写进镜头脚本",
+          '"key": "ink"' in ink and 'const STYLE = "ink"' in ink, "缺")
+    check("风格：调色函数在",
+          "const toHsl" in ink and "BASE[k][f] = shift(" in ink, "缺")
+    neon = scene_gen.build_scene([(0.0, 3.0, "霓虹的街")], style="neon")
+    check("风格：赛博朋克带扫描线", '"overlay": "scanlines"' in neon, "缺")
+    water = scene_gen.build_scene([(0.0, 3.0, "雨夜的车站")], style="watercolor")
+    check("风格：水彩是恒等调色",
+          '"hue": 0' in water and '"sat": 1.0' in water
+          and '"overlay": "none"' in water, "缺")
+
+    # generated.js 是给浏览器跑的：语法错一次整段画面就没了，用 node 兜一下
+    node = animation._which("node")
+    if node:
+        import subprocess as _subprocess
+
+        with _tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            target = _pathlib.Path(folder) / "generated.js"
+            target.write_text(ink, encoding="utf-8")
+            result = _subprocess.run([node, "--check", str(target)],
+                                     capture_output=True, text=True)
+            check("风格：generated.js 语法通过 node --check",
+                  result.returncode == 0, (result.stderr or "")[-200:])
+
+    # 没有关键词时，赛博朋克优先城市/夜，而不是水彩那套草地轮换
+    neon_fallback = scene_gen.build_scene([(0.0, 3.0, "无关键词的一句")], style="neon")
+    check("风格：赛博朋克的兜底构图偏向城市",
+          "kind: 'city'" in neon_fallback, neon_fallback[:200])
+
+
 def task_cleanup_checks() -> None:
     """任务清理：删单个 / 全删 / 僵尸 / 在跑的保护。
 
@@ -6801,6 +6962,9 @@ def main() -> int:
     lrc_checks()
     lyric_mv_checks()
     pixel_style_checks()
+    lyric_section_checks()
+    embedded_lyric_checks()
+    style_catalog_checks()
     task_cleanup_checks()
     asyncio.run(asset_upload_checks())
     asyncio.run(video_route_checks())

@@ -22,6 +22,11 @@ import json
 import re
 from pathlib import Path
 
+try:  # 同包的风格目录
+    from . import styles as style_lib
+except ImportError:  # pragma: no cover - 单独跑单文件时
+    from skills.work.animation import styles as style_lib
+
 # ---------------------------------------------------------------------------
 # 关键词：画面元素 → 歌词里可能出现的写法
 # ---------------------------------------------------------------------------
@@ -174,13 +179,28 @@ def scene_keywords(line: str) -> list[str]:
     return [element for _position, element in hits]
 
 
-def _pick_kind(words: list[str], index: int) -> str:
-    """关键词 → 构图；一个都没有就按序号轮换预设。"""
+#: 没有关键词时的兜底构图：不同风格先给不同场景
+#: （赛博朋克先城市/夜，水墨先山/风，胶片先城市/路，日落先海/山……）
+_STYLE_FALLBACK: dict[str, tuple[str, ...]] = {
+    "watercolor": _FALLBACK_KINDS,
+    "pixel": _FALLBACK_KINDS,
+    "ink": ("mountain", "wind", "sea", "night", "meadow", "road", "window", "city"),
+    "neon": ("city", "night", "window", "road", "mountain", "sea", "meadow", "wind"),
+    "film": ("city", "road", "window", "night", "sea", "mountain", "meadow", "wind"),
+    "noir": ("city", "window", "night", "road", "mountain", "sea", "meadow", "wind"),
+    "pastel": ("meadow", "wind", "sea", "night", "city", "road", "window", "mountain"),
+    "anime": ("meadow", "city", "night", "wind", "sea", "road", "window", "mountain"),
+    "sunset": ("sea", "mountain", "road", "city", "meadow", "wind", "night", "window"),
+}
+
+
+def _pick_kind(words: list[str], index: int, fallback: tuple[str, ...] = _FALLBACK_KINDS) -> str:
+    """关键词 → 构图；一个都没有就按序号在「这种风格的预设构图」里轮换。"""
     wanted = {_ELEMENT_KIND[word] for word in words if word in _ELEMENT_KIND}
     for kind in _KIND_ORDER:
         if kind in wanted:
             return kind
-    return _FALLBACK_KINDS[index % len(_FALLBACK_KINDS)]
+    return fallback[index % len(fallback)]
 
 
 def _normalise(timeline) -> list[list]:
@@ -207,13 +227,15 @@ def _normalise(timeline) -> list[list]:
     return rows
 
 
-def _plan(timeline) -> list[dict]:
+def _plan(timeline, style: str = "watercolor") -> list[dict]:
     """歌词时间轴 → 镜头计划（一条 = 一个镜头）。"""
+    key = style_lib.resolve_style(str(style or ""))
+    fallback = _STYLE_FALLBACK.get(key, _FALLBACK_KINDS)
     scenes: list[dict] = []
     seen: dict[str, int] = {}
     for index, (start, _end, text) in enumerate(_normalise(timeline)):
         words = scene_keywords(text)
-        kind = _pick_kind(words, index)
+        kind = _pick_kind(words, index, fallback)
         repeat = seen.get(kind, 0)
         seen[kind] = repeat + 1
         moods = _MOOD.get(kind, ("hopeful", "happy"))
@@ -316,6 +338,101 @@ __SCENES__
     const base = BASE[kind] || BASE.meadow;
     return (v && ALT[kind]) ? { ...base, ...ALT[kind] } : base;
   };
+
+  // ---------- 风格包 ----------
+  // 只动调色（色相/饱和/亮度）、纸色、墨色和叠加层，不换画法；
+  // pixel 走逻辑网格微调，其余风格靠这套调色拉开差别。
+  const STYLE_PACK = __STYLE_PACK__;
+  (() => {
+    const pack = STYLE_PACK || {};
+    if (pack.paper) PAL.paper = pack.paper;
+    if (pack.ink) PAL.ink = pack.ink;
+    const hue = Number(pack.hue) || 0;
+    const sat = (pack.sat === undefined || pack.sat === null) ? 1 : Number(pack.sat);
+    const light = (pack.light === undefined || pack.light === null) ? 1 : Number(pack.light);
+    if (hue || sat !== 1 || light !== 1) {
+      const toHsl = (hex) => {
+        const v = String(hex).replace('#', '');
+        const n = v.length === 3 ? v.split('').map(c => c + c).join('') : v;
+        const r = parseInt(n.slice(0, 2), 16) / 255;
+        const g = parseInt(n.slice(2, 4), 16) / 255;
+        const b = parseInt(n.slice(4, 6), 16) / 255;
+        const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+        const l = (mx + mn) / 2;
+        const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+        let h = 0;
+        if (d !== 0) {
+          if (mx === r) h = ((g - b) / d) % 6;
+          else if (mx === g) h = (b - r) / d + 2;
+          else h = (r - g) / d + 4;
+          h *= 60;
+          if (h < 0) h += 360;
+        }
+        return [h, s, l];
+      };
+      const toHex = (h, s, l) => {
+        h = ((h % 360) + 360) % 360;
+        s = Math.max(0, Math.min(1, s));
+        l = Math.max(0, Math.min(1, l));
+        const c = (1 - Math.abs(2 * l - 1)) * s;
+        const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+        const m = l - c / 2;
+        let rgb;
+        if (h < 60) rgb = [c, x, 0];
+        else if (h < 120) rgb = [x, c, 0];
+        else if (h < 180) rgb = [0, c, x];
+        else if (h < 240) rgb = [0, x, c];
+        else if (h < 300) rgb = [x, 0, c];
+        else rgb = [c, 0, x];
+        return '#' + rgb.map(v => Math.round((v + m) * 255).toString(16).padStart(2, '0')).join('');
+      };
+      const shift = (hex) => {
+        if (!/^#[0-9a-f]{3,6}$/i.test(String(hex))) return hex;
+        const hsl = toHsl(hex);
+        return toHex(hsl[0] + hue, hsl[1] * sat, hsl[2] * light);
+      };
+      for (const k in BASE) for (const f in BASE[k]) BASE[k][f] = shift(BASE[k][f]);
+      for (const k in ALT) for (const f in ALT[k]) ALT[k][f] = shift(ALT[k][f]);
+    }
+    const overlay = String(pack.overlay || 'none');
+    if (overlay === 'scanlines' || overlay === 'vignette') {
+      const apply = (c, t) => {
+        c.save();
+        if (overlay === 'scanlines') {
+          c.globalAlpha = 0.16;
+          c.fillStyle = '#000';
+          for (let y = 0; y < H; y += 4) c.fillRect(0, y, W, 2);
+          c.globalAlpha = 0.05;
+          c.fillStyle = '#9BE8FF';
+          const band = ((t * 120) % (H + 260)) - 130;
+          c.fillRect(0, band, W, 90);
+        } else {
+          const g = c.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.34,
+                                           W / 2, H / 2, Math.max(W, H) * 0.74);
+          g.addColorStop(0, 'rgba(0,0,0,0)');
+          g.addColorStop(1, 'rgba(0,0,0,0.45)');
+          c.fillStyle = g;
+          c.fillRect(0, 0, W, H);
+        }
+        c.restore();
+      };
+      // karaoke.js 也会写 window.overlayHook（歌词层），所以用访问器串成链：
+      // 先画风格层，再让后来的歌词层画在上面。
+      let hook = window.overlayHook;
+      Object.defineProperty(window, 'overlayHook', {
+        configurable: true,
+        get() { return hook; },
+        set(fn) {
+          const prev = hook;
+          hook = (c, t) => {
+            if (prev) prev(c, t);
+            if (typeof fn === 'function') fn(c, t);
+          };
+        },
+      });
+      window.overlayHook = apply;
+    }
+  })();
 
   // ---------- 通用画法 ----------
   // 一块实色（wash 是不透明白水彩色，ink: null 表示不描边，大块背景必须不描边）
@@ -1411,9 +1528,17 @@ _GEN_TAG = '<script src="src/scenes/generated.js"></script>'
 
 
 def _render_js(scenes: list[dict], style: str) -> str:
-    """镜头计划 + 风格 → 完整 JS 源码。"""
-    style_name = "pixel" if str(style or "").strip().lower() == "pixel" else "watercolor"
-    return _JS_TEMPLATE.replace("__SCENES__", _scenes_js(scenes)).replace("__STYLE__", style_name)
+    """镜头计划 + 风格 → 完整 JS 源码。
+
+    风格只换调色/纸墨/叠加层（STYLE_PACK），画法仍由 STYLE === 'pixel' 决定。
+    """
+    key = style_lib.resolve_style(str(style or ""))
+    pack = style_lib.style_pack(key)
+    return (
+        _JS_TEMPLATE.replace("__SCENES__", _scenes_js(scenes))
+        .replace("__STYLE__", key)
+        .replace("__STYLE_PACK__", json.dumps(pack, ensure_ascii=False))
+    )
 
 
 def build_scene(timeline: list[tuple[float, float, str]], *, style: str = "watercolor") -> str:
@@ -1422,7 +1547,7 @@ def build_scene(timeline: list[tuple[float, float, str]], *, style: str = "water
     timeline 是 [(start, end, text), ...]，一条对应一个镜头；
     style == "pixel" 走像素原语，否则走水彩笔刷。
     """
-    return _render_js(_plan(timeline), style)
+    return _render_js(_plan(timeline, style), style)
 
 
 def install(project_dir: Path, timeline: list[tuple[float, float, str]], *, style: str = "watercolor") -> dict:
@@ -1431,7 +1556,7 @@ def install(project_dir: Path, timeline: list[tuple[float, float, str]], *, styl
     只动 project_dir 里的副本（engine.py 复制出来的 project/），vendor/template/ 保持只读。
     """
     project = Path(project_dir)
-    scenes = _plan(timeline)
+    scenes = _plan(timeline, style)
     source = _render_js(scenes, style)
 
     target = project / "src" / "scenes" / "generated.js"
@@ -1439,7 +1564,12 @@ def install(project_dir: Path, timeline: list[tuple[float, float, str]], *, styl
     target.write_text(source, encoding="utf-8")
 
     replaced = _rewrite_studio(project / "studio.html")
-    return {"file": str(target), "scenes": len(scenes), "replaced_demo": replaced}
+    return {
+        "file": str(target),
+        "style": style_lib.resolve_style(str(style or "")),
+        "scenes": len(scenes),
+        "replaced_demo": replaced,
+    }
 
 
 def _rewrite_studio(path: Path) -> bool:

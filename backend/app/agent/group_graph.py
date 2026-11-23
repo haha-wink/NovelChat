@@ -353,7 +353,9 @@ def _skill_jobs(result) -> list[dict]:
 def _skill_assets(state: GroupState) -> dict:
     """从本轮状态里拼技能上下文：风格、上传的歌词/音频。"""
     text = str(state.get("text") or "")
-    style = "pixel" if ("像素" in text or "pixel" in text.lower()) else "watercolor"
+    from skills.work.animation.styles import resolve_style as resolve_animation_style
+
+    style = resolve_animation_style(text)
     lyrics_file = ""
     audio = ""
     for asset in state.get("assets") or []:
