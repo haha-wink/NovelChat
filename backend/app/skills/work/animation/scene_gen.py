@@ -227,15 +227,25 @@ def _normalise(timeline) -> list[list]:
     return rows
 
 
-def _plan(timeline, style: str = "watercolor") -> list[dict]:
-    """歌词时间轴 → 镜头计划（一条 = 一个镜头）。"""
+def _plan(timeline, style: str = "watercolor", prompt: str = "") -> list[dict]:
+    """歌词时间轴 → 镜头计划（一条 = 一个镜头）。
+
+    ``prompt`` 是用户的完整需求：它的关键词会并进每个镜头，保证「雨夜的车站」
+    这种约束在每句歌词里都成立，而不是只有歌词里提到才有。
+    """
     key = style_lib.resolve_style(str(style or ""))
     fallback = _STYLE_FALLBACK.get(key, _FALLBACK_KINDS)
+    theme = scene_keywords(prompt)
+    seed_bias = sum(ord(char) for char in str(prompt or "")) % 97
     scenes: list[dict] = []
     seen: dict[str, int] = {}
     for index, (start, _end, text) in enumerate(_normalise(timeline)):
         words = scene_keywords(text)
-        kind = _pick_kind(words, index, fallback)
+        merged = list(words)
+        for word in theme:
+            if word not in merged:
+                merged.append(word)
+        kind = _pick_kind(merged, index, fallback)
         repeat = seen.get(kind, 0)
         seen[kind] = repeat + 1
         moods = _MOOD.get(kind, ("hopeful", "happy"))
@@ -245,14 +255,14 @@ def _plan(timeline, style: str = "watercolor") -> list[dict]:
             # 同类构图第二次出现时换一套配色（ALT）
             "v": repeat % 2,
             "cam": _CAMERA.get(kind, "drift"),
-            "seed": 3 + index * 7,
+            "seed": 3 + index * 7 + seed_bias,
             "mood": list(moods),
             # 天气 / 天色叠加：下雨的站台、有星的窗、落花的田野都成立
-            "wet": "雨" in words,
-            "flaky": "雪" in words,
-            "starry": ("星" in words) or ("月亮" in words),
-            "petals": ("花" in words) and kind in ("meadow", "road", "wind"),
-            "kw": words,
+            "wet": "雨" in merged,
+            "flaky": "雪" in merged,
+            "starry": (("星" in merged) or ("月亮" in merged)) and "雨" not in merged,
+            "petals": ("花" in merged) and kind in ("meadow", "road", "wind"),
+            "kw": merged,
             "txt": text,
         })
     return scenes
@@ -1541,22 +1551,30 @@ def _render_js(scenes: list[dict], style: str) -> str:
     )
 
 
-def build_scene(timeline: list[tuple[float, float, str]], *, style: str = "watercolor") -> str:
+def build_scene(
+    timeline: list[tuple[float, float, str]], *, style: str = "watercolor", prompt: str = ""
+) -> str:
     """按歌词时间轴生成一个完整的场景 JS 源码字符串。
 
     timeline 是 [(start, end, text), ...]，一条对应一个镜头；
-    style == "pixel" 走像素原语，否则走水彩笔刷。
+    prompt 是用户需求（关键词会并进每个镜头）；style == "pixel" 走像素原语，否则水彩。
     """
-    return _render_js(_plan(timeline, style), style)
+    return _render_js(_plan(timeline, style, prompt), style)
 
 
-def install(project_dir: Path, timeline: list[tuple[float, float, str]], *, style: str = "watercolor") -> dict:
+def install(
+    project_dir: Path,
+    timeline: list[tuple[float, float, str]],
+    *,
+    style: str = "watercolor",
+    prompt: str = "",
+) -> dict:
     """把生成的场景写进任务目录副本，并让 studio.html 加载它而不是 demo.js。
 
     只动 project_dir 里的副本（engine.py 复制出来的 project/），vendor/template/ 保持只读。
     """
     project = Path(project_dir)
-    scenes = _plan(timeline, style)
+    scenes = _plan(timeline, style, prompt)
     source = _render_js(scenes, style)
 
     target = project / "src" / "scenes" / "generated.js"

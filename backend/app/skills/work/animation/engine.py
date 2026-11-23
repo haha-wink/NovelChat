@@ -605,7 +605,8 @@ def _run_job(job_id: str) -> None:
             timeline = _lyric_timeline(job)[0]
             if timeline:
                 info = scene_gen.install(project, timeline,
-                                         style=str(job.get("style") or "watercolor"))
+                                         style=style,
+                                         prompt=str(job.get("prompt") or ""))
                 logger.info("逐句场景：%d 个（替换 demo=%s）",
                             info.get("scenes", 0), info.get("replaced_demo"))
                 _touch(job_id, STAGE_RENDER, scenes=info.get("scenes", 0),
@@ -613,23 +614,30 @@ def _run_job(job_id: str) -> None:
         except Exception:  # noqa: BLE001 - 场景生成失败就退回 demo 画面
             logger.exception("逐句场景生成失败（用 demo 兜底）")
 
-        # 非歌词 + 像素风：模板 demo 是水彩笔刷，光打开 pixel 只会得到「黑底水彩」，
-        # 所以按 prompt 生成一个覆盖全片的像素镜头，像素风才真的成立
-        if (not lyric_info.get("lines")
-                and style_catalog.resolve_style(style) != "watercolor"):
+        # 非歌词任务：以前模板 demo 是水彩「小人+月亮」，用户给的约束完全没用上。
+        # 现在有画面关键词时按 prompt 拆镜头（最多 4 段），水彩/像素/其他风格都生成 generated.js；
+        # 纯水彩且一个关键词都没有时保留模板 demo（demo 的笔刷质量比程序化构图好）。
+        if not lyric_info.get("lines"):
             try:
                 from skills.work.animation import scene_gen
 
-                span = float(job.get("duration") or 0) or _project_duration(project)
-                info = scene_gen.install(
-                    project, [(0.0, span, str(job.get("prompt") or ""))],
-                    style=style,
-                )
-                logger.info("像素风单镜：%s（%ss）", info.get("file"), span)
-                _touch(job_id, STAGE_RENDER, scenes=info.get("scenes", 0),
-                       note="像素风单镜")
+                prompt_text = str(job.get("prompt") or "")
+                theme = scene_gen.scene_keywords(prompt_text)
+                if not theme and style_catalog.resolve_style(style) == "watercolor":
+                    logger.info("非歌词水彩且无关键词：保留模板 demo")
+                    _touch(job_id, STAGE_RENDER, note="无关键词，用模板画面")
+                else:
+                    span = float(job.get("duration") or 0) or _project_duration(project)
+                    shots = _prompt_shots(prompt_text, span)
+                    info = scene_gen.install(
+                        project, shots, style=style, prompt=prompt_text,
+                    )
+                    logger.info("非歌词镜头：%d 个（%ss，替换 demo=%s）",
+                                info.get("scenes", 0), span, info.get("replaced_demo"))
+                    _touch(job_id, STAGE_RENDER, scenes=info.get("scenes", 0),
+                           note=f"{info.get('scenes', 0)} 个镜头")
             except Exception:  # noqa: BLE001 - 生成失败就退回 demo 画面
-                logger.exception("像素风单镜生成失败（用 demo 兜底）")
+                logger.exception("非歌词镜头生成失败（用 demo 兜底）")
         if lyric_info["lines"]:
             # 时长要写回任务：渲染阶段靠它算超时和帧率
             _touch(job_id, STAGE_RENDER, duration=lyric_info["duration"],
@@ -1864,6 +1872,43 @@ def _parse_duration(text: str) -> float:
         seconds += float(match.group(1)) * 60
         found = True
     return round(seconds, 2) if found else 0.0
+
+def _prompt_shots(prompt: str, span: float, *, max_shots: int = 4) -> list[tuple[float, float, str]]:
+    """把一句需求拆成几个镜头（按标点），平均分时间；拆不出就整段一个镜头。
+
+    这样“雨夜的车站，她撑着伞等末班车，灯一闪一闪”会得到 3 个镜头，
+    而不是一张图从头放到尾。
+    """
+    text = " ".join(str(prompt or "").split())
+    parts = [
+        part.strip()
+        for part in re.split(r"[，。；、,;!?！？|]+", text)
+        if len(part.strip()) >= 2
+    ]
+    # 去掉“帮我做一段…MV”这种指令前缀：它没有画面信息，留着只会让每个镜头都带上
+    if parts:
+        cleaned = []
+        for part in parts:
+            part = re.sub(
+                r"^(帮我|给我|请|麻烦)?(做|生成|剪|来|出|拍)(一段|一个|个)?", "", part
+            )
+            part = re.sub(r"(动画|短片|视频|MV|mv|动图|GIF|gif)$", "", part.strip())
+            for label in ("水彩", "像素", "水墨", "赛博朋克", "胶片", "黑白",
+                          "小清新", "动漫", "日落", "风格"):
+                part = part.replace(label, "")
+            part = part.strip(" ，,、")
+            if len(part) >= 2:
+                cleaned.append(part)
+        parts = cleaned or parts
+    parts = parts[: max(1, int(max_shots))]
+    if not parts:
+        return [(0.0, max(1.0, float(span or 11.0)), text or "一段动画")]
+    step = max(1.0, float(span or 11.0)) / len(parts)
+    return [
+        (round(index * step, 2), round((index + 1) * step, 2), part)
+        for index, part in enumerate(parts)
+    ]
+
 
 def _workers() -> int:
     """并行渲染用几个 worker。核多就多开，最多 6 个（再多人机都卡）。"""

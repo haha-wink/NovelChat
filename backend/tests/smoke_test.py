@@ -2479,6 +2479,98 @@ def pixel_style_checks() -> None:
         sandbox.cleanup()
 
 
+def scene_constraint_checks() -> None:
+    """约束要真的进画面：prompt 的主题词并进每个镜头，非歌词按标点拆镜头。
+
+    之前用户的“雨夜车站/撑伞”只影响风格，画面还是模板 demo——这组用例专防回退。
+    """
+    import pathlib as _pathlib
+    import tempfile as _tempfile
+    import time as _time
+
+    from core.config import get_settings
+    from core.tools import protocol as tool_protocol
+
+    import skills.work.animation.engine as animation
+    from skills.work.animation import scene_gen
+
+    # 1. prompt 的主题词并进镜头（歌词里没提也算）
+    plan = scene_gen._plan(
+        [(0.0, 3.0, "月光落在肩上")], style="watercolor",
+        prompt="雨夜的车站，她撑着伞",
+    )
+    first = plan[0] if plan else {}
+    check("约束：prompt 的主题词并进每个镜头",
+          bool(first.get("kw")) and "雨" in first["kw"] and "车站" in first["kw"],
+          str(first.get("kw")))
+    check("约束：雨夜会打开雨/夜色叠加",
+          bool(first.get("wet")) and first.get("kind") == "station",
+          f'{first.get("kind")} wet={first.get("wet")}')
+
+    # 2. 非歌词需求按标点拆镜头
+    shots = animation._prompt_shots("雨夜的车站，她撑着伞等末班车，灯一闪一闪", 12.0)
+    check("约束：多句需求拆成多个镜头", len(shots) == 3, str(shots))
+    check("约束：镜头时间覆盖整段",
+          abs(shots[0][0]) < 0.01 and abs(shots[-1][1] - 12.0) < 0.01, str(shots))
+
+    # 3. 端到端：水彩非歌词任务也要生成 generated.js（以前直接放 demo）
+    settings = get_settings()
+    original_renderer = settings.animation_renderer
+    settings.animation_renderer = "fake"
+    sandbox = _tempfile.TemporaryDirectory(prefix="scene-test-",
+                                           ignore_cleanup_errors=True)
+    real_jobs_dir = animation.jobs_dir
+    animation.jobs_dir = lambda: _pathlib.Path(sandbox.name)
+    job_id = ""
+    try:
+        started = tool_protocol.execute("animation_start", {
+            "prompt": "雨夜的车站，她撑着伞等末班车",
+            "style": "watercolor", "duration": 6,
+        })
+        job_id = started.get("job_id") or ""
+        for _ in range(60):
+            if animation.job_status(job_id)["stage"] in ("done", "failed"):
+                break
+            _time.sleep(0.2)
+        final = animation.job_status(job_id)
+        project = _pathlib.Path(str(final.get("dir") or "")) / "project"
+        target = project / "src" / "scenes" / "generated.js"
+        text = target.read_text(encoding="utf-8") if target.exists() else ""
+        check("约束：水彩非歌词任务也按需求生成镜头",
+              final["stage"] == "done" and 'const STYLE = "watercolor"' in text,
+              f'{final["stage"]} {len(text)}')
+        check("约束：镜头里带上了雨/车站",
+              "wet: true" in text and "雨" in text and "车站" in text, text[:160])
+        check("约束：非歌词也拆出了多个镜头",
+              text.count("kind: '") >= 2, str(text.count("kind: '")))
+
+        # 没有画面关键词的纯水彩：保留模板 demo（demo 的笔刷比程序化构图好）
+        quiet = tool_protocol.execute("animation_start", {
+            "prompt": "一段抽象的水彩短片", "style": "watercolor", "duration": 3,
+        })
+        quiet_id = quiet.get("job_id") or ""
+        for _ in range(60):
+            if animation.job_status(quiet_id)["stage"] in ("done", "failed"):
+                break
+            _time.sleep(0.2)
+        quiet_final = animation.job_status(quiet_id)
+        quiet_project = _pathlib.Path(str(quiet_final.get("dir") or "")) / "project"
+        check("约束：没有关键词的纯水彩仍用模板 demo",
+              quiet_final["stage"] == "done"
+              and not (quiet_project / "src" / "scenes" / "generated.js").exists(),
+              str(quiet_project))
+    finally:
+        for leftover in (job_id, locals().get("quiet_id") or ""):
+            if leftover:
+                try:
+                    animation.delete_job(leftover)
+                except Exception:  # noqa: BLE001
+                    pass
+        animation.jobs_dir = real_jobs_dir
+        settings.animation_renderer = original_renderer
+        sandbox.cleanup()
+
+
 def lyric_section_checks() -> None:
     """主歌/副歌：从 LRC 的重复行里认出副歌，只做一段时时间轴平移到 0。"""
     import skills.work.animation.engine as animation
@@ -7016,6 +7108,7 @@ def main() -> int:
     lrc_checks()
     lyric_mv_checks()
     pixel_style_checks()
+    scene_constraint_checks()
     lyric_section_checks()
     embedded_lyric_checks()
     style_catalog_checks()
