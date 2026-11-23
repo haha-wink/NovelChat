@@ -2823,6 +2823,13 @@ def task_cleanup_checks() -> None:
 
 async def asset_upload_checks() -> None:
     """素材上传：歌词/配乐能传、类型能挡、LRC 能读出时间轴。"""
+    import asyncio as _asyncio
+
+    from core.config import get_settings
+
+    settings = get_settings()
+    original_renderer = settings.animation_renderer
+    settings.animation_renderer = "fake"
     transport = httpx.ASGITransport(app=app)
     lrc = (
         "[ti:旧车站]\n[00:02.00]月光落在旧车站\n"
@@ -2882,12 +2889,24 @@ async def asset_upload_checks() -> None:
             job = started.json()["job"]
             check("素材：起任务后直接开渲、不再等确认",
                   job.get("requires_confirmation") is False, str(job.get("stage")))
+            # 测试不要往真实任务目录里留垃圾：等假渲染跑完就删掉
+            started_job_id = str(job.get("id") or "")
+            for _ in range(20):
+                await _asyncio.sleep(0.1)
+                state = await client.get(f"/api/animation/{started_job_id}")
+                if state.status_code != 200:
+                    break
+                if (state.json() or {}).get("stage") in ("done", "failed"):
+                    break
+            await client.delete(f"/api/animation/{started_job_id}")
 
         missing = await client.post("/api/animation/start", json={
             "prompt": "x", "lyrics_file": "/nope/not-exist.lrc",
         })
         check("素材：文件不存在时明确报错", missing.status_code == 400,
               str(missing.status_code))
+
+    settings.animation_renderer = original_renderer
 
 
 async def video_route_checks() -> None:
@@ -2896,7 +2915,7 @@ async def video_route_checks() -> None:
 
     import pathlib as _pathlib
 
-    jobs = animation_engine.list_jobs(limit=40)
+    jobs = animation_engine.list_jobs(limit=40, prune=False)
     # 假渲染器产出的占位文件只有几十字节，Range 测试没意义，要挑真成片
     done = next(
         (job for job in jobs
@@ -2906,8 +2925,39 @@ async def video_route_checks() -> None:
         None,
     )
     if done is None:
+        # 自检把任务目录指到了临时区（不污染真实任务栏）；
+        # 真实成片还在 data/animation，只读挑一个来测下载/拖进度条
+        from core.config import get_settings
+
+        real_root = get_settings().data_path / "animation"
+        for folder in sorted(real_root.glob("anim_*"), reverse=True):
+            status = folder / "status.json"
+            if not status.exists():
+                continue
+            try:
+                job = json.loads(status.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            video = _pathlib.Path(str(job.get("video") or ""))
+            if job.get("stage") == "done" and video.is_file() and video.stat().st_size > 4096:
+                done = job
+                break
+    if done is None:
         print("  · 跳过成片路由检查（还没有真实的成片）")
         return
+
+    # 任务是真实目录里的某个成片：接口按 jobs_dir 找任务，
+    # 自检把 jobs_dir 指到了临时区，这里临时指回真实目录再测。
+    original_jobs_dir = animation_engine.jobs_dir
+    real_jobs_dir = getattr(animation_engine, "_SMOKE_REAL_JOBS_DIR", None)
+    switched = False
+    if real_jobs_dir is not None:
+        from core.config import get_settings as _get_settings
+
+        real_root = _get_settings().data_path / "animation"
+        if _pathlib.Path(str(done.get("dir") or "")).parent == real_root:
+            animation_engine.jobs_dir = real_jobs_dir
+            switched = True
 
     job_id = done["id"]
     transport = httpx.ASGITransport(app=app)
@@ -2940,6 +2990,9 @@ async def video_route_checks() -> None:
         bad = await client.get("/api/animation/..%2F..%2Fmain/video")
         check("成片：任务号不合法被拒", bad.status_code in (400, 404),
               str(bad.status_code))
+
+    if switched:
+        animation_engine.jobs_dir = original_jobs_dir
 
 
 def fetch_script_checks() -> None:
@@ -7077,6 +7130,23 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
 
+    # 整个自检统一用假渲染器 + 临时任务目录：
+    # 否则 mode_checks / skill_asset_checks 会在用户真实的 data/animation 里堆任务
+    # （以前每跑一次 smoke，任务栏就多几个假任务，算是老坑了）
+    import pathlib as _pathlib
+    import tempfile as _tempfile
+
+    import skills.work.animation.engine as _animation
+    from core.config import get_settings as _get_settings
+
+    _settings = _get_settings()
+    _settings.animation_renderer = "fake"
+    _anim_sandbox = _tempfile.TemporaryDirectory(
+        prefix="smoke-anim-", ignore_cleanup_errors=True
+    )
+    _animation._SMOKE_REAL_JOBS_DIR = _animation.jobs_dir
+    _animation.jobs_dir = lambda: _pathlib.Path(_anim_sandbox.name)
+
     document_checks()
     pipeline_checks()
     miner_checks()
@@ -7157,6 +7227,8 @@ def main() -> int:
     asyncio.run(rag_http_checks())
     asyncio.run(channels_http_checks())
     asyncio.run(cleaner_http_checks())
+
+    _anim_sandbox.cleanup()
 
     failed = [item for item in results if not item[1]]
     for name, ok, detail in results:

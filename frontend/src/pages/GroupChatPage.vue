@@ -221,7 +221,7 @@
             <span class="task-sub">{{ currentConversationTitle }}</span>
           </div>
           <span class="task-stats">
-            {{ taskPanel.jobs.length }} 个 · {{ taskPanel.stats.total_mb }} MB
+            {{ taskPanel.jobs.length }} 个 · 全局 {{ taskPanel.stats.total_mb }} MB
           </span>
         </div>
 
