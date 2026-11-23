@@ -560,6 +560,8 @@ button.small { padding: 5px 10px; font-size: 12px; }
   display: flex;
   flex-direction: column;
   padding: 24px 28px 0;
+  /* 至少铺满视口再减掉顶栏：内容少时输入框也能贴在窗口底部 */
+  min-height: calc(100vh - 72px);
 }
 
 /* 会话栏从窗口左边缘开始，右边缘正好接上聊天区的左边缘。
