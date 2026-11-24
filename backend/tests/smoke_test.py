@@ -7190,9 +7190,9 @@ def admin_agent_checks() -> None:
 
         check("管理员：接下了这轮", outcome.get("claimed") is True, str(outcome))
         kinds = [item["type"] for item in events]
-        check("管理员：事件顺序是 思考→派发→观察→汇总",
+        check("管理员：实时过程是 思考→派发→观察（汇总结尾由 prepare 发）",
               kinds == ["admin_thought", "admin_dispatch",
-                        "admin_observation", "admin_done"], str(kinds))
+                        "admin_observation"], str(kinds))
 
         rows = db.list_working_memory(conv_id)
         owners = {(row.get("agent_id"), row.get("kind")) for row in rows}
@@ -7226,7 +7226,8 @@ def admin_agent_checks() -> None:
             called["skill"] += 1
             return "block", "animation", []
 
-        group_graph._emit = lambda payload: None
+        pre_events: list[dict] = []
+        group_graph._emit = pre_events.append
         group_graph._run_skill = fake_skill
         admin_agent_run = admin_agent.run
         admin_agent.run = fake_admin
@@ -7236,9 +7237,19 @@ def admin_agent_checks() -> None:
                 "members": members, "conversation_id": conv_id,
                 "mode": "work", "api_key": "k", "user_id": "u1",
             }
-            asyncio.run(group_graph.prepare_node(state))
+            prepared = asyncio.run(group_graph.prepare_node(state))
             check("管理员：工作模式下管理员先跑", called["admin"] == 1, str(called))
             check("管理员：管理员接了就不再跑单技能", called["skill"] == 0, str(called))
+            check("管理员：接管后本轮直接收尾（角色不直接对用户说话）",
+                  prepared.get("finished") is True, str(prepared.get("finished")))
+            check("管理员：汇总只发一次 admin_done",
+                  [e["type"] for e in pre_events].count("admin_done") == 1,
+                  str([e["type"] for e in pre_events]))
+            # 同一条汇总再跑一次（模拟断线重连）：不应再发第二条
+            asyncio.run(group_graph.prepare_node(state))
+            check("管理员：断线重连不重复发汇总",
+                  [e["type"] for e in pre_events].count("admin_done") == 1,
+                  str([e["type"] for e in pre_events]))
 
             called.update({"skill": 0, "admin": 0})
             asyncio.run(group_graph.prepare_node({**state, "api_key": ""}))

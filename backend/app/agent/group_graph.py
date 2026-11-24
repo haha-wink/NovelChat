@@ -105,6 +105,43 @@ def _emit(payload: dict) -> None:
     get_stream_writer()(payload)
 
 
+
+def _admin_summary_just_said(shelf_id: str, conversation_id: str, summary: str) -> bool:
+    """同一条管理员总结刚说过就不要再落库/再推一遍。
+
+    场景：SSE 断线重连会按断点重跑这一段图。工作记忆和用户那句都幂等，
+    但 ``admin_done`` 是"说话"，重复一次用户就会看到两条一模一样的管理员消息。
+    只在「最近 5 条里、两分钟内、内容一字不差」时去重，不吞正常的重复请求。
+    """
+    if not conversation_id or not summary:
+        return False
+    try:
+        from datetime import datetime, timezone
+
+        turns = db.list_chat_turns(
+            shelf_id, conversation_id=conversation_id, limit=8
+        )
+    except Exception:  # noqa: BLE001 - 去重失败就当没说过
+        return False
+    now = datetime.now(timezone.utc)
+    for turn in turns[:5]:
+        if not (
+            str(turn.get("role") or "") == "system"
+            and str(turn.get("speaker_name") or "") == "管理员"
+            and str(turn.get("content") or "") == summary
+        ):
+            continue
+        raw = str(turn.get("created_at") or "")
+        try:
+            said = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        age = (now - said).total_seconds()
+        if age <= 120:
+            return True
+    return False
+
+
 async def prepare_node(state: GroupState) -> dict:
     """准备：成员、@ 解析、@全体唤醒、用户那句落库。"""
     from agent import group as group_mod
@@ -158,10 +195,29 @@ async def prepare_node(state: GroupState) -> dict:
         except Exception:  # noqa: BLE001 - 工作记忆写失败不能挡住群聊
             logger.exception("写工作记忆失败（已忽略）")
 
-    # 【管理员】工作模式先让管理员跑 ReAct：规划 → 派发 → 观察 → 再规划。
-    # 它接了这轮就不再跑单技能，否则同一句需求会起两份任务。
+    # 用户这句先落库、先推给前端：工作模式的管理员是"先想再做"，
+    # 如果等它跑完再发 user 事件，用户会先看到管理员总结、后看到自己说的话。
+    plan = state.get("dialogue_plan")
+    db.add_chat_turn(
+        shelf_id=shelf_id,
+        conversation_id=conversation_id,
+        user_id=state.get("user_id") or "",
+        role="user",
+        content=text,
+        mentions=mentions,
+        images=list(state.get("image_urls") or []),
+        intent=(plan.signals.intent if plan else ""),
+        emotion=(plan.signals.emotion if plan else ""),
+        session_id=state.get("session_id") or "",
+    )
+    _emit({"type": "user", "text": text, "mentions": mentions})
+
+    # 【管理员】工作模式由管理员对用户：规划 → 派发 → 观察 → 再规划。
+    # 角色 Agent 只对管理员负责（汇报进工作记忆），不直接对用户说话；
+    # 所以管理员接了这一轮就不再走 pick/speak，避免"角色越界 + 两套输出"。
     admin_claimed = False
     admin_summary = ""
+    admin_jobs: list[dict] = []
     if mode == "work" and str(state.get("api_key") or ""):
         try:
             from agent import admin_agent
@@ -178,60 +234,51 @@ async def prepare_node(state: GroupState) -> dict:
             )
             admin_claimed = bool(outcome.get("claimed"))
             admin_summary = str(outcome.get("summary") or "")
-            # 管理员调工具起的任务也要出卡片（前端轮询进度）
-            for job in outcome.get("jobs") or []:
-                if job.get("job_id"):
-                    _emit({"type": "skill_job", "skill": "animation", **job})
-        except Exception:  # noqa: BLE001 - 管理员失败要退回单技能
+            admin_jobs = list(outcome.get("jobs") or [])
+        except Exception:  # noqa: BLE001 - 管理员失败要退回单技能 + 群聊
             logger.exception("管理员 Agent 执行失败（已退回单技能）")
 
-    # 【技能层】群聊一轮跑一次：命中技能后把素材放进 state，
-    # 所有发言人共享（否则工作模式在群里等于没开）
     skill_block, skill_name, skill_jobs = ("", "", [])
-    if not admin_claimed:
+    if admin_claimed:
+        # 管理员起的任务出卡片（前端轮询进度、任务栏立刻出现）
+        for job in admin_jobs:
+            if job.get("job_id"):
+                _emit({"type": "skill_job", "skill": "animation", **job})
+        if admin_summary and not _admin_summary_just_said(
+            shelf_id, conversation_id, admin_summary
+        ):
+            db.add_chat_turn(
+                shelf_id=shelf_id,
+                conversation_id=conversation_id,
+                user_id=state.get("user_id") or "",
+                role="system",
+                speaker_name="管理员",
+                content=admin_summary,
+                session_id=state.get("session_id") or "",
+            )
+            _emit({
+                "type": "admin_done",
+                "text": admin_summary,
+                "jobs": [job.get("job_id") for job in admin_jobs if job.get("job_id")],
+            })
+    else:
+        # 【技能层】群聊一轮跑一次：命中技能后把素材放进 state，
+        # 所有发言人共享（否则工作模式在群里等于没开）
         skill_block, skill_name, skill_jobs = _run_skill(state, shelf_id, conversation_id)
-    for job in skill_jobs:
-        _emit({"type": "skill_job", "skill": skill_name, **job})
-        if mode == "work" and job.get("job_id"):
-            try:
-                from services.memory import working_memory
+        for job in skill_jobs:
+            _emit({"type": "skill_job", "skill": skill_name, **job})
+            if mode == "work" and job.get("job_id"):
+                try:
+                    from services.memory import working_memory
 
-                working_memory.remember(
-                    conversation_id,
-                    f"任务 {job.get('job_id')}：{job.get('prompt') or state.get('text') or ''}",
-                    shelf_id=shelf_id, user_id=state.get("user_id") or "",
-                    kind="job", mode=mode,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("写工作记忆（任务）失败（已忽略）")
-
-    plan = state.get("dialogue_plan")
-    db.add_chat_turn(
-        shelf_id=shelf_id,
-        conversation_id=conversation_id,
-        user_id=state.get("user_id") or "",
-        role="user",
-        content=text,
-        mentions=mentions,
-        images=list(state.get("image_urls") or []),
-        intent=(plan.signals.intent if plan else ""),
-        emotion=(plan.signals.emotion if plan else ""),
-        session_id=state.get("session_id") or "",
-    )
-    _emit({"type": "user", "text": text, "mentions": mentions})
-
-    # 管理员的最终汇总落一条 system turn：切走再回来还能看到「这轮干了什么」。
-    # 中间过程（思考/派发/观察）只在实时流里，不占历史。
-    if admin_summary:
-        db.add_chat_turn(
-            shelf_id=shelf_id,
-            conversation_id=conversation_id,
-            user_id=state.get("user_id") or "",
-            role="system",
-            speaker_name="管理员",
-            content=admin_summary,
-            session_id=state.get("session_id") or "",
-        )
+                    working_memory.remember(
+                        conversation_id,
+                        f"任务 {job.get('job_id')}：{job.get('prompt') or state.get('text') or ''}",
+                        shelf_id=shelf_id, user_id=state.get("user_id") or "",
+                        kind="job", mode=mode,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("写工作记忆（任务）失败（已忽略）")
 
     return {
         "members": members,
@@ -243,7 +290,8 @@ async def prepare_node(state: GroupState) -> dict:
         "pending_forced": [],
         "round_no": 0,
         "queue": [],
-        "finished": False,
+        # 管理员接了这一轮就到此为止：角色不直接对用户说话
+        "finished": bool(admin_claimed),
         "greeting": greeting,
         "conversation_id": conversation_id,
         "skill_block": skill_block,

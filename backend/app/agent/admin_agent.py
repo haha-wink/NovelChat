@@ -64,6 +64,14 @@ _PLAN_PROMPT = """你是工作模式的管理员 Agent，负责统筹一个「�
 - steps 最多 {max_steps} 个，只挑真正需要的角色；没人能做的部分你自己在 thought 里说明。
 - 任务要具体、可执行；不要派「和用户聊天」这种空任务。
 - 角色名必须从上面的名单里选，选不到就留空 steps。
+
+【渲染器硬边界，非常重要】
+画面只能画：场景 / 天气 / 时间段 / 配色 / 镜头运动（车站、火车、雨、雪、月亮、星星、山、海、城市、窗、路、花、伞…）
+以及逐句歌词字幕。做不到：人物长相/性别/服装、具体剧情表演、谐音梗字幕替换、
+屏幕内外特效、逐帧卡点。
+- 用户要的东西超出边界时，翻译成「画面里能出现的场景/物件」（例如「锦鲤」→ 画面里的鱼和河），
+  并在汇总里如实说明哪些做不到；**不要替用户脑补分镜和人物**。
+- 拆分任务时让角色只提「场景/镜头」层面的方案，不要让角色替用户编剧情。
 """
 
 _EVAL_PROMPT = """你是工作模式的管理员 Agent，正在循环推进用户的任务。
@@ -101,6 +109,11 @@ _ROLE_DECIDE_PROMPT = """你是角色「{name}」（{role}），管理员把下�
 {{"thought": "一句话",
   "action": "reply" 或 "animation",
   "prompt": "如果 action=animation，写清楚要做什么（可含风格/时长/段落）"}}
+
+调用动画工具时，prompt 必须写成**渲染器看得懂的镜头描述**：只写场景、天气、物件、时间段、
+配色和风格（例如「水墨风，雨夜车站，站台，伞，远处的月亮，蓝色鱼影」），
+不要写人物长相、剧情、谐音梗或屏幕文字特效——这些渲染器做不到，写了也只会得到默认画面。
+做不到的部分放在给管理员的汇报里，不要假装完成。
 """
 
 
@@ -236,19 +249,34 @@ def _role_reply(api_key: str, member: dict, task: str, notes: str,
     return str(getattr(response, "content", "") or "").strip()
 
 
-def _animation_tool(prompt: str, assets: list[dict], conversation_id: str) -> dict:
-    """角色 Agent 的工具：起一个动画/MV 任务。"""
+def _animation_tool(
+    prompt: str, notes: str, assets: list[dict], conversation_id: str
+) -> dict:
+    """角色 Agent 的工具：起一个动画/MV 任务。
+
+    ``notes``（共享工作记忆）里往往有用户前面说过的场景/风格词，但角色给的工具 prompt
+    可能只写了一句「做这个 MV」。这里把笔记里的场景词并进去：引擎按关键词排镜头，
+    没有关键词时只会轮换 8 种默认构图——那正是"视频没接住需求"的根因。
+    """
     import skills
+    from skills.work.animation.scene_gen import scene_keywords
     from skills.work.animation.styles import resolve_style
 
     skill = skills.get("animation")
     if skill is None:
         return {"ok": False, "error": "动画技能没加载"}
+    text = prompt
+    try:
+        words = scene_keywords(f"{prompt} {notes}")
+        if words:
+            text = f"{prompt}；画面元素：{'、'.join(words[:12])}"
+    except Exception:  # noqa: BLE001 - 关键词提取失败就把原 prompt 交出去
+        logger.exception("管理员：提取画面关键词失败（已忽略）")
     payload = {
-        "text": prompt,
+        "text": text,
         "emotion": "平静",
         "intent": "work",
-        "style": resolve_style(prompt),
+        "style": resolve_style(f"{prompt} {notes}"),
         "lyrics": "",
         "lyrics_file": "",
         "audio": "",
@@ -305,7 +333,7 @@ async def _role_react(
     if action == "animation":
         tool_prompt = str(decision.get("prompt") or task).strip()
         tool = await asyncio.to_thread(
-            _animation_tool, tool_prompt, assets, conversation_id
+            _animation_tool, tool_prompt, notes, assets, conversation_id
         )
         if tool.get("ok"):
             jobs = "、".join(tool.get("jobs") or [])
@@ -423,7 +451,12 @@ async def run(
     goal = str(plan.get("goal") or cleaned).strip()[:200]
     _remember(conversation_id, f"目标：{goal}", kind="plan", shelf_id=shelf_id,
               user_id=user_id)
-    emit({"type": "admin_thought", "text": str(plan.get("thought") or "").strip()})
+    # 没有可派发的步骤时，thought 会直接变成汇总：别再单独发一条，
+    # 否则用户先看到一条蓝的、再看到一条绿的，内容是同一句话。
+    raw_steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    if any(isinstance(step, dict) and str(step.get("task") or "").strip()
+           for step in raw_steps):
+        emit({"type": "admin_thought", "text": str(plan.get("thought") or "").strip()})
 
     all_jobs: list[dict] = []
     reports: list[str] = []
@@ -521,7 +554,6 @@ async def run(
     if not summary:
         summary = "这轮没有产出可汇报的结果。"
 
-    emit({"type": "admin_done", "text": summary, "jobs": [j["id"] for j in all_jobs]})
     try:
         db.add_manager_memory(
             shelf_id, "admin",

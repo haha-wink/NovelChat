@@ -2019,8 +2019,14 @@ async function readGroupStream(response) {
       })
       scrollGroupBottom()
     } else if (event.type === 'admin_done' && event.text) {
-      group.messages.push({ kind: 'admin', role: 'done', content: event.text })
-      scrollGroupBottom()
+      // 断线重连/重跑可能把同一条汇总再推一次：连着重复就不再显示
+      const last = group.messages[group.messages.length - 1]
+      const same = last && last.kind === 'admin' && last.role === 'done'
+        && last.content === event.text
+      if (!same) {
+        group.messages.push({ kind: 'admin', role: 'done', content: event.text })
+        scrollGroupBottom()
+      }
     } else if (event.type === 'error') {
       group.messages.push({ kind: 'system', content: `⚠️ ${event.message}` })
       scrollGroupBottom()
