@@ -72,6 +72,11 @@ _PLAN_PROMPT = """你是工作模式的管理员 Agent，负责统筹一个「�
 - 用户要的东西超出边界时，翻译成「画面里能出现的场景/物件」（例如「锦鲤」→ 画面里的鱼和河），
   并在汇总里如实说明哪些做不到；**不要替用户脑补分镜和人物**。
 - 拆分任务时让角色只提「场景/镜头」层面的方案，不要让角色替用户编剧情。
+
+【必须派活的情况】
+只要用户这句话是在提产出需求（视频 / MV / 动画 / 分镜 / 渲染 / 画面 / 成片 / 歌词画面…）
+或者是在修改、补充这类需求，**steps 至少要有 1 个**，派给角色去执行（调用动画工具）。
+不允许把它当成「信息整理」后直接汇总；只有纯闲聊、纯查询、纯记笔记才允许 steps 为空。
 """
 
 _EVAL_PROMPT = """你是工作模式的管理员 Agent，正在循环推进用户的任务。
@@ -92,10 +97,23 @@ _EVAL_PROMPT = """你是工作模式的管理员 Agent，正在循环推进用�
   "next": [{{"agent": "角色名", "task": "还差的部分派给谁"}}]}}
 
 规则：
+- 如果用户要的是成片（MV/视频/渲染），**必须看到本轮的渲染任务**（jobs 非空）或角色明确
+  说明「渲染器做不到/缺少素材」才允许 done=true；只是聊完方案不算完成。
 - 如果角色汇报里已经明确完成（例如「已开渲任务 anim_xxx」），done=true。
 - 如果还缺关键信息/还有没做的部分，done=false，next 最多 {max_steps} 个。
 - 做不了的部分要如实写进 summary，不要假装完成。
 """
+
+#: 一眼能看出「这是要产出成片」的词：管理员不能只汇总，必须派活
+_ACTION_HINTS = (
+    "渲染", "视频", "MV", "mv", "动画", "成片", "歌词", "画面", "镜头", "分镜",
+    "重渲", "做一段", "生成", "剪",
+)
+
+
+def _looks_like_video_request(text: str) -> bool:
+    return any(word in (text or "") for word in _ACTION_HINTS)
+
 
 _ROLE_DECIDE_PROMPT = """你是角色「{name}」（{role}），管理员把下面这件事派给你：
 
@@ -290,6 +308,23 @@ def _animation_tool(
             payload["lyrics_file"] = path
         elif kind == "audio":
             payload["audio"] = path
+    # 「再改一版」这类消息通常不带附件，但歌和歌词早就传过了：
+    # 从本对话最近一个任务里继承，否则新任务会变成没有歌词/配乐的默认画面。
+    if not payload["lyrics_file"] or not payload["audio"]:
+        try:
+            from skills.work.animation import engine as animation_engine
+
+            previous = animation_engine.list_jobs(
+                limit=5, conversation_id=conversation_id
+            )
+        except Exception:  # noqa: BLE001 - 查历史失败就当没有
+            previous = []
+        if previous:
+            last = previous[0]
+            if not payload["lyrics_file"]:
+                payload["lyrics_file"] = str(last.get("lyrics_file") or "")
+            if not payload["audio"]:
+                payload["audio"] = str(last.get("audio") or "")
     try:
         result = skill.run(payload)
     except Exception as exc:  # noqa: BLE001
@@ -330,6 +365,11 @@ async def _role_react(
 
     action = str(decision.get("action") or "reply").strip().lower()
     thought = str(decision.get("thought") or "").strip()
+    # 模型有时把「做 MV」当成「聊方案」，任务里明明写着渲染/分镜还选 reply。
+    # 这种硬需求直接改走工具，不让它用一段话把活糊过去。
+    if action != "animation" and _looks_like_video_request(task):
+        action = "animation"
+        thought = thought or "这是产出需求，直接调动画工具"
     if action == "animation":
         tool_prompt = str(decision.get("prompt") or task).strip()
         tool = await asyncio.to_thread(
@@ -448,6 +488,28 @@ async def run(
     if not plan:
         return {"claimed": False, "summary": ""}
 
+    # 模型有时把「做 MV」当成「整理需求」：steps 空着就收尾。
+    # 这种时候别让它偷懒：明显是产出需求就兜底派给第一个角色去调工具。
+    raw_steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    useful = [
+        step for step in raw_steps
+        if isinstance(step, dict) and str(step.get("task") or "").strip()
+        and _strip_name(str(step.get("agent") or ""), members)
+    ]
+    if not useful and _looks_like_video_request(cleaned):
+        executor = next(
+            (m for m in members if str(m.get("name") or "").strip()), {}
+        )
+        if executor:
+            plan["steps"] = [{
+                "agent": str(executor.get("name") or ""),
+                "task": "调用动画工具，按用户这次的需求直接渲染成片：" + cleaned[:180],
+            }]
+            plan["thought"] = (
+                str(plan.get("thought") or "").strip()
+                + "（这是渲染需求，不能只汇总：改为直接派给执行角色）"
+            ).strip()
+
     goal = str(plan.get("goal") or cleaned).strip()[:200]
     _remember(conversation_id, f"目标：{goal}", kind="plan", shelf_id=shelf_id,
               user_id=user_id)
@@ -495,7 +557,11 @@ async def run(
                 "type": "admin_observation", "agent": name,
                 "text": report[:400],
             })
-            all_jobs.extend(result.get("jobs") or [])
+            # 工具返回的是 job_id 字符串；统一存 id，后面查状态/写长期记忆都按 id 用
+            for job in result.get("jobs") or []:
+                job_id = (job.get("id") or job.get("job_id")) if isinstance(job, dict) else job
+                if job_id:
+                    all_jobs.append(str(job_id))
 
         jobs = []
         for job_id in dict.fromkeys(all_jobs):
@@ -558,7 +624,7 @@ async def run(
         db.add_manager_memory(
             shelf_id, "admin",
             f"{cleaned[:80]} → {summary[:200]}",
-            payload={"goal": goal, "jobs": [j["id"] for j in all_jobs]},
+            payload={"goal": goal, "jobs": list(dict.fromkeys(all_jobs))},
         )
     except Exception:  # noqa: BLE001 - 长期记忆失败不影响本轮
         logger.exception("管理员：写长期记忆失败（已忽略）")

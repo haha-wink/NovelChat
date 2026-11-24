@@ -7176,8 +7176,13 @@ def admin_agent_checks() -> None:
 
         original_llm = admin_agent._llm
         original_role = admin_agent._role_reply
+        original_tool = admin_agent._animation_tool
         admin_agent._llm = fake_llm
         admin_agent._role_reply = lambda *a, **k: "我做了水彩场景，已开渲 1 个任务。"
+        # 冒烟里不要真的起渲染任务（假任务 id 查不到状态，只验流程）
+        admin_agent._animation_tool = lambda *a, **k: {
+            "ok": True, "jobs": ["anim_smoke"], "error": "",
+        }
         try:
             outcome = asyncio.run(admin_agent.run(
                 api_key="k", shelf_id="shelf-admin", conversation_id=conv_id,
@@ -7187,6 +7192,7 @@ def admin_agent_checks() -> None:
         finally:
             admin_agent._llm = original_llm
             admin_agent._role_reply = original_role
+            admin_agent._animation_tool = original_tool
 
         check("管理员：接下了这轮", outcome.get("claimed") is True, str(outcome))
         kinds = [item["type"] for item in events]
@@ -7260,6 +7266,127 @@ def admin_agent_checks() -> None:
             asyncio.run(group_graph.prepare_node({**state, "mode": "chat"}))
             check("管理员：聊天模式不跑管理员",
                   called["admin"] == 0 and called["skill"] == 1, str(called))
+
+            # 空 steps 的渲染需求：不能当「信息整理」收尾，必须兜底派活
+            import skills as skills_mod
+
+            original_llm2 = admin_agent._llm
+            original_role2 = admin_agent._role_react
+            original_get = skills_mod.get
+            captured: dict = {}
+
+            class _FakeSkill:
+                def run(self, payload):
+                    captured.update(payload)
+
+                    class _R:
+                        outputs = [{"ok": True, "job_id": "anim_fallback"}]
+
+                    return _R()
+
+            skills_mod.get = lambda name, *a, **k: (
+                _FakeSkill() if name == "animation" else original_get(name, *a, **k)
+            )
+
+            def fake_plan_empty(api_key, messages, json_mode=True, temperature=0.3):
+                prompt = messages[0]["content"]
+                if "判断整体目标" in prompt:
+                    return ('{"done": true, "thought": "已起任务", '
+                            '"summary": "已开渲 anim_fallback", "next": []}')
+                return '{"goal": "做个 MV", "thought": "信息整理", "steps": []}'
+
+            dispatched_tasks: list[str] = []
+
+            async def fake_role_dispatch(api_key, member, task, **kwargs):
+                dispatched_tasks.append(task)
+                return {"action": "animation", "report": "已开渲",
+                        "jobs": ["anim_fallback"]}
+
+            def fake_init_not_used(*a, **k):  # noqa: ARG001
+                return None
+
+            admin_agent._llm = fake_plan_empty
+            admin_agent._role_react = fake_role_dispatch
+            try:
+                # admin_agent.run 上面被换成了 prepare 用的假实现，这里必须用真函数
+                out = asyncio.run(admin_agent_run(
+                    api_key="k", shelf_id="shelf-admin", conversation_id=conv_id,
+                    text="这是需求：全片水墨风，雨夜车站首尾呼应，做成 MV 渲染成片",
+                    members=members, emit=events.append, user_id="u1",
+                ))
+            finally:
+                admin_agent._llm = original_llm2
+                admin_agent._role_react = original_role2
+                skills_mod.get = original_get
+            check("管理员：空 steps 的渲染需求会兜底派活",
+                  out.get("claimed") is True and bool(dispatched_tasks)
+                  and "雨夜车站" in dispatched_tasks[0], str(out))
+            check("管理员：兜底派活后汇总里带上任务号",
+                  "anim_fallback" in str(out.get("summary") or ""), str(out))
+
+            # 角色把「做 MV」当聊天：任务里带渲染词就必须改走动画工具
+            original_llm3 = admin_agent._llm
+            original_get = skills_mod.get
+            forced: dict = {}
+
+            class _FakeSkill2:
+                def run(self, payload):
+                    forced.update(payload)
+
+                    class _R2:
+                        outputs = [{"ok": True, "job_id": "anim_forced"}]
+
+                    return _R2()
+
+            skills_mod.get = lambda name, *a, **k: (
+                _FakeSkill2() if name == "animation" else original_get(name, *a, **k)
+            )
+            admin_agent._llm = lambda *a, **k: (
+                '{"thought": "聊一下方案", "action": "reply"}'
+            )
+            try:
+                asyncio.run(admin_agent._role_react(
+                    api_key="k", member={"id": "c1", "name": "博士"},
+                    task="做一段水墨风 MV：雨夜车站，伞，月亮",
+                    notes="用户要水墨", conversation_id=conv_id, assets=[],
+                ))
+            finally:
+                admin_agent._llm = original_llm3
+                skills_mod.get = original_get
+            check("角色：产出类任务即使想 reply 也强制调动画工具",
+                  bool(forced) and "雨夜车站" in str(forced.get("text") or ""),
+                  str(forced)[:120])
+
+            # 没带附件时继承本对话上一个任务的歌词/配乐
+            from skills.work.animation import engine as animation_engine
+
+            original_list = animation_engine.list_jobs
+            original_get = skills_mod.get
+            reused: dict = {}
+
+            class _FakeSkill3:
+                def run(self, payload):
+                    reused.update(payload)
+
+                    class _R3:
+                        outputs = [{"ok": True, "job_id": "anim_reuse"}]
+
+                    return _R3()
+
+            animation_engine.list_jobs = lambda *a, **k: [
+                {"lyrics_file": "L.lrc", "audio": "A.mp3"}
+            ]
+            skills_mod.get = lambda name, *a, **k: (
+                _FakeSkill3() if name == "animation" else original_get(name, *a, **k)
+            )
+            try:
+                admin_agent._animation_tool("再改一版，水墨风", "", [], conv_id)
+            finally:
+                animation_engine.list_jobs = original_list
+                skills_mod.get = original_get
+            check("动画工具：没附件时继承本对话上个任务的歌词/配乐",
+                  reused.get("lyrics_file") == "L.lrc"
+                  and reused.get("audio") == "A.mp3", str(reused)[:120])
         finally:
             group_graph._emit = original_emit
             group_graph._run_skill = original_run_skill
