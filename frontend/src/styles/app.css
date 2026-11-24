@@ -1378,6 +1378,51 @@ body.resizing-task {
   color: #b4453c;
 }
 
+/* 任务项第二行：状态 + 进度条（进行中才显示百分比） */
+.task-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted, #8a8175);
+}
+
+.task-stage {
+  flex: 0 0 auto;
+}
+
+.task-stage.is-done {
+  color: #4b7f52;
+}
+
+.task-stage.is-failed {
+  color: #b4453c;
+}
+
+.task-progress {
+  flex: 1 1 auto;
+  height: 4px;
+  min-width: 40px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.task-progress i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.55;
+  transition: width 0.4s ease;
+}
+
+.task-percent {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- 管理员 Agent 的消息（工作模式） ---- */
 .admin-message {
   display: flex;

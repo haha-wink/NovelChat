@@ -73,6 +73,11 @@ _PLAN_PROMPT = """你是工作模式的管理员 Agent，负责统筹一个「�
   并在汇总里如实说明哪些做不到；**不要替用户脑补分镜和人物**。
 - 拆分任务时让角色只提「场景/镜头」层面的方案，不要让角色替用户编剧情。
 
+【一个需求只起一个任务】
+- 渲染任务只能派给**一个**角色去调工具；其他角色只出方案 / 分镜 / 配色建议，不要让他们也起任务。
+- 方案型任务里别写「渲染/生成/做一版」，写「给出…方案」「列出…分镜」，否则角色会误以为要自己起任务。
+- 用户同一个需求连续追问时，先看工作记忆里有没有刚起的任务；有就只补方案或换画质，别重复开新任务。
+
 【必须派活的情况】
 只要用户这句话是在提产出需求（视频 / MV / 动画 / 分镜 / 渲染 / 画面 / 成片 / 歌词画面…）
 或者是在修改、补充这类需求，**steps 至少要有 1 个**，派给角色去执行（调用动画工具）。
@@ -111,8 +116,50 @@ _ACTION_HINTS = (
 )
 
 
+#: 「明显在要求动手做」的动词：光有场景词/画面词不算（"配色方案"不该起任务）
+_EXECUTE_HINTS = (
+    "做一段", "做一个", "做一版", "做成", "做版", "渲染", "生成", "起一个", "起个",
+    "开渲", "拍一段", "剪一段", "来一段", "出一段", "输出成片",
+)
+
+
 def _looks_like_video_request(text: str) -> bool:
     return any(word in (text or "") for word in _ACTION_HINTS)
+
+
+#: 渲染器做不到的东西 → 汇总里要明说，别让用户以为「画面元素对了 = 需求做完了」
+_LIMIT_WORDS: tuple[tuple[str, str], ...] = (
+    ("女主", "人物长相"),
+    ("男主", "人物长相"),
+    ("人物", "人物长相"),
+    ("剧情", "剧情表演"),
+    ("谐音", "谐音梗字幕"),
+    ("字幕替换", "屏幕字幕替换"),
+    ("特效", "屏幕内外特效"),
+)
+
+
+def _limits_note(text: str) -> str:
+    """把用户需求里超出渲染器能力的那部分列出来，附在汇总后面。"""
+    hits = [label for word, label in _LIMIT_WORDS if word in (text or "")]
+    if not hits:
+        return ""
+    return "（说明：渲染器只能画场景/物件/镜头，" + "、".join(
+        dict.fromkeys(hits)
+    ) + "做不到，已用画面元素近似表达。）"
+
+
+def _asks_to_render(text: str) -> bool:
+    """任务里既有产出物、又有「动手做」的动词，才算真的要起渲染任务。
+
+    只写「给出配色与画面质感方案」的顾问型任务不在此列——否则三个角色
+    会一人起一个任务，同一个需求变成三版成片。
+    """
+    body = text or ""
+    return (
+        any(word in body for word in _EXECUTE_HINTS)
+        and any(word in body for word in _ACTION_HINTS)
+    )
 
 
 _ROLE_DECIDE_PROMPT = """你是角色「{name}」（{role}），管理员把下面这件事派给你：
@@ -346,6 +393,7 @@ async def _role_react(
     notes: str,
     conversation_id: str,
     assets: list[dict],
+    allow_tool: bool = True,
 ) -> dict:
     """角色 Agent 自己的一轮 ReAct：思考 -> 决定调工具还是直接汇报。"""
     decision_prompt = _ROLE_DECIDE_PROMPT.format(
@@ -367,7 +415,11 @@ async def _role_react(
     thought = str(decision.get("thought") or "").strip()
     # 模型有时把「做 MV」当成「聊方案」，任务里明明写着渲染/分镜还选 reply。
     # 这种硬需求直接改走工具，不让它用一段话把活糊过去。
-    if action != "animation" and _looks_like_video_request(task):
+    if action == "animation" and not allow_tool:
+        # 本轮已经有角色在起任务了：方案型角色只汇报，别再起一版
+        action = "reply"
+        thought = thought or "本轮已有执行角色起任务，我只出方案"
+    if allow_tool and action != "animation" and _asks_to_render(task):
         action = "animation"
         thought = thought or "这是产出需求，直接调动画工具"
     if action == "animation":
@@ -524,6 +576,8 @@ async def run(
     reports: list[str] = []
     done = False
     summary = ""
+    # 同一个需求一轮只起一个任务：三个角色各起一版就是「任务重复」
+    jobs_made = 0
 
     for cycle in range(MAX_CYCLES):
         steps = plan.get("steps") or []
@@ -545,6 +599,7 @@ async def run(
                 api_key, member, task,
                 notes=notes, conversation_id=conversation_id,
                 assets=assets or [],
+                allow_tool=jobs_made == 0,
             )
             dispatched += 1
             report = str(result.get("report") or "").strip()
@@ -562,6 +617,7 @@ async def run(
                 job_id = (job.get("id") or job.get("job_id")) if isinstance(job, dict) else job
                 if job_id:
                     all_jobs.append(str(job_id))
+                    jobs_made += 1
 
         jobs = []
         for job_id in dict.fromkeys(all_jobs):
@@ -616,6 +672,28 @@ async def run(
 
     if not done:
         summary = "管理员循环到上限还没完全做完；已完成的部分在上面的汇报里。"
+
+    # 最后兜底：明明要成片、角色们却只出了方案（没人调工具），管理员自己起任务
+    if not all_jobs and _looks_like_video_request(cleaned):
+        try:
+            tool = await asyncio.to_thread(
+                _animation_tool, cleaned, notes, assets or [], conversation_id
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("管理员：兜底起渲染任务失败（已忽略）")
+            tool = {}
+        if tool.get("ok"):
+            new_jobs = [str(job) for job in tool.get("jobs") or []]
+            all_jobs.extend(new_jobs)
+            summary = (
+                summary + "\n（没有角色动手，我直接按你的需求起了渲染任务："
+                + "、".join(new_jobs) + "）"
+            ).strip()
+
+    if all_jobs:
+        note = _limits_note(cleaned)
+        if note and note not in summary:
+            summary = f"{summary}\n{note}".strip()
 
     if not summary:
         summary = "这轮没有产出可汇报的结果。"

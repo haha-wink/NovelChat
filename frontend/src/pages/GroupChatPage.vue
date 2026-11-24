@@ -283,6 +283,21 @@
                   ×
                 </button>
               </div>
+              <div class="task-meta">
+                <span
+                  class="task-stage"
+                  :class="{
+                    'is-done': job.stage === 'done',
+                    'is-failed': job.stage === 'failed' || job.stale,
+                  }"
+                >{{ stageLabel(job) }}</span>
+                <template v-if="job.stage !== 'done' && job.stage !== 'failed'">
+                  <span class="task-progress">
+                    <i :style="{ width: Math.max(2, Math.round((job.progress || 0) * 100)) + '%' }"></i>
+                  </span>
+                  <span class="task-percent">{{ Math.round((job.progress || 0) * 100) }}%</span>
+                </template>
+              </div>
               <p v-if="job.error" class="task-error">{{ job.error }}</p>
             </li>
           </ul>

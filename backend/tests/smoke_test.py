@@ -7142,6 +7142,13 @@ def admin_agent_checks() -> None:
         {"character_id": "c1", "name": "阿宁", "role": "导演"},
         {"character_id": "c2", "name": "老周", "role": "工程师"},
     ]
+    check("管理员：汇总会写明渲染器做不到的部分",
+          "剧情" in admin_agent._limits_note("女主 剧情 谐音梗") ,
+          admin_agent._limits_note("女主 剧情 谐音梗"))
+    check("管理员：普通场景需求不硬加说明",
+          admin_agent._limits_note("雨夜车站 月亮 伞") == "",
+          admin_agent._limits_note("雨夜车站 月亮 伞"))
+
     check("管理员：角色名对得回成员",
           admin_agent._strip_name("阿宁", members).get("character_id") == "c1")
     check("管理员：名单文本带名字", "阿宁" in admin_agent._roster(members))
@@ -7353,6 +7360,80 @@ def admin_agent_checks() -> None:
             finally:
                 admin_agent._llm = original_llm3
                 skills_mod.get = original_get
+            # 方案型任务（"给出配色方案"）不该被强制起任务
+            original_llm4 = admin_agent._llm
+            original_get = skills_mod.get
+            plan_calls = {"animation": 0}
+
+            class _FakeSkill4:
+                def run(self, payload):
+                    plan_calls["animation"] += 1
+
+                    class _R4:
+                        outputs = [{"ok": True, "job_id": "anim_plan"}]
+
+                    return _R4()
+
+            skills_mod.get = lambda name, *a, **k: (
+                _FakeSkill4() if name == "animation" else original_get(name, *a, **k)
+            )
+            admin_agent._llm = lambda *a, **k: (
+                '{"thought": "出方案", "action": "reply"}'
+            )
+            original_reply2 = admin_agent._role_reply
+            admin_agent._role_reply = lambda *a, **k: "配色建议：冷蓝灰。"
+            try:
+                res = asyncio.run(admin_agent._role_react(
+                    api_key="k", member={"id": "c2", "name": "芬格尔"},
+                    task="给出水墨风、雨夜站台的配色与画面质感方案，包括雨、伞、站台灯影",
+                    notes="", conversation_id=conv_id, assets=[],
+                ))
+            finally:
+                admin_agent._llm = original_llm4
+                admin_agent._role_reply = original_reply2
+                skills_mod.get = original_get
+            check("角色：方案型任务不会被强制起渲染任务",
+                  res.get("action") == "reply" and plan_calls["animation"] == 0,
+                  str(res)[:100])
+
+            # 一轮只起一个任务：第二个角色拿到 allow_tool=False
+            original_llm5 = admin_agent._llm
+            original_role5 = admin_agent._role_react
+            allow_flags: list[bool] = []
+
+            async def fake_role_limited(api_key, member, task, **kwargs):
+                allow_flags.append(bool(kwargs.get("allow_tool")))
+                jobs = ["anim_one"] if len(allow_flags) == 1 else []
+                return {"action": "animation" if jobs else "reply",
+                        "report": "已开渲" if jobs else "方案已给",
+                        "jobs": jobs}
+
+            def fake_plan_two(api_key, messages, json_mode=True, temperature=0.3):
+                prompt = messages[0]["content"]
+                if "判断整体目标" in prompt:
+                    return ('{"done": true, "thought": "ok", "summary": "已开渲 anim_one"}')
+                return ('{"goal": "做 MV", "thought": "派两个", "steps": ['
+                        '{"agent": "阿宁", "task": "做成 MV 渲染"},'
+                        '{"agent": "老周", "task": "给出配色方案"}]}')
+
+            admin_agent._llm = fake_plan_two
+            admin_agent._role_react = fake_role_limited
+            try:
+                out2 = asyncio.run(admin_agent_run(
+                    api_key="k", shelf_id="shelf-admin", conversation_id=conv_id,
+                    text="做成水墨风 MV：雨夜车站，伞，月亮，蓝色鱼影",
+                    members=members, emit=[].append, user_id="u1",
+                ))
+            finally:
+                admin_agent._llm = original_llm5
+                admin_agent._role_react = original_role5
+            check("管理员：一轮只有一个角色能起任务",
+                  allow_flags[:2] == [True, False], str(allow_flags))
+            latest = db.list_manager_memories("shelf-admin", kind="admin", limit=6)
+            payloads = [(row.get("payload") or {}).get("jobs") for row in latest]
+            check("管理员：同一需求不会起第二版", ["anim_one"] in payloads,
+                  str(payloads))
+
             check("角色：产出类任务即使想 reply 也强制调动画工具",
                   bool(forced) and "雨夜车站" in str(forced.get("text") or ""),
                   str(forced)[:120])
