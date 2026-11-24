@@ -85,6 +85,8 @@ class GroupState(TypedDict, total=False):
     conversation_id: str
     #: 本轮模式：chat / work
     mode: str
+    #: 本次请求的 DeepSeek Key（管理员 Agent 要用；聊天模式可为空）
+    api_key: str
     #: 本轮技能产出的素材块（群聊一轮跑一次，供所有发言人参考）
     skill_block: str
     #: 本轮命中的技能名
@@ -156,9 +158,38 @@ async def prepare_node(state: GroupState) -> dict:
         except Exception:  # noqa: BLE001 - 工作记忆写失败不能挡住群聊
             logger.exception("写工作记忆失败（已忽略）")
 
+    # 【管理员】工作模式先让管理员跑 ReAct：规划 → 派发 → 观察 → 再规划。
+    # 它接了这轮就不再跑单技能，否则同一句需求会起两份任务。
+    admin_claimed = False
+    admin_summary = ""
+    if mode == "work" and str(state.get("api_key") or ""):
+        try:
+            from agent import admin_agent
+
+            outcome = await admin_agent.run(
+                api_key=str(state.get("api_key") or ""),
+                shelf_id=shelf_id,
+                conversation_id=conversation_id,
+                text=text,
+                members=members,
+                emit=_emit,
+                user_id=state.get("user_id") or "",
+                assets=list(state.get("assets") or []),
+            )
+            admin_claimed = bool(outcome.get("claimed"))
+            admin_summary = str(outcome.get("summary") or "")
+            # 管理员调工具起的任务也要出卡片（前端轮询进度）
+            for job in outcome.get("jobs") or []:
+                if job.get("job_id"):
+                    _emit({"type": "skill_job", "skill": "animation", **job})
+        except Exception:  # noqa: BLE001 - 管理员失败要退回单技能
+            logger.exception("管理员 Agent 执行失败（已退回单技能）")
+
     # 【技能层】群聊一轮跑一次：命中技能后把素材放进 state，
     # 所有发言人共享（否则工作模式在群里等于没开）
-    skill_block, skill_name, skill_jobs = _run_skill(state, shelf_id, conversation_id)
+    skill_block, skill_name, skill_jobs = ("", "", [])
+    if not admin_claimed:
+        skill_block, skill_name, skill_jobs = _run_skill(state, shelf_id, conversation_id)
     for job in skill_jobs:
         _emit({"type": "skill_job", "skill": skill_name, **job})
         if mode == "work" and job.get("job_id"):
@@ -188,6 +219,19 @@ async def prepare_node(state: GroupState) -> dict:
         session_id=state.get("session_id") or "",
     )
     _emit({"type": "user", "text": text, "mentions": mentions})
+
+    # 管理员的最终汇总落一条 system turn：切走再回来还能看到「这轮干了什么」。
+    # 中间过程（思考/派发/观察）只在实时流里，不占历史。
+    if admin_summary:
+        db.add_chat_turn(
+            shelf_id=shelf_id,
+            conversation_id=conversation_id,
+            user_id=state.get("user_id") or "",
+            role="system",
+            speaker_name="管理员",
+            content=admin_summary,
+            session_id=state.get("session_id") or "",
+        )
 
     return {
         "members": members,
@@ -593,22 +637,24 @@ async def speak_node(state: GroupState) -> dict:
     if greeting and greeting not in reply:
         reply = f"{greeting}{reply}"
 
-    # 情绪推进：群里每个人的心情也被用户这句话影响（规则引擎，不发模型请求）
+    # 情绪推进：聊天模式才更新派生状态（情绪/好感）。
+    # 工作模式明确不做派生状态：那里的人只负责干活，心情不参与任务判断。
     mood_changed = False
-    try:
-        state_after = await asyncio.to_thread(
-            group_mod.affect.observe_user_message,
-            character=member,
-            user_id=state.get("user_id") or "",
-            text=state.get("text") or "",
-            session_id=state.get("session_id") or "",
-        )
-        mood_changed = bool(
-            state_after.get("previous_emotion")
-            and state_after["previous_emotion"] != state_after.get("emotion")
-        )
-    except Exception:  # noqa: BLE001 - 情绪失败不能影响发言
-        logger.exception("群聊情绪更新失败（已忽略）")
+    if str(state.get("mode") or "chat") != "work":
+        try:
+            state_after = await asyncio.to_thread(
+                group_mod.affect.observe_user_message,
+                character=member,
+                user_id=state.get("user_id") or "",
+                text=state.get("text") or "",
+                session_id=state.get("session_id") or "",
+            )
+            mood_changed = bool(
+                state_after.get("previous_emotion")
+                and state_after["previous_emotion"] != state_after.get("emotion")
+            )
+        except Exception:  # noqa: BLE001 - 情绪失败不能影响发言
+            logger.exception("群聊情绪更新失败（已忽略）")
 
     reply_mentions = group_mod.parse_mentions(reply, set(state.get("names") or []))
     await asyncio.to_thread(
@@ -625,6 +671,23 @@ async def speak_node(state: GroupState) -> dict:
         session_id=state.get("session_id") or "",
     )
     db.record_member_spoke(state.get("shelf_id") or "", speaker["character_id"])
+
+    # 工作模式：每个角色说话也记一条自己的工作记忆（管理员能读到，用来判断进度）
+    if str(state.get("mode") or "chat") == "work":
+        try:
+            from services.memory import working_memory
+
+            working_memory.remember(
+                str(state.get("conversation_id") or ""),
+                f"{speaker['name']}：{reply[:400]}",
+                shelf_id=state.get("shelf_id") or "",
+                user_id=state.get("user_id") or "",
+                kind="note",
+                mode="work",
+                agent_id=f"character:{speaker['character_id']}",
+            )
+        except Exception:  # noqa: BLE001 - 记笔记失败不能影响发言
+            logger.exception("写角色工作记忆失败（已忽略）")
 
     sticker = expression.maybe_sticker(
         {

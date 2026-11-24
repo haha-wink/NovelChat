@@ -154,6 +154,9 @@ def event_to_outbound(
         text = str(event.get("text") or "")
     elif kind in (KIND_SYSTEM, KIND_ERROR):
         text = str(event.get("text") or event.get("message") or "")
+    elif kind.startswith("admin_"):
+        # 管理员事件（思考/派发/观察/汇总）：文本要原样带到前端
+        text = str(event.get("text") or "")
 
     meta = {
         key: value

@@ -247,13 +247,14 @@ CREATE TABLE IF NOT EXISTS working_memory (
     shelf_id        TEXT NOT NULL DEFAULT '',
     user_id         TEXT NOT NULL DEFAULT '',
     mode            TEXT NOT NULL DEFAULT 'work',
-    kind            TEXT NOT NULL DEFAULT 'note',     -- user 要求 | job 任务 | note 笔记
+    agent_id        TEXT NOT NULL DEFAULT '',         -- 谁的工作记忆：admin | character:<id> | ''（用户/任务）
+    kind            TEXT NOT NULL DEFAULT 'note',     -- user 要求 | job 任务 | note 笔记 | plan 计划 | dispatch 派发 | report 汇报
     content         TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_wm_conv ON working_memory(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_wm_conv ON working_memory(conversation_id, agent_id, created_at);
 """
 
 #: 老库迁移时自动创建的书库 / 书架名称
@@ -462,6 +463,15 @@ def init_db() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conv_mode"
                 " ON conversations(shelf_id, user_id, mode, updated_at)"
+            )
+
+        # 工作记忆加 agent_id：管理员和每个角色各有自己的草稿本，互相可见但分栏
+        wm_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(working_memory)").fetchall()
+        }
+        if wm_columns and "agent_id" not in wm_columns:
+            conn.execute(
+                "ALTER TABLE working_memory ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''"
             )
 
         _ensure_default_shelf(conn)
@@ -2211,33 +2221,44 @@ def add_working_memory(
     user_id: str = "",
     mode: str = "work",
     kind: str = "note",
+    agent_id: str = "",
 ) -> Optional[dict]:
-    """记一条工作记忆。内容去重压平，单条最长 2000 字（不是长期记忆，别囤）。"""
+    """记一条工作记忆。内容去重压平，单条最长 2000 字（不是长期记忆，别囤）。
+
+    ``agent_id`` 区分谁写的：``admin`` 是管理员，``character:<id>`` 是某个角色。
+    同一对话里所有 agent 的笔记互相可见（管理员要拿来决策），但分栏存放。
+    """
     text = " ".join(str(content or "").split())[:2000]
     if not conversation_id or not text:
         return None
     mid = new_id("wm")
     now = _now()
+    owner = str(agent_id or "")[:64]
     with connect() as conn:
         conn.execute(
             "INSERT INTO working_memory"
-            " (id, conversation_id, shelf_id, user_id, mode, kind, content, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (mid, conversation_id, shelf_id, user_id, mode, kind, text, now, now),
+            " (id, conversation_id, shelf_id, user_id, mode, agent_id, kind, content, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mid, conversation_id, shelf_id, user_id, mode, owner, kind, text, now, now),
         )
     return {
-        "id": mid, "conversation_id": conversation_id, "kind": kind,
-        "content": text, "created_at": now, "updated_at": now,
+        "id": mid, "conversation_id": conversation_id, "agent_id": owner,
+        "kind": kind, "content": text, "created_at": now, "updated_at": now,
     }
 
 
-def list_working_memory(conversation_id: str, *, limit: int = 50) -> list[dict]:
+def list_working_memory(
+    conversation_id: str, *, limit: int = 50, agent_id: Optional[str] = None
+) -> list[dict]:
+    sql = "SELECT * FROM working_memory WHERE conversation_id = ?"
+    params: list[Any] = [conversation_id]
+    if agent_id is not None:
+        sql += " AND agent_id = ?"
+        params.append(str(agent_id))
+    sql += " ORDER BY created_at ASC LIMIT ?"
+    params.append(int(limit))
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM working_memory WHERE conversation_id = ?"
-            " ORDER BY created_at ASC LIMIT ?",
-            (conversation_id, int(limit)),
-        ).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -2255,16 +2276,26 @@ def delete_working_memory(memory_id: str) -> bool:
     return cursor.rowcount > 0
 
 
-def working_memory_text(conversation_id: str, *, limit: int = 40) -> str:
+def working_memory_text(
+    conversation_id: str, *, limit: int = 40, agent_id: Optional[str] = None
+) -> str:
     """把工作记忆拼成一段文本：给蒸馏用，也可给提示词当"这次任务的笔记"。"""
-    rows = list_working_memory(conversation_id, limit=limit)
+    rows = list_working_memory(conversation_id, limit=limit, agent_id=agent_id)
     if not rows:
         return ""
-    labels = {"user": "用户要求", "job": "任务", "note": "笔记"}
-    lines = [
-        f"- [{labels.get(str(row.get('kind') or ''), '记录')}] {row.get('content') or ''}"
-        for row in rows
-    ]
+    labels = {
+        "user": "用户要求", "job": "任务", "note": "笔记",
+        "plan": "计划", "dispatch": "派发", "report": "角色汇报",
+    }
+    lines = []
+    for row in rows:
+        label = labels.get(str(row.get("kind") or ""), "记录")
+        owner = str(row.get("agent_id") or "")
+        if owner == "admin":
+            label = f"管理员/{label}"
+        elif owner:
+            label = f"角色/{label}"
+        lines.append(f"- [{label}] {row.get('content') or ''}")
     return "\n".join(lines)[:4000]
 
 

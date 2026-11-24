@@ -51,7 +51,7 @@
           <div class="avatar">👥</div>
           <div>
             <h3>{{ group.shelfTitle || '群聊' }}</h3>
-            <p class="sub">{{ group.members.length }} 位成员 · 点成员看详情，@名字 让他必答</p>
+            <p class="sub">{{ group.members.length }}{{ mode === 'work' ? ' + 管理员' : '' }} 位成员 · 点成员看详情，@名字 让他必答</p>
           </div>
         </div>
         <div class="head-actions">
@@ -89,6 +89,18 @@
           >
             <template v-if="message.kind === 'system'">
               <div class="system-message">{{ message.content }}</div>
+            </template>
+            <template v-else-if="message.kind === 'admin'">
+              <div class="admin-message" :class="'admin-' + (message.role || 'thought')">
+                <span class="admin-avatar">🧭</span>
+                <div class="admin-body">
+                  <span class="admin-label">
+                    管理员<template v-if="message.agent"> → {{ message.agent }}</template>
+                  </span>
+                  <span v-if="message.role === 'dispatch'" class="admin-task">{{ message.content }}</span>
+                  <span v-else class="admin-text">{{ message.content }}</span>
+                </div>
+              </div>
             </template>
             <template v-else-if="message.kind === 'animation'">
               <div class="message-content">
@@ -237,47 +249,49 @@
           <span class="task-hint">新任务用这个；已有任务可单独重渲</span>
         </div>
 
-        <!-- 歌词 MV：直接上传歌词 + 配乐，不用在群里拼文本 -->
-        <details class="lyric-box">
-          <summary>做歌词 MV</summary>
-          <div class="lyric-body">
+        <!-- 任务卡：只留任务名称 + 画质；歌词/配乐收进「素材」里，不占地方 -->
+        <div class="task-start">
+          <input
+            v-model="lyricForm.prompt"
+            class="lyric-prompt"
+            placeholder="任务名称（一句话需求）"
+          />
+          <div class="task-start-row">
+            <select
+              class="task-quality-pick"
+              :value="taskPanel.quality"
+              @change="setTaskQuality($event.target.value)"
+            >
+              <option value="fast">720p 快速</option>
+              <option value="standard">1080p 标准</option>
+            </select>
+            <button class="ghost small" type="button" @click="lyricAttachOpen = !lyricAttachOpen">
+              {{ lyricAttachOpen ? '收起素材' : '＋素材' }}
+            </button>
+            <button class="primary small" :disabled="lyricForm.busy" @click="startLyricJob">
+              {{ lyricForm.busy ? '上传中…' : '开始渲染' }}
+            </button>
+          </div>
+          <div v-if="lyricAttachOpen" class="lyric-attach">
             <label class="lyric-file">
-              <span>歌词文件（.lrc 有时间轴 / .txt 均分）</span>
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,.lrc,.txt,.mp3,.wav,.m4a,.aac,.ogg,.flac"
-                @change="pickLyricsFile($event.target.files[0])"
-              />
+              <span>歌词（.lrc / .txt）</span>
+              <input type="file" accept=".lrc,.txt" @change="pickLyricsFile($event.target.files[0])" />
             </label>
-            <p v-if="lyricForm.lyricsName" class="lyric-note">
-              {{ lyricForm.lyricsName }} · {{ lyricForm.lyricsLines }} 行
-              {{ lyricForm.lyricsTimed ? '（带时间轴）' : '' }}
-            </p>
-
             <label class="lyric-file">
-              <span>配乐（可选，mp3 / wav / m4a）</span>
+              <span>配乐（mp3 / wav / m4a）</span>
               <input
                 type="file"
-                accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,.lrc,.txt,.mp3,.wav,.m4a,.aac,.ogg,.flac"
+                accept=".mp3,.wav,.m4a,.aac,.ogg,.flac"
                 @change="pickAudioFile($event.target.files[0])"
               />
             </label>
-            <p v-if="lyricForm.audioName" class="lyric-note">{{ lyricForm.audioName }}</p>
-
-            <input v-model="lyricForm.prompt" class="lyric-prompt" placeholder="一句话需求" />
-            <label class="lyric-file lyric-quality-row">
-              <span>画质：{{ taskPanel.quality === 'fast' ? '720p 快速' : '1080p 标准' }}（上面切换）</span>
-            </label>
-            <button
-              class="primary small"
-              :disabled="lyricForm.busy || !lyricForm.lyricsPath"
-              @click="startLyricJob"
-            >
-              {{ lyricForm.busy ? '上传中…' : '开始渲染' }}
-            </button>
-            <p v-if="lyricForm.message" class="lyric-note">{{ lyricForm.message }}</p>
           </div>
-        </details>
+          <p v-if="lyricForm.lyricsName" class="lyric-note">
+            {{ lyricForm.lyricsName }}<template v-if="lyricForm.lyricsTimed">（带时间轴）</template>
+          </p>
+          <p v-if="lyricForm.audioName" class="lyric-note">{{ lyricForm.audioName }}</p>
+          <p v-if="lyricForm.message" class="lyric-note">{{ lyricForm.message }}</p>
+        </div>
 
         <div class="task-actions">
           <button class="ghost small" :disabled="taskPanel.loading" @click="loadTasks">
@@ -316,49 +330,38 @@
           </p>
           <ul class="task-list">
             <li v-for="job in bucket.jobs" :key="job.id" class="task-item">
-              <div class="task-title">{{ job.prompt || '（没有描述）' }}</div>
-              <div class="task-meta">
-                <span class="task-stage" :class="'stage-' + (job.stale ? 'stale' : job.stage)">
-                  {{ stageLabel(job) }}
-                </span>
-                <span class="task-quality-tag">{{ job.quality === 'fast' ? '720p' : '1080p' }}</span>
-                <span class="task-time">{{ formatTime(job.created_at) }}</span>
-              </div>
-              <p v-if="job.error" class="task-error">{{ job.error }}</p>
-              <div class="task-buttons">
+              <div class="task-row">
                 <a
                   v-if="job.video"
-                  class="ghost small"
+                  class="task-title"
                   :href="`/api/animation/${job.id}/video`"
                   target="_blank"
                   rel="noreferrer"
-                >
-                  看
-                </a>
-                <a
-                  v-if="job.video"
-                  class="ghost small"
-                  :href="`/api/animation/${job.id}/video?download=1`"
-                >
-                  下载
-                </a>
-                <button
-                  v-if="job.stage === 'done' || job.stage === 'failed'"
-                  class="ghost small"
+                  :title="job.prompt || ''"
+                >{{ job.prompt || '（没有描述）' }}</a>
+                <span v-else class="task-title" :title="job.prompt || ''">
+                  {{ job.prompt || '（没有描述）' }}
+                </span>
+                <select
+                  class="task-quality-pick"
+                  :value="job.quality === 'standard' ? 'standard' : 'fast'"
                   :disabled="taskPanel.busy === job.id"
-                  :title="`按 ${job.quality === 'fast' ? '1080p' : '720p'} 重新渲染（项目、歌词、风格不变）`"
-                  @click="rerenderTask(job.id, job.quality === 'fast' ? 'standard' : 'fast')"
+                  title="换画质会按新画质重渲（项目内容不变）"
+                  @change="rerenderTask(job.id, $event.target.value)"
                 >
-                  重渲 {{ job.quality === 'fast' ? '1080p' : '720p' }}
-                </button>
+                  <option value="fast">720p</option>
+                  <option value="standard">1080p</option>
+                </select>
                 <button
-                  class="ghost small danger"
+                  class="task-del"
                   :disabled="taskPanel.busy === job.id"
+                  title="删除这个任务和成片"
                   @click="deleteTask(job.id)"
                 >
-                  删除
+                  ×
                 </button>
               </div>
+              <p v-if="job.error" class="task-error">{{ job.error }}</p>
             </li>
           </ul>
           <p v-if="bucket.key === 'failed'" class="task-hint">
@@ -370,7 +373,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import AnimationCard from '../components/AnimationCard.vue'
 import { useApp } from '../stores/app.js'
@@ -563,6 +566,9 @@ const taskBuckets = computed(() => {
     { key: 'failed', label: '失败', jobs: failed }
   ].filter((bucket) => bucket.jobs.length)
 })
+
+//: 「＋素材」展开状态（默认收起，任务卡只露名称 + 画质）
+const lyricAttachOpen = ref(false)
 
 onMounted(() => {
   restoreSidebarWidth()

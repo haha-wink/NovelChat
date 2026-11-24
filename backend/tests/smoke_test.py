@@ -7123,6 +7123,140 @@ async def group_chat_sse_checks() -> None:
         dbmod.delete_shelf(shelf["id"])
 
 
+
+def admin_agent_checks() -> None:
+    """工作模式的管理员：ReAct 循环、工作记忆分栏、长期记忆、技能互斥。"""
+    import tempfile
+    import types
+
+    from agent import admin_agent, group_graph
+    from core import database as db
+    from core.config import get_settings
+
+    # JSON 解析：模型喜欢包 ```json
+    parsed = admin_agent._json('```json\n{"thought": "x", "steps": []}\n```')
+    check("管理员：能解析带围栏的 JSON", parsed.get("thought") == "x", str(parsed)[:60])
+    check("管理员：坏 JSON 返回空", admin_agent._json("不是 json") == {})
+
+    members = [
+        {"character_id": "c1", "name": "阿宁", "role": "导演"},
+        {"character_id": "c2", "name": "老周", "role": "工程师"},
+    ]
+    check("管理员：角色名对得回成员",
+          admin_agent._strip_name("阿宁", members).get("character_id") == "c1")
+    check("管理员：名单文本带名字", "阿宁" in admin_agent._roster(members))
+
+    settings = get_settings()
+    old_dir = settings.data_dir
+    settings.data_dir = tempfile.mkdtemp(prefix="smoke-admin-")
+    try:
+        db.init_db()
+        conversation = db.create_conversation("shelf-admin", "u1", mode="work")
+        conv_id = conversation["id"]
+
+        calls = {"plan": 0}
+        events: list[dict] = []
+
+        def fake_llm(api_key, messages, json_mode=True, temperature=0.3):
+            prompt = messages[0]["content"]
+            if "拆解目标" in prompt:
+                calls["plan"] += 1
+                return json.dumps({
+                    "thought": "让阿宁先做",
+                    "goal": "做一段 MV",
+                    "steps": [{"agent": "阿宁", "task": "做一段水彩 MV"}],
+                    "done": False,
+                }, ensure_ascii=False)
+            if "判断整体目标" in prompt:
+                return json.dumps({
+                    "done": True, "thought": "做完了",
+                    "summary": "阿宁已经开渲任务。", "next": [],
+                }, ensure_ascii=False)
+            return "{}"
+
+        original_llm = admin_agent._llm
+        original_role = admin_agent._role_reply
+        admin_agent._llm = fake_llm
+        admin_agent._role_reply = lambda *a, **k: "我做了水彩场景，已开渲 1 个任务。"
+        try:
+            outcome = asyncio.run(admin_agent.run(
+                api_key="k", shelf_id="shelf-admin", conversation_id=conv_id,
+                text="帮我做个水彩 MV，雨夜车站", members=members,
+                emit=events.append, user_id="u1",
+            ))
+        finally:
+            admin_agent._llm = original_llm
+            admin_agent._role_reply = original_role
+
+        check("管理员：接下了这轮", outcome.get("claimed") is True, str(outcome))
+        kinds = [item["type"] for item in events]
+        check("管理员：事件顺序是 思考→派发→观察→汇总",
+              kinds == ["admin_thought", "admin_dispatch",
+                        "admin_observation", "admin_done"], str(kinds))
+
+        rows = db.list_working_memory(conv_id)
+        owners = {(row.get("agent_id"), row.get("kind")) for row in rows}
+        check("管理员：自己的工作记忆分栏（admin/plan+dispatch）",
+              ("admin", "plan") in owners and ("admin", "dispatch") in owners,
+              str(owners))
+        check("管理员：角色汇报记在角色分栏",
+              any(str(owner).startswith("character:") for owner, _ in owners),
+              str(owners))
+
+        shared = db.working_memory_text(conv_id)
+        check("管理员：能看到角色的工作记忆", "角色汇报" in shared, shared[:60])
+        own = db.working_memory_text(conv_id, agent_id="admin")
+        check("管理员窗口只取自己的笔记", "角色汇报" not in own, own[:60])
+
+        long_term = db.list_manager_memories("shelf-admin", kind="admin")
+        check("管理员：长期记忆按书架落库", bool(long_term), str(long_term)[:60])
+
+        # 技能互斥：管理员接了就不要再跑单技能，避免同一句起两份任务
+        from langgraph.config import get_stream_writer
+
+        original_emit = group_graph._emit
+        original_run_skill = group_graph._run_skill
+        called = {"skill": 0, "admin": 0}
+
+        async def fake_admin(**kwargs):
+            called["admin"] += 1
+            return {"claimed": True, "summary": "ok"}
+
+        def fake_skill(*args, **kwargs):
+            called["skill"] += 1
+            return "block", "animation", []
+
+        group_graph._emit = lambda payload: None
+        group_graph._run_skill = fake_skill
+        admin_agent_run = admin_agent.run
+        admin_agent.run = fake_admin
+        try:
+            state = {
+                "shelf_id": "shelf-admin", "text": "帮我做个水彩 MV",
+                "members": members, "conversation_id": conv_id,
+                "mode": "work", "api_key": "k", "user_id": "u1",
+            }
+            asyncio.run(group_graph.prepare_node(state))
+            check("管理员：工作模式下管理员先跑", called["admin"] == 1, str(called))
+            check("管理员：管理员接了就不再跑单技能", called["skill"] == 0, str(called))
+
+            called.update({"skill": 0, "admin": 0})
+            asyncio.run(group_graph.prepare_node({**state, "api_key": ""}))
+            check("管理员：没有 Key 时退回单技能",
+                  called["admin"] == 0 and called["skill"] == 1, str(called))
+
+            called.update({"skill": 0, "admin": 0})
+            asyncio.run(group_graph.prepare_node({**state, "mode": "chat"}))
+            check("管理员：聊天模式不跑管理员",
+                  called["admin"] == 0 and called["skill"] == 1, str(called))
+        finally:
+            group_graph._emit = original_emit
+            group_graph._run_skill = original_run_skill
+            admin_agent.run = admin_agent_run
+    finally:
+        settings.data_dir = old_dir
+
+
 def main() -> int:
     # 检查项里会打印表情（贴纸、情绪），Windows 控制台默认 GBK 会直接崩
     try:
@@ -7190,6 +7324,7 @@ def main() -> int:
     skill_validate_checks()
     skill_package_checks()
     mode_checks()
+    admin_agent_checks()
     animation_checks()
     conversation_checks()
     clear_conversation_checks()

@@ -130,7 +130,8 @@ class Settings(BaseSettings):
 
     # ---------- Agent / 记忆 ----------
     agent_cache_size: int = 8
-    history_runs: int = 8
+    #: Agno 会话记忆保留最近多少轮（聊天/工作共用；20 轮 ≈ 40 条消息）
+    history_runs: int = 20
 
     # ---------- 聊天 ----------
     max_prompt_chars: int = 8000

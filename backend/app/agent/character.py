@@ -46,7 +46,12 @@ logger = logging.getLogger(__name__)
 
 
 def attach_state(
-    agent: Agent, character: dict, user_id: str, *, user_text: str = ""
+    agent: Agent,
+    character: dict,
+    user_id: str,
+    *,
+    user_text: str = "",
+    include_affect: bool = True,
 ) -> Tuple[Agent, dict]:
     """把本轮情绪状态 + RAG 检索到的相关记忆挂到 Agent 的**副本**上。
 
@@ -54,10 +59,13 @@ def attach_state(
 
     ``user_text`` 是用户这一句原话：有它才做记忆检索（按"场景 + 语义"捞相关片段）。
     检索失败返回空串，不影响回复。
+
+    ``include_affect=False``（工作模式）只挂 RAG 长期记忆，不带情绪/好感——
+    工作模式里角色只负责干活，派生状态不参与任务判断。
     """
-    state = affect.load_state(character, user_id)
+    state = affect.load_state(character, user_id) if include_affect else {}
     per_run = copy.copy(agent)
-    context = affect.prompt_block(state)
+    context = affect.prompt_block(state) if include_affect else ""
 
     if user_text:
         try:

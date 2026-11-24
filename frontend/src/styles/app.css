@@ -1303,3 +1303,122 @@ body.resizing-task {
   background: rgba(180, 69, 60, 0.14);
   color: #b4453c;
 }
+
+/* ---- 任务卡精简版：名称 + 画质，素材收进「＋素材」 ---- */
+.task-start {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-start .lyric-prompt {
+  margin: 0;
+}
+
+.task-start-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-start-row .primary {
+  margin-left: auto;
+}
+
+.lyric-attach {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-row .task-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: none;
+  color: inherit;
+}
+
+.task-quality-pick {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 6px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.12));
+  background: transparent;
+  color: var(--text-soft, #4b5563);
+}
+
+.task-del {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-soft, #6b7280);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.task-item:hover .task-del {
+  opacity: 1;
+}
+
+/* ---- 管理员 Agent 的消息（工作模式） ---- */
+.admin-message {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(90, 120, 200, 0.07);
+  border: 1px dashed rgba(90, 120, 200, 0.3);
+  font-size: 12px;
+  color: var(--text-soft, #4b5563);
+}
+
+.admin-avatar {
+  flex: 0 0 auto;
+}
+
+.admin-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.admin-label {
+  font-weight: 600;
+  color: var(--accent, #4a6fd4);
+}
+
+.admin-text,
+.admin-task {
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.admin-done {
+  background: rgba(47, 143, 91, 0.09);
+  border-color: rgba(47, 143, 91, 0.35);
+}
+
+.admin-done .admin-label {
+  color: #2f8f5b;
+}

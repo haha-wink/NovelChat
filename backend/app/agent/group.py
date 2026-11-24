@@ -364,6 +364,7 @@ async def run_turn(
     conversation_id: str = "",
     mode: str = "chat",
     assets: Optional[list] = None,
+    api_key: str = "",
 ) -> AsyncIterator[dict]:
     """跑完一整个回合，逐条产出事件。
 
@@ -408,6 +409,8 @@ async def run_turn(
         "conversation_id": conversation_id,
         "mode": mode,
         "assets": list(assets or []),
+        # 工作模式的管理员 Agent 要用
+        "api_key": api_key,
     }
 
     async for event in group_graph.get_group_graph().astream(

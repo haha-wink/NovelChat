@@ -42,8 +42,12 @@ def remember(
     user_id: str = "",
     kind: str = "note",
     mode: str = "work",
+    agent_id: str = "",
 ) -> Optional[dict]:
-    """记一条工作记忆。聊天模式直接不写（返回 None）。"""
+    """记一条工作记忆。聊天模式直接不写（返回 None）。
+
+    ``agent_id`` 用来分栏：``admin`` 是管理员，``character:<id>`` 是某个角色，
+    空字符串是用户要求 / 任务这类公共笔记。"""
     if str(mode or "").strip().lower() != "work":
         return None
     if not conversation_id:
@@ -58,6 +62,7 @@ def remember(
         user_id=user_id,
         mode="work",
         kind=kind,
+        agent_id=agent_id,
     )
     if created:
         _prune(conversation_id)
@@ -76,13 +81,20 @@ def _prune(conversation_id: str) -> None:
         logger.exception("工作记忆修剪失败（已忽略）")
 
 
-def items(conversation_id: str, *, limit: int = 50) -> list[dict]:
-    return db.list_working_memory(conversation_id, limit=limit)
+def items(conversation_id: str, *, limit: int = 50, agent_id: Optional[str] = None) -> list[dict]:
+    return db.list_working_memory(conversation_id, limit=limit, agent_id=agent_id)
 
 
-def digest(conversation_id: str, *, limit: int = 40) -> str:
+def digest(
+    conversation_id: str, *, limit: int = 40, agent_id: Optional[str] = None
+) -> str:
     """拼成一段文本：清空对话/蒸馏时并入长期记忆。"""
-    return db.working_memory_text(conversation_id, limit=limit)
+    return db.working_memory_text(conversation_id, limit=limit, agent_id=agent_id)
+
+
+def admin_digest(conversation_id: str, *, limit: int = 30) -> str:
+    """管理员视角：本轮计划 + 各角色汇报 + 任务，拼给管理员决策用。"""
+    return db.working_memory_text(conversation_id, limit=limit, agent_id="admin")
 
 
 def clear(conversation_id: str) -> int:

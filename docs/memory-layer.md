@@ -1,273 +1,196 @@
-# 记忆层梳理（2026-11-23 版）
+# 记忆层：怎么分、放在哪、什么时候会糊涂
 
-> 一句话结论：记忆分 **6 层**；真正走 RAG 的只有「角色长期记忆」一层；
-> 工作记忆按对话隔离、只在工作模式写；上下文和记忆都有硬预算，避免注意力被稀释。
+一句话：**只有「长期记忆」走向量检索（RAG）；工作记忆和短期流水都是按对话直读的。**
+记忆不是一坨，而是按「谁在用、用在什么场景」分层的。
 
-## 1. 记忆怎么分层
+## 0. 三种场景
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ ① 工作记忆  working_memory            work 模式 · 按对话隔离     │
-│    “这次任务的约束 / 进度 / 试过的方案”，草稿纸；不进 RAG        │
-│    清空对话时并入长期记忆，然后清空                              │
-├──────────────────────────────────────────────────────────────────┤
-│ ② 短期流水  chat_turns                7 天窗口 · 原文保留        │
-│    用户重进群聊看到的聊天记录；清空对话时蒸馏                     │
-├──────────────────────────────────────────────────────────────────┤
-│ ③ 长期记忆  character_memory_items    RAG 检索层（跨对话）       │
-│    kind=excerpt 原著片段 / summary 跨书摘要 / fact 对话蒸馏      │
-│    + memory_chunks 220 字块级向量（bge-small-zh，512 维）        │
-├──────────────────────────────────────────────────────────────────┤
-│ ④ 会话记忆  agent_memory.db           Agno MemoryManager        │
-│    按 user_id / session_id 的“最近几轮说过什么”（非 RAG）        │
-├──────────────────────────────────────────────────────────────────┤
-│ ⑤ 管理经验  manager_memories          书架级：谁和谁是同一个人   │
-├──────────────────────────────────────────────────────────────────┤
-│ ⑥ 派生状态  character_affect / group_member_state                │
-│    情绪、好感度、在线状态——不是记忆，但决定“怎么说话”            │
-└──────────────────────────────────────────────────────────────────┘
-```
+| 场景 | 成员 | 记忆层数 | 有哪些层 |
+|---|---|---|---|
+| 书架级 | 书架 / 管理员这个层级本身 | 1 层 | 管理经验（`manager_memories`） |
+| 聊天模式 | 所有角色 Agent | 3 层 | 初始记忆 + 长期记忆 + 短期记忆（含派生状态） |
+| 工作模式 | 所有角色 Agent + 管理员 Agent | 4 层 | 初始记忆 + 长期记忆 + 短期记忆（只有在线状态）+ 工作记忆 |
 
-### ① 工作记忆（2026-11-23 新增）
+> 「派生状态」指情绪、好感度这类从对话里算出来、不是原文的记忆。聊天模式有，
+> 工作模式只有「在线 / 离线」——干活的人不需要心情参与任务判断。
 
-- 表：`working_memory`（`conversation_id` / `shelf_id` / `user_id` / `mode` / `kind` / `content`）
-- 写入：群聊 `agent/group_graph.py` 的 `prepare_node`，**只在 mode=work 时**写：
-  用户每句话记 `kind=user`；技能起任务记 `kind=job`（任务 id + 需求）。
-- 隔离：按 `conversation_id`。`conversations.mode` 区分聊天/工作窗口，
-  切模式时前端切到该模式自己的对话，消息、任务栏、工作记忆都不串。
-- **不进 RAG**：任务笔记（720p / 副歌 / 赛博朋克）不该在下次闲聊时被当往事捞出来。
-- 收拾：`chat_memory.clear_conversation` 蒸馏时把工作记忆拼进摘要，然后清空；
-  单对话超过 60 条自动丢最老的（`services/memory/working_memory.py: MAX_ITEMS`）。
+## 1. 分层总表
 
-### ② 短期流水 `chat_turns`
+| 层 | 存哪 | 谁用 | 活多久 | 走 RAG？ |
+|---|---|---|---|---|
+| 初始记忆 | `character_memory_items`（`kind=excerpt/summary`，导入书时蒸馏） | 角色 | 角色在，记忆在 | ✅（和长期记忆同一套检索） |
+| 长期记忆 | `character_memory_items` + `memory_chunks` | 角色 | 跨对话、跨清空 | ✅ |
+| 短期流水 | `chat_turns`（原文，7 天后蒸馏） | 角色 / 管理员 | 7 天（`chat_retention_days`） | ❌ |
+| Agno 会话记忆 | `agent_memory.db`（最近 20 轮） | 角色 | 跟随会话 | ❌ |
+| 派生状态 | `character_states`（情绪/好感）+ 在线字段 | 角色（仅聊天模式） | 实时，逐轮回落 | ❌ |
+| 工作记忆 | `working_memory`（按 `conversation_id` + `agent_id`） | 工作模式全体 | 当前对话 | ❌ |
+| 管理经验 | `manager_memories`（按 `shelf_id`） | 管理员 | 书架在就在 | ❌ |
 
-- 字段：`conversation_id` / `role` / `content` / `intent` / `emotion` / `distilled`。
-- 保留：默认 7 天（`CHAT_RETENTION_DAYS`）。蒸馏只打 `distilled=1`，**不删原文**——
-  同一张表也是用户看到的聊天记录，删了重进群聊会一片空白。
-- 触发：默认**不再按条数自动蒸馏**（`chat_distill_threshold=0`），
-  改为用户「清空对话」时蒸馏（`services/memory/chat_memory.py: clear_conversation`）。
+## 2. 三个场景细说
 
-### ③ 长期记忆（RAG 层）
+### 2.1 书架级：只有管理经验
 
-- `character_memory_items`
-  - `kind=excerpt`：小说原文片段（带 `source_book_id`，删书能精确回收）
-  - `kind=summary`：跨书摘要（≤1200 字，派生视图，原文不删）
-  - `kind=fact`：对话蒸馏出的用户画像 / 事实（`scene=对话`）
-- `memory_chunks`：一条长记忆按 220 字（40 字重叠）切块，每块 512 维向量，
-  写入时算好；检索时只编码用户这一句（实测 10~25ms）。
-- 检索：`services/memory/rag.py`，混合分：
-  `0.65 × 余弦 + 0.35 × BM25`，场景一致 ×1.30 / 不一致 ×0.85，摘要 ×1.05，
-  低于 0.18 丢弃，默认 top_k=4；向量后端不可用自动降级纯 BM25。
+书架这一层没有「人」的记忆，只有管理员攒下来的经验：谁和谁是同一个人（`same_person`）、
+这个书架做过什么任务（`admin`）。它按 `shelf_id` 存，不参与角色 RAG。
 
-### ④ Agno 会话记忆
+**为什么单独一层**：管理经验是「书架的事实」，不是「角色的回忆」。混进角色记忆会被
+角色当成自己的往事说出来。
 
-- `agent/manager.py`：每个角色一个 Agent，`SqliteDb(agent_memory.db)` + `MemoryManager`，
-  `add_history_to_context=True`、`num_history_runs=8`、`enable_agentic_memory=True`。
-- 是「最近几轮」的短期上下文，按 user/session 隔离；和 ③ 的区别：
-  ③ 是“很久以前的事”，④ 是“刚才说的”。
-
-### ⑤ 管理经验 `manager_memories`
-
-- 书架级：`same_person`（确认同一人，下次直接合并）/ `different_person`（不再问）。
-- 只服务合并与书架 UI，不进对话提示词。
-
-### ⑥ 派生状态
-
-- `character_affect`：情绪 + 好感度（快/慢变量）；
-- `group_member_state`：谁在线、谁刚说过话。
-- 这两张表不参与“回忆”，但每轮进提示词（决定语气和发言资格）。
-
-## 2. 文件结构树（记忆层在哪）
+### 2.2 聊天模式：3 层
 
 ```
-E:\NovelChat\
-├─ backend\
-│  ├─ app\
-│  │  ├─ core\
-│  │  │  ├─ database.py          # 全部表结构 + 老库迁移 + 工作记忆/对话 CRUD
-│  │  │  ├─ config.py            # RAG_TOP_K / EXCERPT_CHUNKS / CHAT_RETENTION_DAYS…
-│  │  │  └─ paths.py             # DATA_DIR = backend/data
-│  │  ├─ services\memory\
-│  │  │  ├─ agent_memory.py      # 长期记忆条目：写入/回收/摘要
-│  │  │  ├─ chat_memory.py       # 流水 → 长期记忆（蒸馏 / 清空）
-│  │  │  ├─ rag.py               # 向量 + BM25 混合检索（RAG 本体）
-│  │  │  ├─ summarizer.py        # 两个摘要提示词（用户画像 / 角色简介）
-│  │  │  └─ working_memory.py    # 工作记忆（work 模式、按对话）
-│  │  ├─ agent\
-│  │  │  ├─ manager.py           # Agno Agent + agent_memory.db（会话记忆）
-│  │  │  ├─ graph.py             # 单聊：recall 节点 / 持久化
-│  │  │  ├─ group_graph.py       # 群聊：工作记忆写入 / 技能任务
-│  │  │  └─ character.py         # 把相关记忆挂到 Agent.additional_context
-│  │  └─ api\v1\endpoints\
-│  │     ├─ knowledge.py         # RAG 状态/重建索引/检索预览/蒸馏/清洗
-│  │     ├─ characters.py        # 角色记忆列表
-│  │     └─ shelves.py           # 清空对话（distill/purge）、对话 mode
-│  └─ data\
-│     ├─ workspace\
-│     │  ├─ app.db               # 业务库：记忆条目/块向量/流水/对话/工作记忆
-│     │  ├─ agent_memory.db      # Agno 会话记忆
-│     │  └─ graph_checkpoints.db # LangGraph 断点
-│     ├─ models\
-│     │  ├─ bge-small-zh-v1.5\   # RAG 向量模型（512 维）
-│     │  └─ erlangshen-sentiment\
-│     └─ animation\              # 动画任务（按对话归属）
-└─ frontend\src\stores\app.js    # 对话 mode / 任务栏按对话
+初始记忆  角色从小说里蒸馏出来的身份/关系/关键剧情（导入书时写入）
+长期记忆  fact / summary / dialogue，RAG 按场景+语义检索 top 4
+短期记忆  ┌ 流水：chat_turns 原文，7 天后蒸馏成长期记忆
+          ├ Agno：最近 20 轮对话（跨进程存在 agent_memory.db）
+          └ 派生状态：情绪 valence/arousal、好感度、在线
 ```
 
-## 3. 写路径（5 条）
+读取顺序：角色档案（`build_character_prompt`，含初始记忆 top-k）→ RAG 召回（长期）
+→ Agno 20 轮 → 当轮情绪块（`attach_state`）。工作记忆**不读**。
 
-### ① 加书进书架 → 原著片段
-
-```
-services/catalog/shelf.py  agent_memory.remember(...)
-        ↓
-services/memory/agent_memory.py: remember(kind="excerpt", scene=...)
-        ↓
-rag.index_character(...)  →  memory_chunks（220 字 / 512 维）
-```
-
-### ② 清空对话 → 对话记忆（fact）
-
-见第 5 节。要点：一次摘要、写给所有说过话的角色、立即建索引、删流水。
-
-### ③ 角色合并 / 重建摘要 → summary
-
-合并逻辑调 `agent_memory.summarize(character_id)`，
-用 `SUMMARY_SYSTEM_PROMPT`（角色简介）压成一段，`kind="summary"`。
-**原文条目一条不删**：摘要只是派生视图，删书时按来源回收再重建。
-
-### ④ 同人识别 → manager_memories
-
-确认「是/不是同一个人」写进书架级经验，下次不再重复问。
-
-### ⑤ Agno 自带记忆
-
-`enable_agentic_memory` 需要模型主动调工具写，实际很少发生（历史快照全库仅 5 行）。
-它和自建记忆并行、互不同步，属于已知冗余。
-
-## 4. 读路径
-
-### ④ 静态注入（每轮相同）
-
-`agent/manager.py: build_instructions`：
-`agent_memory.top(character_id, limit=excerpt_chunks=3)` + `agent_memory.summary()`，
-进 system prompt。注意：这 3 条 + 1 条摘要和用户当前这句话无关。
-
-### ⑤ 按需检索（每轮不同）→ 这是唯一的 RAG
-
-`agent/graph.py` recall 节点：`rag.recall_block(character_id, text, top_k=rag_top_k=4)`；
-意图判官认为“在唤起记忆”时 top_k 翻倍（8）。命中块格式：
-`【与你这句话相关的记忆】- （场景）片段`。
-
-### ②③⑥ 其余读取
-
-- 群聊历史：`chat_turns` 按 `conversation_id` + 时间倒序（不是 RAG）；
-- 工作记忆：当前对话直接读（不检索）；
-- 会话记忆：Agno 最近 8 轮 history（不是 RAG）；
-- 管理经验：按 `shelf_id + kind` 精确查，只给 UI/合并用。
-
-所以：**只有长期角色记忆走 RAG**，其余都是结构化精确读取。
-
-## 5. 清空对话的两条路径
+### 2.3 工作模式：4 层
 
 ```
-用户点「清空对话」
-   ├─ mode=distill（默认）
-   │    流水 + 工作记忆 → 摘要（1 次 LLM）→ 写给每个发言角色的 fact
-   │      → 重建向量索引 → 删流水 → 清工作记忆
-   │    结果：界面干净，角色记得你
-   │
-   └─ 「清空对话和记忆」 mode=purge
-        流水 → 直接删
-             → 删这些角色身上这段对话的 fact
-             → 重建索引 → 清工作记忆
-        结果：彻底重来，角色忘记这段时间
+初始记忆  同上（角色还是那个角色）
+长期记忆  同上（RAG 照走，干活前先回忆相关经历）
+短期记忆  流水 + Agno 20 轮 + 只保留在线状态（无情绪/好感）
+工作记忆  当前对话的任务约束、管理员计划、派发、角色汇报
 ```
 
-- **为什么只调一次模型**：群聊可能 4 个人说话，每人一次摘要就是 4 倍成本；
-  现在一段摘要写给 N 个角色。
-- **为什么 purge 只删 fact**：`excerpt` 和 `summary` 不是这段对话产生的，
-  删掉角色连原著设定都忘了。
+关键差异：
 
-## 6. 两个摘要提示词，别用混
+* **不做派生状态**：群聊里跳过 `affect.observe_user_message`；单聊/群聊的
+  `attach_state(include_affect=False)` 只挂 RAG，不挂情绪/好感。
+* **工作记忆按 agent 分栏**：`agent_id=''` 是用户要求和任务、`admin` 是管理员、
+  `character:<id>` 是某个角色。同一对话里**管理员能读所有人的**（决策、校验、防冲突），
+  角色只读自己那栏 + 管理员计划。
 
-| 提示词 | 用途 | 输出长什么样 |
+### 2.4 管理员 Agent 的记忆（工作模式专属）
+
+管理员不是书架成员（不写 `characters`/`shelf_members`），所以**没有初始记忆**：
+
+| 层 | 内容 | 位置 |
 |---|---|---|
-| `SUMMARY_SYSTEM_PROMPT` | 角色简介（加书/合并时） | 「陈雯雯是路明非高中时暗恋的女孩…」 |
-| `MEMORY_SYSTEM_PROMPT` | 对话蒸馏（清空对话时） | 「· 用户最近分手，情绪低落」 |
+| 长期记忆 | 以前在这个书架做完的任务摘要（`kind='admin'`，单条 ≤400 字） | `manager_memories` |
+| 短期上下文 | 本次 ReAct 循环里各角色的汇报 + 用户这句话 | 请求内 + `working_memory` |
+| 工作记忆 | 目标 / 计划 / 派发 / 观察（`kind=plan/dispatch/report`） | `working_memory`，`agent_id='admin'` |
 
-**踩过的坑**：对话蒸馏复用角色简介 prompt，会写成
-「陈雯雯在对方分手难受时劝其先吃东西…」——把对话复述一遍，对“了解用户”没用。
-换用户画像 prompt 后输出：`· 用户最近分手，情绪低落 / · 用户最怕晚上一个人待着`。
-
-## 7. 数据快照（2026-11-14，仅作历史参考）
-
-| 项 | 数值 | 说明 |
-|---|---|---|
-| `character_memory_items` | 260 | excerpt 234 / summary 25 / **fact 1** |
-| `memory_chunks` | 1733 | 61 个角色有向量，人均 28 片 |
-| `chat_turns` | 68 | 已蒸馏 0（当时阈值 40 从未触发） |
-| `manager_memories` | 732 | 全部 `same_person` |
-| `agno_memories` | 5 | 对比 88 会话 / 165 运行 |
-
-场景分布极偏：战斗 221 / 260。抽取提示词偏爱戏剧性片段，是已知偏差。
-
-## 8. 已知问题（截至 2026-11-23）
-
-1. `fact` 类记忆仍然少：蒸馏只在用户主动清空对话时发生；
-2. 原著片段场景 85% 是「战斗」，`SCENE_BOOST` 在闲聊时区分度低；
-3. Agno agentic memory 几乎不写入，和自建层并行冗余；
-4. 没有“事实冲突检测”：模型蒸馏错一次，这条就错着进 RAG；
-5. `chat_memory.cleanup_window` 定义了但没有调用点（死代码）；
-6. 长期记忆条数没有全局上限，cold memory 可能永远排不进 top_k。
-
-## 9. RAG、幻觉与注意力
-
-### 走不走 RAG
-
-| 记忆 | 调取方式 | 走 RAG？ |
-|---|---|---|
-| 工作记忆 | 当前对话直接读 | ❌ |
-| 聊天历史 | conversation_id + 时间倒序 | ❌ |
-| 长期记忆 | 向量 0.65 + BM25 0.35 + 场景加权 | ✅ |
-| 会话记忆 | Agno 最近 8 轮 | ❌ |
-| 管理经验 | shelf_id + kind 精确查 | ❌ |
-
-### 记忆太长 / 上下文过长，会不会幻觉
-
-**会，但被几道闸门压住：**
-
-1. **检索进错记忆**：top_k=4、min_score=0.18、场景加权、块级向量；
-   宁可不带记忆，也不塞不相关片段。
-2. **摘要滚雪球**：摘要只做派生视图，原文保留；删书按来源回收后重建；
-   摘要封顶 1200 字。
-3. **长上下文稀释**：提示词有硬预算——excerpt 3 条、说话样本 700 字、
-   摘要 1200 字、RAG 4 条、Agno 8 轮、蒸馏输入 6000 字。
-4. **跨角色串味**：记忆按 `character_id` 存；合并时并过去；删书精确回收。
-5. **模型编造**：RAG 块是原文/蒸馏原文，提示词要求“自然融入，不要照念”；
-   回复再过 `verify`（安全兜底/去说教）。
-
-**仍存在的风险**：`fact` 是模型蒸馏的，错一次就错着进库；无冲突检测；
-记忆无全局上限；极长上下文仍会 lost-in-the-middle。
-
-### 注意力机制怎么工作（和记忆的关系）
+每一轮流程：
 
 ```
-Attention(Q, K, V) = softmax(Q·Kᵀ / √d) · V
+读：自己的计划 + 共享工作记忆（所有 agent）+ 书架管理经验
+做：规划 → 派发 → 收汇报 → 评估 → 再规划（最多 3 轮）
+写：plan/dispatch/report 进工作记忆；结束时整段摘要进 manager_memories
 ```
 
-- 当前 token 生成 query，与上下文每个 token 的 key 点积、softmax 归一化，
-  再对 value 加权求和——**每个上下文 token 都在竞争注意力预算**。
-- softmax 归一化后，token 越多单个平均权重越小；位置靠后、字面重复、
-  语义相近的内容更容易拿高权重（近因/重复偏置）。
-- 所以“记忆太长”不是存不下，而是**有效注意力被摊薄**：关键约束淹没在
-  无关片段里，模型开始忽略中间部分（lost-in-the-middle）。
-- 工程对策就是第 9 节的预算：先检索、再裁剪、只放少量高信号文本；
-  长文档走“分块 + 摘要 + 按需检索”，不整段塞进上下文。
+## 3. 文件结构树（记忆层代码在哪）
 
-> 一句话：记忆层负责“把对的少量信息找出来”，注意力负责“在这些信息里分配权重”；
-> 前者做不好，后者再强也会被稀释。
+```
+backend/
+  app/
+    core/
+      database.py                 # 所有表结构 + 迁移 + CRUD
+      config.py                   # 窗口/预算：history_runs=20、rag_top_k=4、excerpt_chunks=3
+    services/memory/
+      agent_memory.py             # 长期记忆条目（写完调 chunk 重建向量）
+      chat_memory.py              # 流水 → 长期记忆（7 天/清空时蒸馏）
+      rag.py                      # 混合检索（0.65 向量 + 0.35 BM25，top4，min 0.18）
+      summarizer.py               # 两个蒸馏 prompt
+      working_memory.py           # 工作记忆（分栏：admin / character:<id> / 公共）
+    agent/
+      admin_agent.py              # 管理员：ReAct 规划 → 派发 → 观察 → 循环
+      manager.py                  # 角色 Agent 构建 + Agno 会话记忆
+      character.py                # attach_state：RAG + 派生状态（工作模式只挂 RAG）
+      graph.py                    # 单聊工作流
+      group_graph.py              # 群聊工作流；工作模式先跑管理员
+    api/v1/endpoints/
+      knowledge.py                # RAG 状态 / 重建 / 检索预览 / 蒸馏
+      shelves.py                  # 对话 mode、清空对话（带工作记忆蒸馏）
+      chat.py                     # 群聊/单聊入口，传 api_key 给管理员
+  data/workspace/
+    app.db                        # 业务库：working_memory / chat_turns / character_memory_items /
+                                  #          manager_memories / conversations(mode) / character_states
+    agent_memory.db               # Agno 会话记忆（最近 20 轮）
+    graph_checkpoints.db          # LangGraph 断点
+  data/models/bge-small-zh-v1.5/  # RAG 向量模型（512 维，本地）
+```
 
----
+## 4. 记忆怎么调取
 
-相关文档：[`docs/project-status.md`](project-status.md)、[`docs/langgraph-workflow.md`](langgraph-workflow.md)、[`docs/tool-layer.md`](tool-layer.md)
+| 场景 | 调什么 | 怎么调 |
+|---|---|---|
+| 聊天回复 | 初始 + 长期 | 角色档案里 `agent_memory.top()`（3 条）+ `rag.recall_block`（top 4） |
+| 聊天上下文 | 短期 | Agno `add_history_to_context`（20 轮）+ `chat_turns` 给摘录用 |
+| 工作模式 | 再加工作记忆 | `working_memory_text(conversation_id)`，管理员读全部、角色读自己 |
+| 管理员 | 管理经验 | `list_manager_memories(shelf_id, kind='admin')`，取最近 6 条 |
+| 清空/蒸馏 | 短期 → 长期 | 流水 + 工作记忆摘要拼成 transcript，压成 `fact` 再删流水 |
+
+## 5. RAG 的边界
+
+* **只有长期记忆进 RAG**（初始记忆也以长期记忆条目存放，所以一起被检索）。
+* 混合分：`0.65 × 余弦 + 0.35 × BM25`；场景一致 ×1.30、不一致 ×0.85；摘要 ×1.05；
+  低于 0.18 丢弃；默认 `top_k=4`。
+* 工作记忆、管理经验、Agno 会话、派生状态**都不进 RAG**。任务笔记不会被当成
+  「角色往事」在下次聊天里捞出来。
+* 模型不可用时降级成纯词法（BM25），不会因为向量服务挂了就完全失忆。
+
+## 6. 两种模式怎么隔离
+
+* `conversations.mode = chat | work`，列表接口按 mode 过滤；前端切模式**换窗口**。
+* 工作记忆只在 work 写；聊天模式写会直接被 `working_memory.remember` 丢掉。
+* 两种模式的**蒸馏都会进长期记忆**：清空对话不区分模式，`working_memory.digest()`
+  和流水一起压成一条 fact（工作记忆会带「任务/计划/派发」标签）。
+* 工作模式不更新情绪/好感；切回聊天模式，情绪还是上次聊天时的值。
+
+## 7. 上下文太长会不会幻觉？
+
+会，但有闸门。当前预算：
+
+| 来源 | 上限 |
+|---|---|
+| 初始/长期记忆 | 3 条摘录 + RAG 4 条（每条 ≤ ~220 字块） |
+| 流水蒸馏输入 | 6000 字 |
+| 摘要记忆 | 1200 字 |
+| Agno 会话 | 20 轮 |
+| 工作记忆 | 单条 2000 字 / 单对话 60 条；管理员读 40 条、拼 1800 字 |
+| 管理经验 | 6 条 × 160 字 |
+
+**风险点**：
+
+1. `fact` 是模型蒸馏的——蒸馏错一次就错着进库，之后一直被 RAG 捞出来；
+2. `top_k=4` 只保证「相关」，不保证「不矛盾」：两条记忆冲突时没有事实校验；
+3. 记忆没有全局上限，书架用久了 RAG 候选会变多（目前靠 min_score 和 top_k 挡）；
+4. 极长上下文仍有 lost-in-the-middle：关键约束放在中间段容易被忽略。
+
+缓解：检索先于拼接、只放高信号文本、工作记忆单独成层不混入往事、管理经验与角色记忆
+物理隔离、清空对话时把工作记忆显式蒸馏而不是让它消失。
+
+## 8. 注意力机制为什么「越长越容易丢」
+
+每层 self-attention：
+
+```
+Attention(Q, K, V) = softmax(QKᵀ / √d) · V
+```
+
+当前 token 的 Q 和上下文每个 token 的 K 做点积，softmax 把权重归一化——**预算是固定的**。
+上下文从 1k 涨到 32k，平均每个 token 分到的注意力下降，模型更依赖位置、显式标记
+（标题/编号/「注意」）和语义相似度：
+
+* 开头（system prompt、角色档案）通常权重高；
+* 结尾（用户刚说的话）权重高；
+* 中间大段材料容易被稀释（lost-in-the-middle）；
+* 语义相近的内容互相「抢」权重，重复信息反而挤掉关键细节。
+
+所以工程上不是「把所有记忆塞进去」，而是：**先检索（RAG）→ 再裁剪（预算表）→ 只放
+少量高信号文本**。记忆层分得越细，塞进上下文的噪声越少。
+
+## 9. 已知边界（还没做）
+
+1. 管理员的 ReAct 只有「动画」一个工具；角色 Agent 的 ReAct 目前是「想 → 调动画 / 汇报」
+   两步，没有通用工具注册表（搜索、文档解析等以后接）。
+2. 管理员是虚拟成员（不进 `characters`/`shelf_members`），所以成员列表里不占一个真实卡片。
+3. 工作记忆的修剪是「超过 60 条删最老」，没有按任务分段/摘要。
+4. 管理经验（`manager_memories`）没有向量检索，按 `kind` 取最近 N 条；书架很大时可能漏。
+5. 没有事实冲突检测：长期记忆里两条矛盾的说法都会留着。

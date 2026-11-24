@@ -1251,8 +1251,9 @@ async function pickAudioFile(file) {
 }
 
 async function startLyricJob() {
-  if (!lyricForm.lyricsPath) {
-    lyricForm.message = '先选一个歌词文件（.lrc 或 .txt）'
+  const prompt = (lyricForm.prompt || '').trim()
+  if (!prompt && !lyricForm.lyricsPath && !lyricForm.audioPath) {
+    lyricForm.message = '写一句任务名称，或先上传歌词/配乐'
     return
   }
   lyricForm.busy = true
@@ -1261,9 +1262,9 @@ async function startLyricJob() {
     const result = await api('/api/animation/start', {
       method: 'POST',
       body: {
-        prompt: lyricForm.prompt || '帮我做一段歌词MV',
-        lyrics_file: lyricForm.lyricsPath,
-        audio: lyricForm.audioPath,
+        prompt: prompt || '帮我做一段歌词MV',
+        lyrics_file: lyricForm.lyricsPath || '',
+        audio: lyricForm.audioPath || '',
         quality: lyricForm.quality,
         conversation_id: group.conversationId || ''
       }
@@ -1619,6 +1620,15 @@ async function loadGroupHistory() {
 }
 
 function turnToGroupMessage(turn) {
+  // 管理员的最终汇总：历史里仍显示成管理员气泡，不冒充某个角色
+  if (turn.role === 'system' && turn.speaker_name === '管理员') {
+    return {
+      kind: 'admin',
+      role: 'done',
+      content: turn.content || '',
+      at: turn.created_at || null
+    }
+  }
   if (turn.role === 'user') {
     return {
       kind: 'user',
@@ -1988,6 +1998,28 @@ async function readGroupStream(response) {
       // 注意：这里**不能** active.delete —— speaker_drop 还要用
     } else if (event.type === 'system') {
       group.messages.push({ kind: 'system', content: event.text })
+      scrollGroupBottom()
+    } else if (event.type === 'admin_thought' && event.text) {
+      group.messages.push({ kind: 'admin', role: 'thought', content: event.text })
+      scrollGroupBottom()
+    } else if (event.type === 'admin_dispatch' && event.agent) {
+      group.messages.push({
+        kind: 'admin',
+        role: 'dispatch',
+        agent: event.agent,
+        content: event.task || ''
+      })
+      scrollGroupBottom()
+    } else if (event.type === 'admin_observation' && event.agent) {
+      group.messages.push({
+        kind: 'admin',
+        role: 'observation',
+        agent: event.agent,
+        content: event.text || ''
+      })
+      scrollGroupBottom()
+    } else if (event.type === 'admin_done' && event.text) {
+      group.messages.push({ kind: 'admin', role: 'done', content: event.text })
       scrollGroupBottom()
     } else if (event.type === 'error') {
       group.messages.push({ kind: 'system', content: `⚠️ ${event.message}` })

@@ -95,6 +95,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 user_name=session.display_name,
             )
         )
+        # 工作模式只挂 RAG 长期记忆，不带情绪/好感（派生状态只在聊天模式用）
         agent, _state = await anyio.to_thread.run_sync(
             functools.partial(
                 character_agent.attach_state,
@@ -102,6 +103,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 character,
                 session.user_id,
                 user_text=user_text,
+                include_affect=_resolve_mode(req.mode) != "work",
             )
         )
         # 附加群聊上下文：后说话的人要接得上前面的话
@@ -175,6 +177,7 @@ async def shelf_chat(shelf_id: str, req: ChatRequest, request: Request):
                 conversation_id=req.conversation_id or "",
                 mode=_resolve_mode(req.mode),
                 assets=req.assets or [],
+                api_key=api_key,
             ):
                 # 引擎事件 -> 渠道无关的出站消息 -> web 载荷。
                 # 这一圈看着绕，但换来的是：接 QQ/微信时引擎与这里一行都不用改。
@@ -557,6 +560,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                 character,
                 session.user_id,
                 user_text=prompt,
+                include_affect=_resolve_mode(req.mode) != "work",
             )
         )
         # 【规划层】把本轮判断与 SOP 挂上去（易变部分，不进 Agent 缓存）
