@@ -21,11 +21,15 @@
 param(
     [string]$SessionRoot = "$env:USERPROFILE\.dsh\sessions",
     [string]$ProjCache   = "$env:USERPROFILE\.dsh\storages\session_projcache\sessions",
-    [string]$Workspace   = 'E:\NovelChat\backend\data',   # _scratch 已于 2026-11-21 删除，改扫运行时数据目录
-    [string]$Project     = 'E:\NovelChat',
-    [string]$AnimDir     = 'E:\NovelChat\backend\data\animation',
+    [string]$Project     = '',   # 默认 = 仓库根（scripts 的上一级）
+    [string]$Workspace   = '',   # 默认 = <Project>\backend\data（运行时数据目录）
+    [string]$AnimDir     = '',   # 默认 = <Workspace>\animation
     [switch]$NoDeepScan
 )
+
+if (-not $Project)   { $Project   = Split-Path -Parent $PSScriptRoot }
+if (-not $Workspace) { $Workspace = Join-Path $Project 'backend\data' }
+if (-not $AnimDir)   { $AnimDir   = Join-Path $Workspace 'animation' }
 
 $ErrorActionPreference = 'SilentlyContinue'
 $script:warn = 0; $script:bad = 0
@@ -103,7 +107,7 @@ else {
     # 1b. 压缩历史：读会话日志（多 zstd 帧追加格式），统计 ACP 到底压了几次
     $node = (Get-Command node -ErrorAction SilentlyContinue).Source
     if (-not $node) {
-        foreach ($cand in @('D:\edge 下载\node\node.exe', "$env:ProgramFiles\nodejs\node.exe")) {
+        foreach ($cand in @("$env:ProgramFiles\nodejs\node.exe", "$env:LOCALAPPDATA\Programs\nodejs\node.exe")) {
             if (Test-Path -LiteralPath $cand) { $node = $cand; break }
         }
     }
@@ -234,10 +238,6 @@ foreach ($p in ($known.Keys | Sort-Object)) {
     } else {
         Line '--' ("{0,-22} 未安装" -f $p)
     }
-}
-$corePath = 'E:\deepseek蓝色大肥鱼\DSH Desktop\resources\app\node_modules\@deepseek-ai\dsh\package.json'
-if (Test-Path -LiteralPath $corePath) {
-    try { Line '--' ("{0,-22} {1}" -f 'DSH 内核', (Get-Content -LiteralPath $corePath -Raw -Encoding UTF8 | ConvertFrom-Json).version) } catch { }
 }
 if ($installed.ContainsKey('dsh-context') -and $installed.ContainsKey('billion-context-dsh')) {
     Line '!' 'dsh-context 与 billion-context-dsh 同时在装：两者都挂上下文层，压缩经常“谁都压不下去”。'
