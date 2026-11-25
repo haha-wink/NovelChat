@@ -230,8 +230,8 @@ def _normalise(timeline) -> list[list]:
 def _plan(timeline, style: str = "watercolor", prompt: str = "") -> list[dict]:
     """歌词时间轴 → 镜头计划（一条 = 一个镜头）。
 
-    ``prompt`` 是用户的完整需求：它的关键词会并进每个镜头，保证「雨夜的车站」
-    这种约束在每句歌词里都成立，而不是只有歌词里提到才有。
+    ``prompt`` 是用户的完整需求：构图关键词按镜头轮换（歌词有词时优先歌词），
+    但「雨夜」这类天气/氛围仍然全局生效。
     """
     key = style_lib.resolve_style(str(style or ""))
     fallback = _STYLE_FALLBACK.get(key, _FALLBACK_KINDS)
@@ -241,11 +241,21 @@ def _plan(timeline, style: str = "watercolor", prompt: str = "") -> list[dict]:
     seen: dict[str, int] = {}
     for index, (start, _end, text) in enumerate(_normalise(timeline)):
         words = scene_keywords(text)
-        merged = list(words)
-        for word in theme:
-            if word not in merged:
-                merged.append(word)
+        # 歌词自己的词优先；prompt 的主题词只在歌词没词时**轮换着**用。
+        # 之前把主题词全并进每一镜，导致「车站」压过所有歌词，72 句全是同一个构图。
+        own = [word for word in words if word not in theme]
+        if own:
+            merged = own
+        elif theme:
+            merged = [theme[index % len(theme)]]
+        else:
+            merged = []
         kind = _pick_kind(merged, index, fallback)
+        # 连续两镜同一构图时换下一个候选，别一条条完全重复
+        tries = 0
+        while scenes and kind == scenes[-1]["kind"] and tries < 3:
+            tries += 1
+            kind = _pick_kind(merged, index + tries, fallback)
         repeat = seen.get(kind, 0)
         seen[kind] = repeat + 1
         moods = _MOOD.get(kind, ("hopeful", "happy"))
@@ -257,11 +267,16 @@ def _plan(timeline, style: str = "watercolor", prompt: str = "") -> list[dict]:
             "cam": _CAMERA.get(kind, "drift"),
             "seed": 3 + index * 7 + seed_bias,
             "mood": list(moods),
-            # 天气 / 天色叠加：下雨的站台、有星的窗、落花的田野都成立
-            "wet": "雨" in merged,
-            "flaky": "雪" in merged,
-            "starry": (("星" in merged) or ("月亮" in merged)) and "雨" not in merged,
-            "petals": ("花" in merged) and kind in ("meadow", "road", "wind"),
+            # 天气 / 天色叠加：构图可以跟着歌词变，但 prompt 里的「雨夜」氛围全局有效
+            # （否则一句「月光落在肩上」就能把用户要的雨夜抹掉）
+            "wet": "雨" in merged or "雨" in theme,
+            "flaky": "雪" in merged or "雪" in theme,
+            "starry": (
+                ("星" in merged) or ("月亮" in merged)
+                or ("星" in theme) or ("夜" in theme)
+            ) and "雨" not in merged and "雨" not in theme,
+            "petals": ("花" in merged or "花" in theme)
+            and kind in ("meadow", "road", "wind"),
             "kw": merged,
             "txt": text,
         })
@@ -1465,7 +1480,7 @@ _JS_CLOSE = r"""
   // 相邻两镜共用同一处接缝的参数（上一镜结尾 p 走到 0.5，下一镜开头从 0.5 继续）。
   // 四种接缝轮着用：笔刷拖走 / 盖一层纸 / 一道幕布从左推过 / 暖光闪一下。
   // （core.js 的 iris 要画 40 块大水彩，又慢又脏，这里不用它。
-  const TR_MODES = ['wipe', 'paper', 'curtain', 'flash'];
+  const TR_MODES = ['wipe', 'curtain'];
 
   function seam(p, mode, P) {
     if (p <= 0 || p >= 1) return;
@@ -1516,12 +1531,14 @@ _JS_CLOSE = r"""
     overlays(t, S, P);
     camEnd();
 
-    // 每个接缝都要有转场：首镜从纸面淡入，末镜收在纸上
+    // 转场收敛：之前每个接缝两遍、每四镜一次整屏纸白，观众看到的是连续白闪。
+    // 现在只在每 4 个接缝做一次墨/帘过渡，开头纸面淡入、结尾淡回纸面。
     const last = i === SCENES.length - 1;
     if (i === 0 && lt < 0.55) seam(0.5 + lt / 1.1, 'paper', P);
-    else if (i > 0 && lt < 0.28) seam(0.5 + lt / 0.56, TR_MODES[(i - 1) % 4], P);
-    if (!last && lt > dur - 0.28) seam((lt - (dur - 0.28)) / 0.56, TR_MODES[i % 4], P);
-    if (last && lt > dur - 0.5) seam((lt - (dur - 0.5)) / 1.0, 'paper', P);
+    else if (i > 0 && i % 4 === 0 && lt < 0.22) {
+      seam(0.5 + lt / 0.44, TR_MODES[(i / 4) % TR_MODES.length], P);
+    }
+    if (last && lt > dur - 0.55) seam((lt - (dur - 0.55)) / 1.1, 'paper', P);
   }
 
   // 一句歌词 = 一个镜头，全部交给 timeline.js 的 shots() 排

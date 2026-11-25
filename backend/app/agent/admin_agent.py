@@ -84,6 +84,8 @@ _PLAN_PROMPT = """你是工作模式的管理员 Agent，负责统筹一个「�
 - 不要派「看关键帧/确认画面/核对截图/检查成片内容」——角色看不了图，只会回「我做不到」。
 - 派给执行角色时必须把用户的风格词原样带上（水墨/像素/赛博朋克/胶片…），
   不要改写成「写实」「电影感」，也不要省略；风格丢了渲染会退回默认水彩。
+- 用户没提风格时**不要自己发明**「写实/电影感」：留空，系统用默认水彩；
+  「写实」这种词会被识别成胶片风，但模板画不出写实画面，只会名不副实。
 - 修改已渲染的任务：派「改需求并重渲」，任务里写清改哪一处，并带上任务号（anim_…）。
 
 【必须派活的情况】
@@ -335,6 +337,16 @@ def _role_reply(api_key: str, member: dict, task: str, notes: str,
     return str(getattr(response, "content", "") or "").strip()
 
 
+def _section_hint(text: str) -> str:
+    """从需求里认「主歌 / 副歌」：认不出来交给引擎，认出来只渲这一段。"""
+    body = str(text or "")
+    if any(word in body for word in ("副歌", "高潮", "chorus")):
+        return "chorus"
+    if any(word in body for word in ("主歌", "verse")):
+        return "verse"
+    return ""
+
+
 _STAGE_TEXT = {
     "queued": "排队中", "scaffold": "搭项目", "storyboard": "写分镜",
     "awaiting_confirmation": "等确认", "render": "逐帧渲染", "encode": "编码",
@@ -418,6 +430,7 @@ def _animation_tool(
         "emotion": "平静",
         "intent": "work",
         "style": resolve_style(f"{prompt} {notes}"),
+        "section": _section_hint(f"{prompt} {notes}"),
         "lyrics": "",
         "lyrics_file": "",
         "audio": "",

@@ -2500,12 +2500,10 @@ def scene_constraint_checks() -> None:
         prompt="雨夜的车站，她撑着伞",
     )
     first = plan[0] if plan else {}
-    check("约束：prompt 的主题词并进每个镜头",
-          bool(first.get("kw")) and "雨" in first["kw"] and "车站" in first["kw"],
-          str(first.get("kw")))
-    check("约束：雨夜会打开雨/夜色叠加",
-          bool(first.get("wet")) and first.get("kind") == "station",
-          f'{first.get("kind")} wet={first.get("wet")}')
+    check("约束：prompt 的天气/氛围仍全局生效",
+          bool(first.get("wet")), f'wet={first.get("wet")}')
+    check("约束：构图优先跟着歌词走（不再被主题词一统到底）",
+          first.get("kind") == "night", str(first.get("kind")))
 
     # 2. 非歌词需求按标点拆镜头
     shots = animation._prompt_shots("雨夜的车站，她撑着伞等末班车，灯一闪一闪", 12.0)
@@ -2605,6 +2603,18 @@ def lyric_section_checks() -> None:
     prompt = animation._lyric_plan({**base, "section": "",
                                     "prompt": "帮我做副歌高潮那一段的MV"})
     check("段落：从原话认副歌", prompt["section"] == "chorus", prompt["section"])
+
+    # 镜头多样性：歌词没词时主题词轮换，不要整首全是「车站」
+    from skills.work.animation import scene_gen
+
+    timeline = [(i * 4.0, i * 4.0 + 4.0, f"第{i}句") for i in range(8)]
+    js = scene_gen.build_scene(
+        timeline, prompt="小镇火车站，冷色调写实风，站台与铁轨"
+    )
+    kinds = re.findall(r"kind: '([a-z]+)'", js)
+    check("镜头：同一主题词下也会轮换构图", len(set(kinds)) >= 2, str(kinds))
+    check("转场：不再有整屏纸白/闪光",
+          "TR_MODES = ['wipe', 'curtain']" in js, js[js.find("TR_MODES"):][:60])
 
     text = "主歌一\n主歌二\n副歌一\n副歌二\n主歌三\n副歌一\n副歌二"
     plain = animation._lyric_plan({"prompt": "MV", "lyrics": text, "lrc": "",
@@ -7142,6 +7152,11 @@ def admin_agent_checks() -> None:
         {"character_id": "c1", "name": "阿宁", "role": "导演"},
         {"character_id": "c2", "name": "老周", "role": "工程师"},
     ]
+    check("管理员：能从需求里认出主歌/副歌",
+          admin_agent._section_hint("为该曲一段主歌歌词 MV") == "verse"
+          and admin_agent._section_hint("做副歌高潮那段") == "chorus",
+          admin_agent._section_hint("为该曲一段主歌歌词 MV"))
+
     check("管理员：汇总会写明渲染器做不到的部分",
           "剧情" in admin_agent._limits_note("女主 剧情 谐音梗") ,
           admin_agent._limits_note("女主 剧情 谐音梗"))

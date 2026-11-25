@@ -11,7 +11,7 @@ when:
   base: 0.55
   bonus: 0.3
 steps:
-  - [animation_start, {prompt: $text, style: $style, lyrics_file: $lyrics_file, audio: $audio, conversation_id: $conversation_id}]
+  - [animation_start, {prompt: $text, style: $style, section: $section, lyrics_file: $lyrics_file, audio: $audio, conversation_id: $conversation_id}]
 ---
 长任务：起任务立刻返回，渲染在后台线程跑。
 
