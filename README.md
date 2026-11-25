@@ -255,12 +255,6 @@ cd frontend; npm run build
 - [ ] 更多渲染笔刷：当前风格为调色/纸墨/叠加层级别，计划扩展油画等真实笔触
 - [ ] 管理经验向量检索、工作记忆按任务分段与摘要
 
-## 数据与密钥
-
-- `backend/.env`（密钥）与 `backend/data/`（数据库、作品原文、模型、成片）均被 gitignore，不会进入仓库。
-- API Key 只保存在服务端；`/api/health` 不回传密钥，日志中的敏感字段自动脱敏。
-- 上传的小说文本仅用于本机的角色抽取与记忆检索；Twemoji 贴纸素材按 CC-BY 4.0 内置。
-
 ## 特别鸣谢
 
 - [ryan123-hub/ai-](https://github.com/ryan123-hub/ai-)（painted-animation）：本项目动画技能的渲染模板（`backend/app/skills/work/animation/vendor/template/`）源自该项目——一套基于 p5.js 程序化作画 + headless Chrome 逐帧渲染 + ffmpeg 编码的水彩/像素风动画流水线（MIT License）。NovelChat 在其基础上扩展了多风格目录、歌词时间轴切片、多进程分片渲染与任务面板集成。
