@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Callable, Optional
 
 from core import database as db
@@ -78,6 +79,13 @@ _PLAN_PROMPT = """你是工作模式的管理员 Agent，负责统筹一个「�
 - 方案型任务里别写「渲染/生成/做一版」，写「给出…方案」「列出…分镜」，否则角色会误以为要自己起任务。
 - 用户同一个需求连续追问时，先看工作记忆里有没有刚起的任务；有就只补方案或换画质，别重复开新任务。
 
+【派活必须可执行】
+- 角色能做的只有：起渲染任务、查任务状态、改需求重渲、写文字方案。
+- 不要派「看关键帧/确认画面/核对截图/检查成片内容」——角色看不了图，只会回「我做不到」。
+- 派给执行角色时必须把用户的风格词原样带上（水墨/像素/赛博朋克/胶片…），
+  不要改写成「写实」「电影感」，也不要省略；风格丢了渲染会退回默认水彩。
+- 修改已渲染的任务：派「改需求并重渲」，任务里写清改哪一处，并带上任务号（anim_…）。
+
 【必须派活的情况】
 只要用户这句话是在提产出需求（视频 / MV / 动画 / 分镜 / 渲染 / 画面 / 成片 / 歌词画面…）
 或者是在修改、补充这类需求，**steps 至少要有 1 个**，派给角色去执行（调用动画工具）。
@@ -105,6 +113,8 @@ _EVAL_PROMPT = """你是工作模式的管理员 Agent，正在循环推进用�
 - 如果用户要的是成片（MV/视频/渲染），**必须看到本轮的渲染任务**（jobs 非空）或角色明确
   说明「渲染器做不到/缺少素材」才允许 done=true；只是聊完方案不算完成。
 - 如果角色汇报里已经明确完成（例如「已开渲任务 anim_xxx」），done=true。
+- 角色汇报出现「做不到 / 没有权限 / 看不了」时，**不要原样再派一次**：
+  换成「改需求重渲」或直接收尾并在汇总里说明边界。
 - 如果还缺关键信息/还有没做的部分，done=false，next 最多 {max_steps} 个。
 - 做不了的部分要如实写进 summary，不要假装完成。
 """
@@ -118,8 +128,9 @@ _ACTION_HINTS = (
 
 #: 「明显在要求动手做」的动词：光有场景词/画面词不算（"配色方案"不该起任务）
 _EXECUTE_HINTS = (
-    "做一段", "做一个", "做一版", "做成", "做版", "渲染", "生成", "起一个", "起个",
-    "开渲", "拍一段", "剪一段", "来一段", "出一段", "输出成片",
+    "做一段", "做一个", "做一版", "做成", "做版", "渲染成片", "渲染一版",
+    "生成", "起一个", "起个", "开渲", "拍一段", "剪一段", "来一段", "出一段",
+    "输出成片", "重渲",
 )
 
 
@@ -169,11 +180,21 @@ _ROLE_DECIDE_PROMPT = """你是角色「{name}」（{role}），管理员把下�
 共享工作记忆（含管理员的计划）：
 {notes}
 
-先想清楚：这件事你直接回答/汇报，还是需要调用工具（目前只有动画/MV 工具 animation_start）？
+先想清楚：这件事你直接回答/汇报，还是需要调用工具？你现在有三个工具：
+
+- animation_start：起一个新的动画/MV 渲染任务（action="animation"，写 prompt）
+- animation_status：查某个任务的进度/需求/风格（action="status"，给 job_id）
+- animation_rerender：改任务的需求/风格并重渲（action="rerender"，给 job_id，可带新 prompt）
+  你**没有**看图/看关键帧的能力：别说"确认了画面"，只能查状态、改需求、重渲。
+
 只输出 JSON：
 {{"thought": "一句话",
-  "action": "reply" 或 "animation",
-  "prompt": "如果 action=animation，写清楚要做什么（可含风格/时长/段落）"}}
+  "action": "reply" | "animation" | "status" | "rerender",
+  "job_id": "action=status/rerender 时必填",
+  "prompt": "action=animation/rerender 时写清楚要做什么（可含风格/时长/段落）"}}
+
+你查任务用 action="status"（给 job_id），改已渲染任务用 action="rerender"
+（给 job_id，可带新 prompt）；你**看不了关键帧/截图**，别声称核对过画面。
 
 调用动画工具时，prompt 必须写成**渲染器看得懂的镜头描述**：只写场景、天气、物件、时间段、
 配色和风格（例如「水墨风，雨夜车站，站台，伞，远处的月亮，蓝色鱼影」），
@@ -314,6 +335,61 @@ def _role_reply(api_key: str, member: dict, task: str, notes: str,
     return str(getattr(response, "content", "") or "").strip()
 
 
+_STAGE_TEXT = {
+    "queued": "排队中", "scaffold": "搭项目", "storyboard": "写分镜",
+    "awaiting_confirmation": "等确认", "render": "逐帧渲染", "encode": "编码",
+    "done": "完成", "failed": "失败",
+}
+
+
+def _job_status_report(job_id: str) -> str:
+    """查任务状态：角色不会「看不见任务」了，能如实汇报进度。"""
+    if not job_id:
+        return "没给任务号，也没在本轮笔记里找到最近的动画任务。"
+    try:
+        from skills.work.animation import engine as animation_engine
+
+        job = animation_engine.job_status(job_id)
+    except Exception as exc:  # noqa: BLE001
+        return f"查任务 {job_id} 失败：{exc}"
+    if not job:
+        return f"没有找到任务 {job_id}（可能已被删除）。"
+    stage = _STAGE_TEXT.get(str(job.get("stage") or ""), str(job.get("stage") or "未知"))
+    percent = int(round(float(job.get("progress") or 0) * 100))
+    return (
+        f"任务 {job_id}：{stage}（{percent}%），风格 {job.get('style') or '水彩'}，"
+        f"需求：{str(job.get('prompt') or '')[:80]}"
+    )
+
+
+def _job_rerender(job_id: str, prompt: str, notes: str) -> str:
+    """改需求/风格并重渲：这是「修改已渲染任务」唯一靠谱的做法。"""
+    if not job_id:
+        return "没给任务号，也没在本轮笔记里找到最近的动画任务，无法重渲。"
+    try:
+        from skills.work.animation import engine as animation_engine
+        from skills.work.animation.styles import resolve_style
+
+        job = animation_engine.job_status(job_id)
+        if not job:
+            return f"没有找到任务 {job_id}（可能已被删除）。"
+        new_prompt = " ".join(str(prompt or "").split())
+        if not new_prompt:
+            # 没给新需求：只按原需求+补充笔记重渲（风格也重新解析一次）
+            new_prompt = str(job.get("prompt") or "")
+        style = resolve_style(f"{new_prompt} {notes}")
+        updated = animation_engine.update_prompt(job_id, new_prompt, style=style)
+        if not updated.get("ok"):
+            return f"改需求失败：{updated.get('error') or '未知原因'}"
+        result = animation_engine.rerender(job_id, str(job.get("quality") or "fast"))
+        if not result.get("ok"):
+            return f"{job_id} 已改需求，但重渲没起来：{result.get('error') or '未知原因'}"
+        return f"已按新需求重渲 {job_id}（风格 {style}），进度看任务栏。"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("角色：重渲任务失败")
+        return f"重渲任务失败：{exc}"
+
+
 def _animation_tool(
     prompt: str, notes: str, assets: list[dict], conversation_id: str
 ) -> dict:
@@ -419,9 +495,39 @@ async def _role_react(
         # 本轮已经有角色在起任务了：方案型角色只汇报，别再起一版
         action = "reply"
         thought = thought or "本轮已有执行角色起任务，我只出方案"
-    if allow_tool and action != "animation" and _asks_to_render(task):
+    if (allow_tool and action not in ("animation", "status", "rerender")
+            and _asks_to_render(task)):
         action = "animation"
         thought = thought or "这是产出需求，直接调动画工具"
+    job_id = str(decision.get("job_id") or "").strip()
+    if action in ("status", "rerender") and not job_id:
+        # 没给任务号：从共享笔记里捞一个最近的任务号
+        found = re.findall(r"anim_[0-9a-f]{6,}", notes or "")
+        job_id = found[-1] if found else ""
+
+    if action == "status":
+        report = await asyncio.to_thread(_job_status_report, job_id)
+        return {
+            "agent": member.get("name") or "",
+            "action": "status",
+            "thought": thought or "查一下任务进度",
+            "report": report,
+            "jobs": [],
+        }
+
+    if action == "rerender":
+        tool_prompt = str(decision.get("prompt") or "").strip()
+        report = await asyncio.to_thread(
+            _job_rerender, job_id, tool_prompt, notes
+        )
+        return {
+            "agent": member.get("name") or "",
+            "action": "rerender",
+            "thought": thought or "按新需求重渲",
+            "report": report,
+            "jobs": [],
+        }
+
     if action == "animation":
         tool_prompt = str(decision.get("prompt") or task).strip()
         tool = await asyncio.to_thread(
@@ -633,6 +739,20 @@ async def run(
                     "prompt": str(status.get("prompt") or ""),
                     "stage": str(status.get("stage") or ""),
                 })
+        # 角色明确说「做不到」两次以上就别再原样派了：换做法需要用户确认，
+        # 否则会像之前那样连着几轮派「核对关键帧」，每轮都收获一句「我做不到」。
+        refused = [
+            report for report in reports
+            if any(word in report for word in (
+                "做不到", "看不了", "没有权限", "接触不到", "无法访问",
+            ))
+        ]
+        if len(refused) >= 2:
+            done = True
+            summary = (str(plan.get("thought") or "").strip()
+                       or "角色能做的已经做完；剩下的部分看不了图/改不了文件，需要你确认换个做法。")
+            break
+
         if dispatched == 0:
             # 没有可派的：自己收尾
             done = True

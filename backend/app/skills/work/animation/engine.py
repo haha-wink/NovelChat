@@ -1142,6 +1142,37 @@ def delete_job(job_id: str) -> dict:
     return {"ok": True, "job_id": job_id}
 
 
+def update_prompt(
+    job_id: str,
+    prompt: Optional[str] = None,
+    style: Optional[str] = None,
+) -> dict:
+    """改任务的需求描述/风格（不重渲）。配合 ``rerender`` 用来"按新需求重做一版"。
+
+    只改 status.json 里的 prompt/style；真正的重渲染由调用方接着调 ``rerender``。
+    拒绝改正在跑的任务，避免渲染线程读到一半的新标签。
+    """
+    job = job_status(job_id)
+    if not job:
+        return {"ok": False, "error": "任务不存在"}
+    if job.get("stage") in RUNNING_STAGES and str(job.get("id")) in _JOBS:
+        stamp = jobs_dir() / str(job_id) / "status.json"
+        age = time.time() - (stamp.stat().st_mtime if stamp.exists() else 0.0)
+        if age < 10 * 60:
+            return {"ok": False, "error": "任务还在跑，等它结束再改需求"}
+    with _LOCK:
+        live = dict(_JOBS.get(str(job_id)) or job)
+        if prompt:
+            live["prompt"] = str(prompt).strip()
+        if style:
+            live["style"] = str(style).strip()
+        live["note"] = "已改需求，等待重渲"
+        live["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _JOBS[str(job_id)] = live
+        _write_status(live)
+    return {"ok": True, "job": job_status(str(job_id))}
+
+
 def rerender(job_id: str, quality: str = "fast") -> dict:
     """换个画质重渲（项目、歌词、风格都不变）。
 

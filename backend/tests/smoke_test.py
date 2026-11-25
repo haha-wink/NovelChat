@@ -7396,6 +7396,52 @@ def admin_agent_checks() -> None:
                   res.get("action") == "reply" and plan_calls["animation"] == 0,
                   str(res)[:100])
 
+            # 角色能查任务状态、也能改需求重渲（不再只会说「我做不到」）
+            from skills.work.animation import engine as animation_engine
+
+            original_status = animation_engine.job_status
+            original_update = animation_engine.update_prompt
+            original_rerender = animation_engine.rerender
+            animation_engine.job_status = lambda job_id: {
+                "id": job_id, "stage": "done", "progress": 1.0,
+                "style": "ink", "prompt": "水墨 雨夜车站", "quality": "fast",
+            }
+            original_llm6 = admin_agent._llm
+            admin_agent._llm = lambda *a, **k: (
+                '{"thought": "查一下", "action": "status", "job_id": "anim_abc123"}'
+            )
+            try:
+                status_res = asyncio.run(admin_agent._role_react(
+                    api_key="k", member={"id": "c1", "name": "楚子航"},
+                    task="核对 anim_abc123 的渲染状态", notes="",
+                    conversation_id=conv_id, assets=[],
+                ))
+            finally:
+                admin_agent._llm = original_llm6
+            check("角色：能查任务状态并如实汇报",
+                  "anim_abc123" in status_res.get("report", "")
+                  and "完成" in status_res.get("report", ""),
+                  status_res.get("report", "")[:100])
+
+            calls_rr = {"update": [], "rerender": []}
+            animation_engine.update_prompt = lambda job_id, prompt=None, style=None: (
+                calls_rr["update"].append((job_id, prompt, style)) or {"ok": True}
+            )
+            animation_engine.rerender = lambda job_id, quality="fast": (
+                calls_rr["rerender"].append((job_id, quality)) or {"ok": True}
+            )
+            try:
+                report = admin_agent._job_rerender(
+                    "anim_abc123", "改成水墨风，结尾火车驶入", "用户要水墨"
+                )
+            finally:
+                animation_engine.job_status = original_status
+                animation_engine.update_prompt = original_update
+                animation_engine.rerender = original_rerender
+            check("角色：能改需求重渲（不再说没权限）",
+                  bool(calls_rr["update"]) and bool(calls_rr["rerender"])
+                  and "已按新需求重渲" in report, report[:100])
+
             # 一轮只起一个任务：第二个角色拿到 allow_tool=False
             original_llm5 = admin_agent._llm
             original_role5 = admin_agent._role_react
